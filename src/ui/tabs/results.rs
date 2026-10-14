@@ -1,0 +1,806 @@
+//! The result grid shared by editor and table tabs, and the dialogs it opens.
+
+use super::*;
+
+/// Summary line for the pager: row count, timing and what the user can do with the grid.
+pub(super) fn status_text(tab: &Tab, read_only: bool) -> String {
+    let Some(res) = &tab.result else {
+        return String::new();
+    };
+    let hint = match &tab.kind {
+        TabKind::Table(_) if read_only => " · conexão somente leitura",
+        TabKind::Table(ts) if !ts.cols.is_empty() => {
+            if ts.cols.iter().any(|c| c.pk) {
+                " · duplo clique ou Enter edita · Ctrl+S salva"
+            } else {
+                " · sem chave primária: somente leitura"
+            }
+        }
+        _ => "",
+    };
+    format!("{}{hint}", summary(res))
+}
+
+/// "Resultado 1 · 2 · 3" above the grid when a script returned several result sets.
+pub(super) fn result_sets_strip(ui: &mut egui::Ui, tab: &Tab) -> Option<usize> {
+    let t = theme::tokens();
+    let mut pick = None;
+    egui::Frame::new()
+        .fill(t.sidebar)
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::horizontal()
+                .id_salt(("sets", tab.id))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(egui::RichText::new("RESULTADOS").size(11.0).color(t.subtle));
+                        for (i, set) in tab.sets.iter().enumerate() {
+                            let shown = i == tab.set_shown;
+                            let set = if shown {
+                                tab.result.as_ref().unwrap_or(set)
+                            } else {
+                                set
+                            };
+                            let n = set.rows.len();
+                            let label = if set.columns.is_empty() {
+                                format!("#{} · {} afetada(s)", i + 1, set.affected.unwrap_or(0))
+                            } else {
+                                let unit = if n == 1 { "linha" } else { "linhas" };
+                                format!("#{} · {} {unit}", i + 1, palette::compact_count(n as i64))
+                            };
+                            let color = if shown { t.foreground } else { t.muted_foreground };
+                            let b = egui::Button::new(egui::RichText::new(label).size(12.0).color(color))
+                                .selected(shown);
+                            let tip = format!("{} coluna(s): {}", set.columns.len(), set.columns.join(", "));
+                            if ui.add(b).on_hover_text(tip).clicked() {
+                                pick = Some(i);
+                            }
+                        }
+                    });
+                });
+        });
+    pick
+}
+
+pub(super) fn summary(res: &QueryResult) -> String {
+    if res.columns.is_empty() {
+        format!(
+            "{} linha(s) afetada(s) · {} ms",
+            res.affected.unwrap_or(0),
+            res.elapsed.as_millis()
+        )
+    } else {
+        let truncated = if res.truncated {
+            " · resultado truncado"
+        } else {
+            ""
+        };
+        format!(
+            "{} linha(s) · {} ms{truncated}",
+            res.rows.len(),
+            res.elapsed.as_millis()
+        )
+    }
+}
+
+pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
+    let s = cx.s;
+    stats_dialog(ui.ctx(), tab, s);
+    if let Some(e) = fill_dialog(ui.ctx(), tab) {
+        app::handle_grid_event(tab, s, e, true);
+    }
+    let t = theme::tokens();
+    if let Some(e) = &tab.error {
+        error_banner(ui, e);
+    }
+    if !tab.sets.is_empty()
+        && let Some(i) = result_sets_strip(ui, tab)
+    {
+        tab.show_set(i);
+    }
+    let Some(res) = &tab.result else {
+        if tab.busy() {
+            ui.add_space(48.0);
+            ui.vertical_centered(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new("Carregando…").color(t.subtle));
+            });
+        } else if !editable && tab.error.is_none() {
+            ui.add_space(48.0);
+            ui.vertical_centered(|ui| {
+                ui.label(theme::icon(icon::PLAY).size(20.0).color(t.subtle));
+                ui.label(
+                    egui::RichText::new("Execute uma consulta para ver o resultado aqui").color(t.subtle),
+                );
+            });
+        }
+        return;
+    };
+    // Editor results can be charted (kept in egui memory per tab).
+    let is_sql = matches!(tab.kind, TabKind::Sql { .. });
+    // Editor results from one table say whether they can be edited, and why not.
+    let edit_hint = match (&tab.kind, &tab.source) {
+        (TabKind::Sql { .. }, Some(src)) if !src.cols.is_empty() => {
+            let pk = src.pk_names();
+            if s.cfg.read_only {
+                None
+            } else if pk.is_empty() {
+                Some(format!("· {} não tem chave primária: somente leitura", src.table))
+            } else if pk.iter().all(|p| res.columns.contains(p)) {
+                Some(format!(
+                    "· editável ({}) · duplo clique edita · Ctrl+S salva",
+                    src.table
+                ))
+            } else {
+                Some(format!("· inclua {} no SELECT para poder editar", pk.join(", ")))
+            }
+        }
+        _ => None,
+    };
+    let chart_id = egui::Id::new(("chart", tab.id));
+    let mut chart_spec: Option<chart::ChartSpec> = ui.data(|d| d.get_temp(chart_id)).flatten();
+    let result_kinds = values::column_kinds(res, &[]);
+    // A new result may not have the chosen columns any more: pick again.
+    if let Some(c) = chart_spec
+        && (c.x >= res.columns.len()
+            || c.y >= res.columns.len()
+            || result_kinds[c.y] != values::ValueKind::Number)
+    {
+        chart_spec = chart::default_spec(res, &result_kinds);
+    }
+    if !editable {
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(8, 2))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(summary(res))
+                            .small()
+                            .color(t.muted_foreground),
+                    );
+                    if let Some(hint) = &edit_hint {
+                        ui.label(egui::RichText::new(hint).small().color(t.subtle));
+                    }
+                    let chartable =
+                        is_sql && chart::default_spec(res, &result_kinds).is_some() && !res.rows.is_empty();
+                    if chartable {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let on = chart_spec.is_some();
+                            let color = if on { t.lime } else { t.muted_foreground };
+                            let b = egui::Button::new(theme::icon_text(
+                                icon::CHART_BAR,
+                                "Gráfico",
+                                color,
+                                t.foreground,
+                            ))
+                            .frame(false);
+                            if ui
+                                .add(b)
+                                .on_hover_text("Barras ou linha de uma coluna numérica")
+                                .clicked()
+                            {
+                                chart_spec = if on {
+                                    None
+                                } else {
+                                    chart::default_spec(res, &result_kinds)
+                                };
+                            }
+                        });
+                    }
+                });
+            });
+    }
+    if res.columns.is_empty() {
+        return;
+    }
+    let mut close_chart = false;
+    if is_sql && let Some(spec) = &mut chart_spec {
+        egui::Panel::top(egui::Id::new(("chart_panel", tab.id)))
+            .resizable(true)
+            .default_size(280.0)
+            .size_range(160.0..=640.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(t.background)
+                    .inner_margin(egui::Margin::symmetric(8, 4)),
+            )
+            .show(ui, |ui| {
+                close_chart = !chart::chart(ui, tab.id, res, &result_kinds, spec);
+            });
+    }
+    if close_chart {
+        chart_spec = None;
+    }
+    ui.data_mut(|d| d.insert_temp(chart_id, chart_spec));
+
+    // Pending changes are shown in place: edited values, deleted rows struck through.
+    let overlay = app::editable_ref(&tab.kind, &tab.source).and_then(|ts| ts.overlay(res));
+    let shown = overlay.as_ref().map_or(res, |o| &o.result);
+    let view = tab.view();
+    let pinned = tab.pinned_count();
+    let range = tab.range().filter(|r| r.r1 < shown.rows.len());
+    let no_cols = Vec::new();
+    let no_incoming = Vec::new();
+    let table_tab = matches!(tab.kind, TabKind::Table(_));
+    let (cols, edit, order, bool_pick, row_offset, has_pk, incoming) =
+        match app::editable_mut(&mut tab.kind, &mut tab.source) {
+            Some(ts) => {
+                // Rows are addressed by their key: every key column must be in the result.
+                let pk = ts.pk_names();
+                let has_pk = !pk.is_empty() && pk.iter().all(|p| res.columns.contains(p));
+                (
+                    &ts.cols,
+                    ts.edit.as_mut(),
+                    ts.order.clone(),
+                    ts.bool_pick,
+                    if table_tab { ts.page * page_size() } else { 0 },
+                    has_pk,
+                    &ts.incoming,
+                )
+            }
+            None => (&no_cols, None, None, None, 0, false, &no_incoming),
+        };
+    let can_edit = has_pk && !s.cfg.read_only;
+    let kinds = values::column_kinds(res, cols);
+    let selected = tab
+        .selected
+        .filter(|(r, c)| *r < res.rows.len() && *c < res.columns.len());
+    let editing = edit.is_some() || bool_pick.is_some();
+
+    // Row detail on the right, for the selected row.
+    let mut detail_event = None;
+    if *cx.show_detail
+        && let Some((row, _)) = selected
+        && tab.detail_hidden != Some(row)
+    {
+        egui::Panel::right(egui::Id::new(("detail", tab.id)))
+            .frame(
+                egui::Frame::new()
+                    .fill(t.sidebar)
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
+            .resizable(true)
+            .default_size(320.0)
+            .size_range(240.0..=640.0)
+            .show(ui, |ui| {
+                detail_event = detail::detail_panel(
+                    ui,
+                    &detail::DetailRow {
+                        tab_id: tab.id,
+                        res: shown,
+                        cols,
+                        kinds: &kinds,
+                        row,
+                        row_number: row_offset + row + 1,
+                        can_edit,
+                    },
+                );
+            });
+    }
+
+    let typing = ui.ctx().egui_wants_keyboard_input();
+    let key_event = if !editing && !typing {
+        selected.and_then(|sel| keyboard_event(ui, sel, shown, &view, can_edit))
+    } else {
+        None
+    };
+    let mut scroll_to = match key_event {
+        Some(GridEvent::Select(row, _) | GridEvent::Extend(row, _)) => Some(row),
+        _ => None,
+    };
+    if let Some(range) = &range {
+        selection_stats(ui, tab.id, shown, &kinds, range);
+    }
+
+    // Ctrl+F: tables search the database (the toolbar box); editor results are searched here.
+    let find_id = egui::Id::new(("result_find", tab.id));
+    if !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F)) {
+        if editable {
+            ui.memory_mut(|m| m.request_focus(egui::Id::new(("table_search", tab.id))));
+        } else {
+            ui.data_mut(|d| {
+                let st = d.get_temp_mut_or_default::<Option<find::FindState>>(find_id);
+                st.get_or_insert_with(Default::default).focus = true;
+            });
+        }
+    }
+    let mut result_find: Option<find::FindState> = ui.data(|d| d.get_temp(find_id)).flatten();
+    let found = result_find
+        .as_ref()
+        .map(|f| found_cells(ui.ctx(), tab.id, shown, &kinds, &view, &f.query));
+    let mut found_current = None;
+    if let (Some(st), Some(found)) = (&mut result_find, &found) {
+        let order = found;
+        match find::find_bar(ui, st, order.len()) {
+            Some(find::FindAction::Close) => {
+                result_find = None;
+            }
+            Some(find::FindAction::Goto) => {
+                if let Some(&(r, c)) = order.get(st.current.min(order.len().saturating_sub(1))) {
+                    tab.selected = Some((r, c));
+                    tab.anchor = None;
+                    scroll_to = Some(r);
+                }
+            }
+            _ => {}
+        }
+        if let Some(st) = &result_find {
+            found_current = order.get(st.current.min(order.len().saturating_sub(1))).copied();
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(find_id, result_find.clone()));
+    let found_set: Option<HashSet<(usize, usize)>> = result_find
+        .as_ref()
+        .and(found.as_ref())
+        .map(|order| order.iter().copied().collect());
+    let selected = tab
+        .selected
+        .filter(|(r, c)| *r < res.rows.len() && *c < res.columns.len());
+    let opts = GridOpts {
+        can_edit,
+        selected,
+        scroll_to,
+        order: &order,
+        row_offset,
+        bool_pick,
+        kinds: &kinds,
+        changed: overlay.as_ref().map(|o| &o.changed),
+        deleted: overlay.as_ref().map(|o| &o.deleted),
+        can_filter: editable,
+        range: range.as_ref(),
+        view: &view,
+        pinned,
+        found: found_set.as_ref(),
+        found_current,
+        incoming,
+    };
+    // Wide results scroll sideways instead of running under the detail panel. A pinned cell
+    // double-clicked while scrolled away scrolls back so its editor shows.
+    let home_id = egui::Id::new(("hscroll_home", tab.id));
+    let mut area = egui::ScrollArea::horizontal()
+        .id_salt(("hscroll", tab.id))
+        .auto_shrink([false, false]);
+    if ui.data_mut(|d| d.remove_temp::<bool>(home_id)).is_some() {
+        area = area.horizontal_scroll_offset(0.0);
+    }
+    let mut frozen = Vec::new();
+    let out = area.show(ui, |ui| grid(ui, tab.id, shown, cols, edit, &opts, &mut frozen));
+    let mut event = out.inner.or(key_event);
+    if let Some(e) = paint_frozen(ui, tab.id, &frozen, out.state.offset.x, out.inner_rect) {
+        if matches!(e, GridEvent::StartEdit(..)) {
+            ui.data_mut(|d| d.insert_temp(home_id, true));
+        }
+        event = Some(e);
+    }
+    if res.rows.is_empty() {
+        ui.add_space(32.0);
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new("Nenhuma linha").color(t.subtle));
+        });
+    }
+
+    if let (Some(a), Some((row, _))) = (detail_event, selected) {
+        match a {
+            DetailAction::Commit(ci, v) => event = Some(GridEvent::Commit(row, ci, v)),
+            DetailAction::Copy(how) => event = Some(GridEvent::Copy(row, how)),
+            // Hides it for this row only; clicking a cell brings it back. The toolbar toggle
+            // is the persistent on/off.
+            DetailAction::Close => tab.detail_hidden = Some(row),
+        }
+    }
+    match event.and_then(|e| app::handle_grid_event(tab, s, e, can_edit)) {
+        Some(Effect::Copy(text)) => ui.ctx().copy_text(text),
+        Some(Effect::OpenFiltered {
+            schema,
+            table,
+            filter,
+        }) => {
+            cx.request = Some(Request::OpenFiltered(schema, table, filter));
+        }
+        None => {}
+    }
+}
+
+/// Pinned columns (and the row numbers) drawn again at the left edge once the grid is scrolled
+/// sideways past them. Clicks on them select, double-clicks edit, like the cells underneath.
+pub(super) fn paint_frozen(
+    ui: &mut egui::Ui,
+    tab_id: u64,
+    frozen: &[grid::Frozen],
+    offset: f32,
+    viewport: egui::Rect,
+) -> Option<GridEvent> {
+    if offset <= 0.0 || frozen.is_empty() {
+        return None;
+    }
+    let t = theme::tokens();
+    let mut event = None;
+    let mut right_edge = f32::MIN;
+    for f in frozen {
+        let rect = f.rect.translate(egui::vec2(offset, 0.0));
+        // Only the vertical part of the cell's clip counts (rows under the header); sideways,
+        // its own column clip is exactly what scrolled out of view.
+        let clip = egui::Rect::from_x_y_ranges(viewport.x_range(), f.clip.y_range()).intersect(viewport);
+        if !clip.intersects(rect) {
+            continue;
+        }
+        right_edge = right_edge.max(rect.right());
+        let painter = ui.painter().with_clip_rect(clip);
+        painter.rect_filled(rect, 0.0, f.bg);
+        let stroke = egui::Stroke::new(1.0, t.border);
+        painter.hline(rect.x_range(), rect.bottom() - 0.5, stroke);
+        painter.vline(rect.right() - 0.5, rect.y_range(), stroke);
+        let text_clip = painter.with_clip_rect(clip.intersect(rect.shrink2(egui::vec2(4.0, 0.0))));
+        let (pos, align) = if f.right_align {
+            (
+                rect.right_center() - egui::vec2(8.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+            )
+        } else if f.col.is_none() {
+            (rect.center(), egui::Align2::CENTER_CENTER)
+        } else {
+            (
+                rect.left_center() + egui::vec2(8.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+            )
+        };
+        text_clip.text(pos, align, &f.text, f.font.clone(), f.color);
+        if let (Some(row), Some(col)) = (f.row, f.col) {
+            let r = ui.interact(
+                rect.intersect(clip),
+                egui::Id::new(("frozen", tab_id, row, col)),
+                egui::Sense::click(),
+            );
+            if r.double_clicked() {
+                event = Some(GridEvent::StartEdit(row, col));
+            } else if r.clicked() {
+                let shift = ui.input(|i| i.modifiers.shift);
+                event = Some(if shift {
+                    GridEvent::Extend(row, col)
+                } else {
+                    GridEvent::Select(row, col)
+                });
+            }
+        }
+    }
+    // A soft edge where the pinned block ends, so it reads as floating over the rest.
+    if right_edge > f32::MIN {
+        let shadow = egui::Rect::from_x_y_ranges(right_edge..=right_edge + 6.0, viewport.y_range());
+        ui.painter()
+            .with_clip_rect(viewport)
+            .rect_filled(shadow, 0.0, egui::Color32::from_black_alpha(40));
+    }
+    event
+}
+
+/// Cells whose shown text contains `query` (any case), in reading order. Cached: it runs every
+/// frame while the find bar is open.
+pub(super) fn found_cells(
+    ctx: &egui::Context,
+    tab_id: u64,
+    res: &QueryResult,
+    kinds: &[values::ValueKind],
+    view: &[usize],
+    query: &str,
+) -> Vec<(usize, usize)> {
+    let key = egui::Id::new((query, res.rows.len(), res.elapsed, view));
+    let cache = egui::Id::new(("result_find_cache", tab_id));
+    if let Some((k, v)) = ctx.data(|d| d.get_temp::<(egui::Id, Vec<(usize, usize)>)>(cache))
+        && k == key
+    {
+        return v;
+    }
+    let needle = query.to_lowercase();
+    let mut out = Vec::new();
+    if !needle.is_empty() {
+        for (ri, row) in res.rows.iter().enumerate() {
+            for &ci in view {
+                if let Some(v) = &row[ci]
+                    && grid::display_value(kinds[ci], v).to_lowercase().contains(&needle)
+                {
+                    out.push((ri, ci));
+                }
+            }
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp(cache, (key, out.clone())));
+    out
+}
+
+/// "Definir valor nas N células": type the value (or choose NULL).
+pub(super) fn fill_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEvent> {
+    let cells = tab.selection().map_or(0, |s| (s.r1 - s.r0 + 1) * s.cols.len());
+    let value = tab.fill_prompt.as_mut()?;
+    let t = theme::tokens();
+    let mut out = None;
+    let mut cancel = false;
+    let modal = egui::Modal::new(egui::Id::new(("fill", tab.id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(
+                egui::RichText::new(format!("Valor para {cells} célula(s)"))
+                    .size(15.0)
+                    .color(t.foreground),
+            );
+            ui.label(
+                egui::RichText::new("Fica pendente até salvar (Ctrl+S), como as outras edições.")
+                    .size(11.0)
+                    .color(t.subtle),
+            );
+            ui.add_space(8.0);
+            let r = ui.add(
+                TextEdit::singleline(value)
+                    .font(egui::FontId::monospace(12.5))
+                    .desired_width(f32::INFINITY),
+            );
+            r.request_focus();
+            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                out = Some(GridEvent::FillSelection(Some(value.clone())));
+            }
+            ui.add_space(12.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(theme::primary_button(None, "Aplicar")).clicked() {
+                    out = Some(GridEvent::FillSelection(Some(value.clone())));
+                }
+                if ui.add(theme::outline_button("NULL")).clicked() {
+                    out = Some(GridEvent::FillSelection(None));
+                }
+                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if out.is_none() && (cancel || modal.should_close()) {
+        tab.fill_prompt = None;
+    }
+    out
+}
+
+/// "Estatísticas da coluna": fill rate, distinct values, range and the most common values, each
+/// one a click away from becoming a filter (table tabs).
+pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
+    let Some(view) = &tab.col_stats else { return };
+    let t = theme::tokens();
+    let can_filter = matches!(tab.kind, TabKind::Table(_));
+    let mut close = false;
+    let mut filter: Option<Option<String>> = None;
+    let modal = egui::Modal::new(egui::Id::new(("col_stats", tab.id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::CHART_BAR).size(16.0).color(t.lime));
+                ui.label(egui::RichText::new(&view.column).size(15.0).color(t.foreground));
+                ui.label(egui::RichText::new(&view.scope).size(11.0).color(t.subtle));
+            });
+            ui.add_space(8.0);
+            match &view.data {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new("Contando…").color(t.muted_foreground));
+                    });
+                }
+                Some(Err(e)) => {
+                    ui.label(egui::RichText::new(e).color(t.destructive));
+                }
+                Some(Ok(st)) => {
+                    let pct = |n: i64| {
+                        if st.total > 0 {
+                            format!("{:.1}%", n as f64 * 100.0 / st.total as f64).replace('.', ",")
+                        } else {
+                            "–".into()
+                        }
+                    };
+                    egui::Grid::new(("col_stats_grid", tab.id))
+                        .num_columns(2)
+                        .spacing([16.0, 4.0])
+                        .show(ui, |ui| {
+                            let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                                ui.label(egui::RichText::new(k).color(t.muted_foreground));
+                                ui.label(egui::RichText::new(v).monospace().color(t.foreground));
+                                ui.end_row();
+                            };
+                            row(ui, "Linhas", palette::format_count(st.total));
+                            row(
+                                ui,
+                                "Nulos",
+                                format!("{} · {}", palette::format_count(st.nulls), pct(st.nulls)),
+                            );
+                            row(ui, "Distintos", palette::format_count(st.distinct));
+                            if let Some(v) = &st.min {
+                                row(ui, "Mínimo", v.clone());
+                            }
+                            if let Some(v) = &st.max {
+                                row(ui, "Máximo", v.clone());
+                            }
+                        });
+                    ui.add_space(12.0);
+                    ui.label(
+                        egui::RichText::new("VALORES MAIS COMUNS")
+                            .size(11.0)
+                            .color(t.subtle),
+                    );
+                    ui.add_space(4.0);
+                    let most = st.top.first().map_or(1, |(_, n)| (*n).max(1));
+                    for (v, n) in &st.top {
+                        let r = ui
+                            .horizontal(|ui| {
+                                let (rect, _) =
+                                    ui.allocate_exact_size(egui::vec2(220.0, 20.0), egui::Sense::hover());
+                                // Bar behind the value, relative to the most common one.
+                                let mut bar = rect;
+                                bar.set_width(rect.width() * (*n as f32 / most as f32));
+                                ui.painter()
+                                    .rect_filled(bar, 0.0, theme::mix(t.lime, 0.14, t.background));
+                                let (text, color) = match v {
+                                    Some(v) => (v.clone(), t.foreground),
+                                    None => ("NULL".into(), t.subtle),
+                                };
+                                let galley = ui.painter().layout(
+                                    text,
+                                    egui::FontId::monospace(12.0),
+                                    color,
+                                    rect.width() - 8.0,
+                                );
+                                let pos =
+                                    egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0);
+                                ui.painter().with_clip_rect(rect).galley(pos, galley, color);
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} · {}",
+                                        palette::format_count(*n),
+                                        pct(*n)
+                                    ))
+                                    .monospace()
+                                    .size(12.0)
+                                    .color(t.muted_foreground),
+                                );
+                                if can_filter
+                                    && ui
+                                        .add(
+                                            egui::Button::new(
+                                                theme::icon(icon::FUNNEL).color(t.muted_foreground),
+                                            )
+                                            .frame(false),
+                                        )
+                                        .on_hover_text("Filtrar a tabela por este valor")
+                                        .clicked()
+                                {
+                                    filter = Some(v.clone());
+                                }
+                            })
+                            .response;
+                        if let Some(v) = v {
+                            r.on_hover_text(v);
+                        }
+                    }
+                    if st.top.is_empty() {
+                        ui.label(egui::RichText::new("Nenhuma linha").color(t.subtle));
+                    }
+                }
+            }
+            ui.add_space(16.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(theme::outline_button("Fechar")).clicked() {
+                    close = true;
+                }
+            });
+        });
+    let column = view.column.clone();
+    if let Some(v) = filter {
+        tab.col_stats = None;
+        app::filter_by_value(tab, s, &column, v.as_deref());
+    } else if close || modal.should_close() {
+        tab.col_stats = None;
+    }
+}
+
+/// Arrow keys move the selected cell; Enter or F2 starts editing it; Ctrl+C copies it.
+pub(super) fn keyboard_event(
+    ui: &egui::Ui,
+    (row, col): (usize, usize),
+    res: &QueryResult,
+    view: &[usize],
+    can_edit: bool,
+) -> Option<GridEvent> {
+    let last_row = res.rows.len().checked_sub(1)?;
+    // Left/right follow the on-screen order (pinned first, hidden skipped).
+    let pos = view.iter().position(|&c| c == col).unwrap_or(0);
+    let right = view.get(pos + 1).copied().unwrap_or(col);
+    let left = pos
+        .checked_sub(1)
+        .and_then(|p| view.get(p))
+        .copied()
+        .unwrap_or(col);
+    let clipboard = ui.input(|i| {
+        i.events.iter().find_map(|e| match e {
+            egui::Event::Copy => Some(GridEvent::CopyCells { headers: false }),
+            egui::Event::Paste(text) if can_edit => Some(GridEvent::Paste(text.clone())),
+            _ => None,
+        })
+    });
+    if clipboard.is_some() {
+        return clipboard;
+    }
+    ui.input(|i| {
+        // Shift+arrows grow the selection instead of moving it.
+        let to = |r, c| {
+            if i.modifiers.shift {
+                GridEvent::Extend(r, c)
+            } else {
+                GridEvent::Select(r, c)
+            }
+        };
+        if i.modifiers.command && i.key_pressed(Key::A) {
+            Some(GridEvent::SelectAll)
+        } else if can_edit && i.modifiers.command && i.key_pressed(Key::D) {
+            Some(GridEvent::FillDown)
+        } else if can_edit && i.key_pressed(Key::Delete) {
+            Some(GridEvent::DeleteRows)
+        } else if can_edit && (i.key_pressed(Key::Enter) || i.key_pressed(Key::F2)) {
+            Some(GridEvent::StartEdit(row, col))
+        } else if i.key_pressed(Key::ArrowDown) {
+            Some(to((row + 1).min(last_row), col))
+        } else if i.key_pressed(Key::ArrowUp) {
+            Some(to(row.saturating_sub(1), col))
+        } else if i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::Tab) {
+            Some(to(row, right))
+        } else if i.key_pressed(Key::ArrowLeft) {
+            Some(to(row, left))
+        } else {
+            None
+        }
+    })
+}
+
+/// "6 células · 4 valores · soma 5,5 · média 2,75 · mín 1,5 · máx 4" under a range selection.
+pub(super) fn selection_stats(
+    ui: &mut egui::Ui,
+    tab_id: u64,
+    shown: &QueryResult,
+    kinds: &[values::ValueKind],
+    range: &values::CellRange,
+) {
+    let t = theme::tokens();
+    let st = values::stats(shown, kinds, range);
+    let mut parts = vec![format!("{} células", st.cells), format!("{} valores", st.values)];
+    if let Some((n, sum, lo, hi)) = st.numbers {
+        let f = values::format_number;
+        parts.push(format!("soma {}", f(sum)));
+        parts.push(format!("média {}", f(sum / n as f64)));
+        parts.push(format!("mín {}", f(lo)));
+        parts.push(format!("máx {}", f(hi)));
+    }
+    let text = parts.join("  ·  ");
+    egui::Panel::bottom(egui::Id::new(("stats", tab_id)))
+        .frame(
+            egui::Frame::new()
+                .fill(t.sidebar)
+                .inner_margin(egui::Margin::symmetric(8, 4)),
+        )
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(&text)
+                        .size(12.0)
+                        .monospace()
+                        .color(t.muted_foreground),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(theme::icon(icon::COPY).color(t.muted_foreground)).frame(false),
+                        )
+                        .on_hover_text("Copiar resumo")
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(text.clone());
+                    }
+                });
+            });
+        });
+}
