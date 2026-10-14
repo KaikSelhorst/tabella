@@ -1,0 +1,60 @@
+# Databases for dblite.
+#
+#   docker compose --profile test up -d --wait   # what `cargo test -- --ignored` expects
+#   docker compose --profile dev up -d --wait    # sample data to click around in the app
+#
+# Test databases are throwaway (no volumes). Dev data is re-seeded on first start of a fresh
+# container; `docker compose --profile dev down` resets it.
+
+services:
+  test-pg:
+    profiles: [test]
+    image: postgres:16-alpine
+    environment: { POSTGRES_PASSWORD: pw }
+    ports: ["55432:5432"]
+    healthcheck: &pg-health
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      retries: 30
+
+  test-mysql:
+    profiles: [test]
+    image: mysql:8
+    environment: { MYSQL_ROOT_PASSWORD: pw, MYSQL_DATABASE: test }
+    ports: ["53306:3306"]
+    healthcheck: &mysql-health
+      # Ping over TCP: the server listens on the socket during init, before it is really ready.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 2s
+      retries: 60
+
+  # TLS-enabled Postgres with the image's self-signed "snakeoil" certificate (Debian image).
+  test-pg-tls:
+    profiles: [test]
+    image: postgres:16
+    environment: { POSTGRES_PASSWORD: pw }
+    ports: ["55433:5432"]
+    command:
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
+      - -c
+      - ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+    healthcheck: *pg-health
+
+  dev-pg:
+    profiles: [dev]
+    image: postgres:16-alpine
+    environment: { POSTGRES_PASSWORD: postgres }
+    ports: ["5432:5432"]
+    volumes: ["./dev/postgres.sql:/docker-entrypoint-initdb.d/seed.sql:ro"]
+    healthcheck: *pg-health
+
+  dev-mysql:
+    profiles: [dev]
+    image: mysql:8
+    environment: { MYSQL_ROOT_PASSWORD: mysql, MYSQL_DATABASE: loja }
+    ports: ["3307:3306"]
+    volumes: ["./dev/mysql.sql:/docker-entrypoint-initdb.d/seed.sql:ro"]
+    healthcheck: *mysql-health
