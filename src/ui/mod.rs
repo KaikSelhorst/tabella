@@ -1100,6 +1100,46 @@ mod screenshots {
             state.active = 1;
         }
 
+        // Last column numeric (right-aligned): its values must not run past the grid's edge.
+        {
+            let state = harness.state_mut();
+            state.active = 1;
+            let tab = &mut state.tabs[1];
+            let saved = tab.result.take();
+            tab.result = Some(QueryResult {
+                columns: vec!["id".into(), "nome".into(), "email".into(), "saldo".into()],
+                rows: (1..=20)
+                    .map(|i| {
+                        vec![
+                            Some((i * 37).to_string()),
+                            Some(format!("Cliente {}", i * 37)),
+                            Some(format!("cliente{}@exemplo.com", i * 37)),
+                            Some(format!("{}.{:02}", 10_000 + i * 1_234, i)),
+                        ]
+                    })
+                    .collect(),
+                ..Default::default()
+            });
+            harness.run();
+            let img = harness.render().unwrap();
+            img.save(format!("{dir}/last-numeric.png")).unwrap();
+            let crop = image::imageops::crop_imm(&img, 760, 280, 520, 200).to_image();
+            image::imageops::resize(&crop, 1040, 400, image::imageops::FilterType::Nearest)
+                .save(format!("{dir}/last-numeric-zoom.png"))
+                .unwrap();
+            // With the detail panel open too.
+            harness.state_mut().tabs[1].selected = Some((2, 3));
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/last-numeric-detail.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.selected = None;
+            tab.result = saved;
+        }
+
         // Autocomplete: type a partial word and put the cursor after it.
         let editor = egui::Id::new(("sql", 2u64));
         if let TabKind::Sql { text } = &mut harness.state_mut().tabs[1].kind {

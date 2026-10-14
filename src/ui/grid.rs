@@ -15,6 +15,8 @@ const ROW_HEIGHT: f32 = 24.0;
 const CELL_FONT: f32 = 12.0;
 /// Rough advance of one character of the cell font, for sizing columns to their content.
 const CHAR_WIDTH: f32 = 7.3;
+/// Space between a right-aligned number and its column's edge.
+const NUMBER_PAD: f32 = 4.0;
 const MIN_COL_WIDTH: f32 = 112.0;
 const MAX_COL_WIDTH: f32 = 420.0;
 
@@ -282,6 +284,10 @@ pub fn grid(
     let sample = &res.rows[..res.rows.len().min(SAMPLE_ROWS)];
 
     ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+    // The last column takes what's left, but the table adds a column gap on top: without this
+    // it ends a gap's width past the visible area and right-aligned numbers get cut.
+    let gap = ui.spacing().item_spacing.x;
+    ui.set_max_width(ui.available_width() - gap);
     let table_rect = ui.available_rect_before_wrap();
     // Header band painted once across the full width, under the header cells.
     let header_band =
@@ -620,8 +626,12 @@ pub fn grid(
                         };
                         let label = egui::Label::new(text).truncate().sense(Sense::click_and_drag());
                         let r = if kind == ValueKind::Number {
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.add(label))
-                                .inner
+                            // A little room before the column's edge, like the left-aligned text has.
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.add_space(NUMBER_PAD);
+                                ui.add(label)
+                            })
+                            .inner
                         } else {
                             ui.add(label)
                         };
