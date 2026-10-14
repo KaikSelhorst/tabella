@@ -7,7 +7,7 @@ use super::detail::{self, DetailAction};
 use super::grid::{GridOpts, grid};
 use super::structure::{self, InsertAction, StructAction};
 use super::{complete, icon, palette, syntax, theme};
-use crate::app::{self, App, FavPrompt, GridEvent, Session, Tab, TabKind};
+use crate::app::{self, App, Effect, FavPrompt, GridEvent, Session, Tab, TabKind};
 use crate::db::QueryResult;
 use crate::export::{self, Format};
 use crate::favorites::{self, Favorite};
@@ -29,6 +29,7 @@ enum Request {
     Structure(String, String),
     Data(String, String),
     Sql(String),
+    OpenFiltered(String, String, String),
     SaveFavorite(String),
     DeleteFavorite(String),
 }
@@ -53,6 +54,7 @@ impl App {
                             TabKind::Table(_) => icon::TABLE,
                             TabKind::Sql { .. } => icon::CODE,
                             TabKind::Structure(_) => icon::TREE_STRUCTURE,
+                            TabKind::Activity(_) => icon::PULSE,
                         };
                         if theme::tab_label(ui, glyph, &tab.title, i == self.active).clicked() {
                             self.active = i;
@@ -89,6 +91,7 @@ impl App {
         match &tab.kind {
             TabKind::Sql { .. } => sql_tab(ui, tab, &mut cx),
             TabKind::Table(_) => table_tab(ui, tab, &mut cx),
+            TabKind::Activity(_) => activity_tab(ui, tab, &mut cx),
             TabKind::Structure(st) => {
                 if let Some(e) = &tab.error {
                     error_banner(ui, e);
@@ -103,6 +106,9 @@ impl App {
         match cx.request {
             Some(Request::Structure(schema, table)) => self.open_structure(&schema, &table),
             Some(Request::Data(schema, table)) => self.open_table(&schema, &table),
+            Some(Request::OpenFiltered(schema, table, filter)) => {
+                self.open_table_filtered(&schema, &table, filter)
+            }
             Some(Request::Sql(text)) => self.open_sql(text),
             Some(Request::SaveFavorite(sql)) => {
                 self.fav_prompt = Some(FavPrompt {
@@ -423,6 +429,149 @@ fn danger_button(label: &str) -> egui::Button<'static> {
     egui::Button::new(egui::RichText::new(label.to_string()).color(t.foreground)).fill(t.destructive)
 }
 
+/// How often the activity tab refreshes itself while "Atualizar automaticamente" is on.
+const ACTIVITY_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Sessions on the server, with buttons to cancel the selected one's query or close it.
+fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
+    let s = cx.s;
+    let t = theme::tokens();
+    let busy = tab.busy();
+    // Session id of the selected row (first column), when it is a number.
+    let target = tab.selected.and_then(|(row, _)| {
+        tab.result
+            .as_ref()?
+            .rows
+            .get(row)?
+            .first()?
+            .as_deref()?
+            .parse::<i64>()
+            .ok()
+    });
+    let TabKind::Activity(st) = &mut tab.kind else {
+        return;
+    };
+    let mut refresh = false;
+    egui::Frame::new()
+        .fill(t.background)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::PULSE).size(15.0).color(t.muted_foreground));
+                ui.label(
+                    egui::RichText::new("Atividade no servidor")
+                        .size(15.0)
+                        .color(t.foreground),
+                );
+                if busy {
+                    ui.spinner();
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let refresh_btn = theme::icon_text(
+                        icon::ARROWS_CLOCKWISE,
+                        "Atualizar",
+                        t.muted_foreground,
+                        t.foreground,
+                    );
+                    if ui.add_enabled(!busy, egui::Button::new(refresh_btn)).clicked() {
+                        refresh = true;
+                    }
+                    ui.checkbox(&mut st.auto_refresh, "a cada 2 s");
+                    ui.separator();
+                    let end =
+                        theme::icon_text(icon::PLUGS, "Encerrar conexão", t.muted_foreground, t.foreground);
+                    if ui
+                        .add_enabled(target.is_some() && !busy, egui::Button::new(end))
+                        .on_disabled_hover_text("Selecione uma sessão")
+                        .clicked()
+                    {
+                        st.confirm_kill = target.map(|id| (id, true));
+                    }
+                    let stop =
+                        theme::icon_text(icon::STOP, "Cancelar consulta", t.muted_foreground, t.foreground);
+                    if ui
+                        .add_enabled(target.is_some() && !busy, egui::Button::new(stop))
+                        .on_disabled_hover_text("Selecione uma sessão")
+                        .clicked()
+                    {
+                        st.confirm_kill = target.map(|id| (id, false));
+                    }
+                });
+            });
+        });
+    // While the confirmation is open the list stays still, so the selection can't move under it.
+    if st.auto_refresh && st.confirm_kill.is_none() && !busy {
+        let due = st.last_refresh.is_none_or(|at| at.elapsed() >= ACTIVITY_EVERY);
+        if due {
+            refresh = true;
+        } else if let Some(at) = st.last_refresh {
+            ui.ctx()
+                .request_repaint_after(ACTIVITY_EVERY.saturating_sub(at.elapsed()));
+        }
+    }
+    if let Some((id, terminate)) = st.confirm_kill {
+        match confirm_kill(ui.ctx(), tab.id, id, terminate) {
+            Some(true) => app::kill_session(tab, s),
+            Some(false) => {
+                if let TabKind::Activity(st) = &mut tab.kind {
+                    st.confirm_kill = None;
+                }
+            }
+            None => {}
+        }
+    } else if refresh {
+        app::refresh_activity(tab, s);
+    }
+    result_area(ui, tab, cx, false);
+}
+
+/// `Some(true)` to go ahead, `Some(false)` to give up, `None` while the dialog stays open.
+fn confirm_kill(ctx: &egui::Context, tab_id: u64, id: i64, terminate: bool) -> Option<bool> {
+    let t = theme::tokens();
+    let mut answer = None;
+    let (title, text, button) = if terminate {
+        (
+            "Encerrar conexão",
+            "A sessão é desconectada; uma transação aberta nela é desfeita.",
+            "Encerrar",
+        )
+    } else {
+        (
+            "Cancelar consulta",
+            "O comando em andamento nessa sessão é interrompido; a conexão continua aberta.",
+            "Cancelar consulta",
+        )
+    };
+    let modal = egui::Modal::new(egui::Id::new(("confirm_kill", tab_id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(400.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::WARNING).size(16.0).color(t.destructive));
+                ui.label(
+                    egui::RichText::new(format!("{title} — sessão {id}"))
+                        .size(15.0)
+                        .color(t.foreground),
+                );
+            });
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(text).color(t.muted_foreground));
+            ui.add_space(16.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(danger_button(button)).clicked() {
+                    answer = Some(true);
+                }
+                if ui.add(theme::outline_button("Voltar")).clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+    if answer.is_none() && modal.should_close() {
+        answer = Some(false);
+    }
+    answer
+}
+
 fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
     // Ctrl+S / Ctrl+Z work on pending changes, unless a text field wants the keys.
@@ -510,6 +659,17 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             // Roomier than the rest of the UI: the filter is where you type the most.
             ui.spacing_mut().interact_size.y = 28.0;
             ui.horizontal(|ui| {
+                // Search: the term in any column, on top of the WHERE filter.
+                let search = ui.add(
+                    TextEdit::singleline(&mut ts.search)
+                        .hint_text("Buscar em todas as colunas")
+                        .margin(egui::Margin::symmetric(8, 6))
+                        .desired_width(200.0),
+                );
+                if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    ts.page = 0;
+                    reload_now = true;
+                }
                 ui.label(theme::icon(icon::FUNNEL).size(15.0).color(t.muted_foreground));
                 ui.label(
                     egui::RichText::new("WHERE")
@@ -869,6 +1029,7 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         kinds: &kinds,
         changed: overlay.as_ref().map(|o| &o.changed),
         deleted: overlay.as_ref().map(|o| &o.deleted),
+        can_filter: editable,
     };
     // Wide results scroll sideways instead of running under the detail panel.
     let mut event = egui::ScrollArea::horizontal()
@@ -893,10 +1054,16 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
             DetailAction::Close => tab.detail_hidden = Some(row),
         }
     }
-    if let Some(event) = event
-        && let Some(text) = app::handle_grid_event(tab, s, event, can_edit)
-    {
-        ui.ctx().copy_text(text);
+    match event.and_then(|e| app::handle_grid_event(tab, s, e, can_edit)) {
+        Some(Effect::Copy(text)) => ui.ctx().copy_text(text),
+        Some(Effect::OpenFiltered {
+            schema,
+            table,
+            filter,
+        }) => {
+            cx.request = Some(Request::OpenFiltered(schema, table, filter));
+        }
+        None => {}
     }
 }
 

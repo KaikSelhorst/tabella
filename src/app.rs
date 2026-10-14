@@ -16,7 +16,7 @@ use crate::favorites::{self, Favorite};
 use crate::history::{self, Entry};
 use crate::secrets::{Derived, SecretStore};
 use crate::session::{self, SavedTab};
-use crate::sql::{self, PageQuery, Stmt};
+use crate::sql::{self, FilterOp, PageQuery, Stmt};
 use crate::values::{self, ValueKind};
 use crate::worker::{self, ExportSource, ExportSpec, Job, Reply};
 
@@ -87,6 +87,8 @@ pub struct TableState {
     pub cols: Vec<ColumnInfo>,
     pub page: usize,
     pub filter: String,
+    /// Text searched in every column (the search box), on top of `filter`.
+    pub search: String,
     pub order: Option<(String, bool)>,
     pub edit: Option<Edit>,
     /// Exact row count for the current filter, once the COUNT(*) comes back.
@@ -146,6 +148,7 @@ impl TableState {
             cols: vec![],
             page: 0,
             filter: String::new(),
+            search: String::new(),
             order: None,
             edit: None,
             total: None,
@@ -235,14 +238,21 @@ impl TableState {
             .collect()
     }
 
+    /// The WHERE box plus the search box, as one condition.
+    pub fn effective_filter(&self, kind: Kind) -> String {
+        let names: Vec<String> = self.cols.iter().map(|c| c.name.clone()).collect();
+        sql::and(&self.filter, &sql::search_condition(kind, &names, &self.search))
+    }
+
     pub fn page_sql(&self, kind: Kind) -> String {
         let pk = self.pk_names();
+        let filter = self.effective_filter(kind);
         sql::select_page(
             kind,
             &PageQuery {
                 schema: &self.schema,
                 table: &self.table,
-                filter: &self.filter,
+                filter: &filter,
                 order: self.order.as_ref().map(|(c, asc)| (c.as_str(), *asc)),
                 pk: &pk,
                 page: self.page,
@@ -255,6 +265,15 @@ pub enum TabKind {
     Sql { text: String },
     Table(Box<TableState>),
     Structure(Box<StructState>),
+    Activity(ActivityState),
+}
+
+/// "Atividade" tab: sessions on the server, optionally refreshed every few seconds.
+pub struct ActivityState {
+    pub auto_refresh: bool,
+    pub last_refresh: Option<Instant>,
+    /// Session waiting for the user to confirm `(id, terminate)`.
+    pub confirm_kill: Option<(i64, bool)>,
 }
 
 /// "Estrutura" tab: columns, indexes, foreign keys and DDL of one table.
@@ -391,6 +410,20 @@ pub enum GridEvent {
     CancelEdit,
     DeleteRow(usize),
     Copy(usize, CopyAs),
+    /// Add a condition on this cell's column and value to the table's filter.
+    Filter(usize, usize, FilterOp),
+    /// Open the row a foreign-key cell points to.
+    FollowFk(usize, usize),
+}
+
+/// What `handle_grid_event` needs the app (or the clipboard) to do.
+pub enum Effect {
+    Copy(String),
+    OpenFiltered {
+        schema: String,
+        table: String,
+        filter: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -425,6 +458,8 @@ pub struct App {
     pub fav_prompt: Option<FavPrompt>,
     /// Row detail panel on the right of the grid.
     pub show_detail: bool,
+    /// Sidebar lists tables by size (biggest first) instead of by name.
+    pub sort_by_size: bool,
     frames: u32,
     fps_since: Instant,
     pub fps: f32,
@@ -454,6 +489,7 @@ impl App {
             window: None,
             fav_prompt: None,
             show_detail: true,
+            sort_by_size: false,
             frames: 0,
             fps_since: Instant::now(),
             fps: 0.0,
@@ -486,18 +522,19 @@ impl App {
         let tabs = self
             .tabs
             .iter()
-            .map(|t| match &t.kind {
-                TabKind::Sql { text } => SavedTab::Sql { text: text.clone() },
-                TabKind::Table(ts) => SavedTab::Table {
+            .filter_map(|t| match &t.kind {
+                TabKind::Activity(_) => None,
+                TabKind::Sql { text } => Some(SavedTab::Sql { text: text.clone() }),
+                TabKind::Table(ts) => Some(SavedTab::Table {
                     schema: ts.schema.clone(),
                     table: ts.table.clone(),
                     filter: ts.filter.clone(),
                     order: ts.order.clone(),
-                },
-                TabKind::Structure(st) => SavedTab::Structure {
+                }),
+                TabKind::Structure(st) => Some(SavedTab::Structure {
                     schema: st.schema.clone(),
                     table: st.table.clone(),
-                },
+                }),
             })
             .collect();
         session::Saved {
@@ -790,7 +827,19 @@ impl App {
                         };
                         history::push(&mut self.history, entry);
                     }
-                    t.selected = None;
+                    // The activity list refreshes every few seconds: keep the selected session
+                    // selected (by id) instead of dropping the selection each time.
+                    let keep = match (&t.kind, t.selected, &t.result, &*res) {
+                        (TabKind::Activity(_), Some((row, col)), Some(old), Ok(new)) => {
+                            let id = old.rows.get(row).and_then(|r| r.first()).cloned();
+                            new.rows
+                                .iter()
+                                .position(|r| r.first() == id.as_ref())
+                                .map(|r| (r, col))
+                        }
+                        _ => None,
+                    };
+                    t.selected = keep;
                     match *res {
                         Ok(r) => {
                             t.result = Some(r);
@@ -903,6 +952,61 @@ impl App {
         self.push_tab(format!("SQL {n}"), TabKind::Sql { text });
     }
 
+    /// Opens (or focuses) the server activity monitor.
+    pub fn open_activity(&mut self) {
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Activity(_)))
+        {
+            self.active = i;
+            return;
+        }
+        if self.session.is_none() {
+            return;
+        }
+        let state = ActivityState {
+            auto_refresh: true,
+            last_refresh: None,
+            confirm_kill: None,
+        };
+        let i = self.push_tab("Atividade".into(), TabKind::Activity(state));
+        if let Some(s) = &self.session {
+            refresh_activity(&mut self.tabs[i], s);
+        }
+    }
+
+    /// Opens (or focuses) a table tab showing only the rows matching `filter`.
+    pub fn open_table_filtered(&mut self, schema: &str, table: &str, filter: String) {
+        let existing = self
+            .tabs
+            .iter()
+            .position(|t| matches!(&t.kind, TabKind::Table(ts) if ts.schema == schema && ts.table == table));
+        let Some(i) = existing else {
+            self.open_table(schema, table);
+            // Applied before the first page loads (that waits for the columns).
+            if let Some(TabKind::Table(ts)) = self.tabs.last_mut().map(|t| &mut t.kind) {
+                ts.filter = filter;
+            }
+            return;
+        };
+        self.active = i;
+        let (Some(s), tab) = (&self.session, &mut self.tabs[i]) else {
+            return;
+        };
+        if let TabKind::Table(ts) = &mut tab.kind {
+            if !ts.changes.is_empty() {
+                tab.error =
+                    Some("Esta aba tem alterações pendentes: salve ou descarte antes de filtrar.".into());
+                return;
+            }
+            ts.filter = filter;
+            ts.search.clear();
+            ts.page = 0;
+        }
+        reload(tab, s);
+    }
+
     pub fn open_table(&mut self, schema: &str, table: &str) {
         let Some(s) = &self.session else { return };
         let existing = self
@@ -976,7 +1080,7 @@ pub fn start_export(tab: &mut Tab, s: &Session, format: Format, whole_table: boo
             let source = ExportSource::Table {
                 schema: ts.schema.clone(),
                 table: ts.table.clone(),
-                filter: ts.filter.clone(),
+                filter: ts.effective_filter(k),
                 order: ts.order.clone(),
                 pk: ts.pk_names(),
             };
@@ -1068,6 +1172,35 @@ pub fn submit_insert(tab: &mut Tab, s: &Session) {
     exec(tab, s, stmt, true);
 }
 
+pub fn refresh_activity(tab: &mut Tab, s: &Session) {
+    let TabKind::Activity(st) = &mut tab.kind else {
+        return;
+    };
+    st.last_refresh = Some(Instant::now());
+    let id = tab.id;
+    tab.send_rows_job(s, Job::Activity { tab: id });
+}
+
+/// Cancels (or terminates) the session confirmed in the dialog.
+pub fn kill_session(tab: &mut Tab, s: &Session) {
+    let TabKind::Activity(st) = &mut tab.kind else {
+        return;
+    };
+    let Some((id, terminate)) = st.confirm_kill.take() else {
+        return;
+    };
+    st.last_refresh = Some(Instant::now());
+    let tab_id = tab.id;
+    tab.send_rows_job(
+        s,
+        Job::Kill {
+            tab: tab_id,
+            id,
+            terminate,
+        },
+    );
+}
+
 /// Re-runs the current page query of a table tab.
 pub fn reload(tab: &mut Tab, s: &Session) {
     let TabKind::Table(ts) = &mut tab.kind else { return };
@@ -1087,7 +1220,7 @@ pub fn reload(tab: &mut Tab, s: &Session) {
     ts.edit = None;
     let sql = ts.page_sql(s.cfg.kind);
     // Queued after the page so rows show up first.
-    let needs_count = ts.counted_filter.as_deref() != Some(ts.filter.as_str());
+    let needs_count = ts.counted_filter.as_deref() != Some(ts.effective_filter(s.cfg.kind).as_str());
     let id = tab.id;
     tab.send_rows_job(s, Job::Query { tab: id, sql });
     if needs_count && let TabKind::Table(ts) = &mut tab.kind {
@@ -1096,12 +1229,13 @@ pub fn reload(tab: &mut Tab, s: &Session) {
 }
 
 fn request_count(tab: u64, ts: &mut TableState, s: &Session) {
-    ts.counted_filter = Some(ts.filter.clone());
+    let filter = ts.effective_filter(s.cfg.kind);
+    ts.counted_filter = Some(filter.clone());
     ts.total = None;
     if ts.estimate.is_none_or(|n| n < EXACT_COUNT_LIMIT) {
         s.send(Job::Count {
             tab,
-            sql: sql::count(s.cfg.kind, &ts.schema, &ts.table, &ts.filter),
+            sql: sql::count(s.cfg.kind, &ts.schema, &ts.table, &filter),
         });
     }
 }
@@ -1138,13 +1272,13 @@ pub fn run_sql(tab: &mut Tab, s: &Session, sql: String) {
 }
 
 /// Carries out what the grid asked for. Returns text to put on the clipboard, if any.
-pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable: bool) -> Option<String> {
+pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable: bool) -> Option<Effect> {
     let k = s.cfg.kind;
     let Some(res) = &tab.result else { return None };
     let no_cols = Vec::new();
     let cols = match &tab.kind {
         TabKind::Table(ts) => &ts.cols,
-        TabKind::Sql { .. } | TabKind::Structure(_) => &no_cols,
+        TabKind::Sql { .. } | TabKind::Structure(_) | TabKind::Activity(_) => &no_cols,
     };
     let kinds = values::column_kinds(res, cols);
 
@@ -1161,12 +1295,33 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         GridEvent::Copy(row, how) => {
             let table = match &tab.kind {
                 TabKind::Table(ts) => k.qualified(&ts.schema, &ts.table),
-                TabKind::Sql { .. } | TabKind::Structure(_) => "tabela".to_string(),
+                TabKind::Sql { .. } | TabKind::Structure(_) | TabKind::Activity(_) => "tabela".to_string(),
             };
-            return Some(match how {
+            return Some(Effect::Copy(match how {
                 CopyAs::Json => values::row_json(res, cols, *row),
                 CopyAs::Insert => sql::insert_row(k, &table, &res.columns, &res.rows[*row]),
+            }));
+        }
+        GridEvent::FollowFk(row, col) => {
+            let info = cols.iter().find(|c| c.name == res.columns[*col])?;
+            let target = info.references.as_ref()?;
+            let value = res.rows[*row][*col].as_deref()?;
+            let filter = sql::filter_condition(k, &target.column, FilterOp::Eq, Some(value));
+            return Some(Effect::OpenFiltered {
+                schema: target.schema.clone(),
+                table: target.table.clone(),
+                filter,
             });
+        }
+        // Filtering doesn't change data, so read-only tables get it too.
+        GridEvent::Filter(row, col, op) => {
+            let cond = sql::filter_condition(k, &res.columns[*col], *op, res.rows[*row][*col].as_deref());
+            if let TabKind::Table(ts) = &mut tab.kind {
+                ts.filter = sql::and(&ts.filter, &cond);
+                ts.page = 0;
+                reload(tab, s);
+            }
+            return None;
         }
         _ => {}
     }
@@ -1253,7 +1408,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
                 ts.changes.push(Change::Delete { key });
             }
         }
-        GridEvent::Select(..) | GridEvent::Copy(..) => {}
+        GridEvent::Select(..) | GridEvent::Copy(..) | GridEvent::Filter(..) | GridEvent::FollowFk(..) => {}
     }
     None
 }
@@ -1330,6 +1485,7 @@ pub mod tests {
             pk,
             nullable: !pk,
             has_default: false,
+            references: None,
         };
         let mut ts = TableState::new("public", "t", None);
         ts.cols = vec![
@@ -1395,7 +1551,11 @@ pub mod tests {
         let mut tab = table_tab();
         handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 2, Some("x".into())), false);
         assert!(jobs.try_recv().is_err());
-        let json = handle_grid_event(&mut tab, &s, GridEvent::Copy(0, CopyAs::Json), false).unwrap();
+        let Some(Effect::Copy(json)) =
+            handle_grid_event(&mut tab, &s, GridEvent::Copy(0, CopyAs::Json), false)
+        else {
+            panic!("expected a copy")
+        };
         assert!(json.contains("\"id\": 7"));
     }
 

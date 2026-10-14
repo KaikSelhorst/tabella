@@ -44,6 +44,16 @@ pub enum Job {
         schema: String,
         table: String,
     },
+    /// Sessions on the server (answers with `Reply::Rows`).
+    Activity {
+        tab: u64,
+    },
+    /// Cancel another session's statement (or close it), then list sessions again.
+    Kill {
+        tab: u64,
+        id: i64,
+        terminate: bool,
+    },
     Export {
         tab: u64,
         spec: ExportSpec,
@@ -175,7 +185,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                 }
                 Job::Columns { tab, schema, table } => Reply::Columns {
                     tab,
-                    res: conn.columns(&schema, &table),
+                    res: conn.columns_with_fks(&schema, &table),
                 },
                 Job::Count { tab, sql } => Reply::Count {
                     tab,
@@ -190,6 +200,19 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     tab,
                     res: Box::new(conn.run_batch(&stmts).and_then(|()| conn.query(&refresh))),
                 },
+                Job::Activity { tab } => Reply::Rows {
+                    tab,
+                    res: Box::new(conn.activity()),
+                    notice: None,
+                },
+                Job::Kill { tab, id, terminate } => {
+                    let res = conn.kill(id, terminate).and_then(|()| conn.activity());
+                    Reply::Rows {
+                        tab,
+                        res: Box::new(res),
+                        notice: None,
+                    }
+                }
                 Job::Structure { tab, schema, table } => Reply::Structure {
                     tab,
                     res: conn.structure(&schema, &table),

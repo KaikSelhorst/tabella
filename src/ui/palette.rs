@@ -12,6 +12,7 @@ const MAX_RESULTS: usize = 12;
 
 #[derive(Clone)]
 enum Cmd {
+    Activity,
     OpenTable(String, String),
     /// Saved connection id.
     Connect(String),
@@ -65,6 +66,23 @@ pub fn format_count(n: i64) -> String {
         out.push(c);
     }
     out
+}
+
+/// Bytes as "48 kB", "120 MB", "1,2 GB".
+pub fn format_bytes(b: i64) -> String {
+    let b = b as f64;
+    let (v, unit) = if b < 1024.0 * 1024.0 {
+        (b / 1024.0, "kB")
+    } else if b < 1024.0 * 1024.0 * 1024.0 {
+        (b / 1024.0 / 1024.0, "MB")
+    } else {
+        (b / 1024.0 / 1024.0 / 1024.0, "GB")
+    };
+    if v < 10.0 {
+        format!("{v:.1} {unit}").replace('.', ",")
+    } else {
+        format!("{v:.0} {unit}")
+    }
 }
 
 /// Short form for tight spots: 950, 1,2 mil, 3,4 mi.
@@ -148,6 +166,12 @@ impl App {
             cmd: Cmd::NewConnection,
         });
         if self.session.is_some() {
+            items.push(Item {
+                icon: icon::PULSE,
+                label: "Atividade no servidor".into(),
+                detail: "sessões e consultas em andamento".into(),
+                cmd: Cmd::Activity,
+            });
             items.push(Item {
                 icon: icon::PLUGS,
                 label: "Desconectar".into(),
@@ -300,6 +324,7 @@ impl App {
                         cfg: ConnConfig::new(Kind::Postgres),
                     })
                 }
+                Cmd::Activity => self.open_activity(),
                 Cmd::Disconnect => {
                     self.disconnect();
                 }
@@ -330,6 +355,9 @@ mod tests {
         assert_eq!(format_count(1_234_567), "1.234.567");
         assert_eq!(format_count(42), "42");
         assert_eq!(compact_count(950), "950");
+        assert_eq!(format_bytes(49_152), "48 kB");
+        assert_eq!(format_bytes(1_258_291), "1,2 MB");
+        assert_eq!(format_bytes(126 * 1024 * 1024), "126 MB");
         assert_eq!(compact_count(1_250), "1,2 mil");
         assert_eq!(compact_count(3_400_000), "3,4 mi");
     }

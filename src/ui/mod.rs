@@ -164,6 +164,7 @@ mod screenshots {
             is_view,
             estimate: (!is_view).then_some(name.len() as i64 * 1_337),
             search_key: name.to_lowercase(),
+            size: (!is_view).then_some(name.len() as i64 * 9_437_184),
         };
         let (mut session, _, replies) = crate::app::tests::fake_session(Kind::Postgres);
         // The screenshots need a live session for the whole test.
@@ -201,6 +202,7 @@ mod screenshots {
             pk,
             nullable: !pk,
             has_default: false,
+            references: None,
         };
         let cols = vec![
             col("id", "integer", true),
@@ -344,6 +346,69 @@ mod screenshots {
         image::imageops::resize(&crop, 2088, 96, image::imageops::FilterType::Nearest)
             .save(format!("{dir}/toolbar-zoom.png"))
             .unwrap();
+
+        // Activity monitor (auto refresh off: the fake session never answers) + sidebar by size.
+        {
+            let cols = [
+                "pid", "usuario", "banco", "estado", "duracao", "espera", "cliente", "consulta",
+            ];
+            let row = |pid: &str, st: &str, dur: &str, q: &str| {
+                [pid, "postgres", "dev", st, dur, "", "172.18.0.1", q]
+                    .map(|v| (!v.is_empty()).then(|| v.to_string()))
+                    .to_vec()
+            };
+            let res = QueryResult {
+                columns: cols.iter().map(|c| c.to_string()).collect(),
+                rows: vec![
+                    row(
+                        "4121",
+                        "active",
+                        "00:00:41",
+                        "SELECT count(*) FROM pedidos p JOIN clientes c ON c.id = p.cliente_id",
+                    ),
+                    row(
+                        "4188",
+                        "idle in transaction",
+                        "00:03:12",
+                        "UPDATE clientes SET saldo = 0 WHERE id = 7",
+                    ),
+                    row("4203", "idle", "00:12:55", "SELECT 1"),
+                ],
+                affected: None,
+                truncated: false,
+                elapsed: Duration::from_millis(2),
+            };
+            let st = crate::app::ActivityState {
+                auto_refresh: false,
+                last_refresh: None,
+                confirm_kill: None,
+            };
+            let mut tab = Tab::new(4, "Atividade".into(), TabKind::Activity(st));
+            tab.result = Some(res);
+            tab.selected = Some((1, 0));
+            let state = harness.state_mut();
+            state.tabs.push(tab);
+            state.active = 2;
+            state.sort_by_size = true;
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/activity.png"))
+                .unwrap();
+            if let TabKind::Activity(st) = &mut harness.state_mut().tabs[2].kind {
+                st.confirm_kill = Some((4188, true));
+            }
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/activity-kill.png"))
+                .unwrap();
+            let state = harness.state_mut();
+            state.tabs.pop();
+            state.sort_by_size = false;
+        }
 
         harness.state_mut().active = 1;
         harness.run();

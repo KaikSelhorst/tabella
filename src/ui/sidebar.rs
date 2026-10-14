@@ -139,6 +139,8 @@ impl App {
             return;
         }
         let mut disconnect = false;
+        let mut open_activity = false;
+        let mut sort_by_size_toggle = false;
         let mut open_sql = false;
         let tk = theme::tokens();
         ui.add_space(4.0);
@@ -153,6 +155,25 @@ impl App {
                         .clicked()
                 };
                 disconnect = action(ui, icon::PLUGS, "Desconectar");
+                if action(ui, icon::PULSE, "Atividade no servidor") {
+                    open_activity = true;
+                }
+                let sort = theme::icon(icon::SORT_DESCENDING).color(if self.sort_by_size {
+                    tk.lime
+                } else {
+                    tk.muted_foreground
+                });
+                if ui
+                    .add(egui::Button::new(sort).frame(false))
+                    .on_hover_text(if self.sort_by_size {
+                        "Ordenar por nome"
+                    } else {
+                        "Ordenar por tamanho"
+                    })
+                    .clicked()
+                {
+                    sort_by_size_toggle = true;
+                }
                 if action(ui, icon::ARROWS_CLOCKWISE, "Recarregar tabelas") {
                     s.send(Job::Tables);
                 }
@@ -169,9 +190,10 @@ impl App {
         let active_table = self.tabs.get(self.active).and_then(|t| match &t.kind {
             TabKind::Table(ts) => Some((ts.schema.as_str(), ts.table.as_str())),
             TabKind::Structure(st) => Some((st.schema.as_str(), st.table.as_str())),
-            TabKind::Sql { .. } => None,
+            TabKind::Sql { .. } | TabKind::Activity(_) => None,
         });
         let needle = self.filter.to_lowercase();
+        let by_size = self.sort_by_size;
         let kind = s.cfg.kind;
         let mut to_open: Option<(String, String)> = None;
         let mut to_sql: Option<String> = None;
@@ -183,10 +205,13 @@ impl App {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
                 for group in s.tables.chunk_by(|a, b| a.schema == b.schema) {
-                    let visible: Vec<&TableRef> = group
+                    let mut visible: Vec<&TableRef> = group
                         .iter()
                         .filter(|t| needle.is_empty() || t.search_key.contains(&needle))
                         .collect();
+                    if by_size {
+                        visible.sort_by_key(|t| std::cmp::Reverse(t.size.unwrap_or(-1)));
+                    }
                     if visible.is_empty() {
                         continue;
                     }
@@ -214,8 +239,20 @@ impl App {
                                     .frame_when_inactive(false)
                                     .min_size(egui::vec2(ui.available_width(), 22.0)),
                                 );
-                                if let Some(n) = t.estimate {
-                                    let count = palette::compact_count(n);
+                                let detail = if by_size {
+                                    t.size.map(palette::format_bytes)
+                                } else {
+                                    t.estimate.map(palette::compact_count)
+                                };
+                                let r = match (t.estimate, t.size) {
+                                    (Some(n), Some(b)) => r.on_hover_text(format!(
+                                        "~{} linhas · {}",
+                                        palette::format_count(n),
+                                        palette::format_bytes(b)
+                                    )),
+                                    _ => r,
+                                };
+                                if let Some(count) = detail {
                                     let fits = (t.name.chars().count() + count.len()) as f32 * 7.0 + 40.0
                                         < r.rect.width();
                                     if fits {
@@ -253,6 +290,12 @@ impl App {
                         });
                 }
             });
+        if sort_by_size_toggle {
+            self.sort_by_size = !self.sort_by_size;
+        }
+        if open_activity {
+            self.open_activity();
+        }
         if disconnect {
             self.disconnect();
             return;

@@ -280,6 +280,7 @@ mod tests {
                 is_view: false,
                 estimate: None,
                 search_key: n.to_string(),
+                size: None,
             })
             .collect()
     }

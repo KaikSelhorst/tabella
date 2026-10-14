@@ -7,6 +7,7 @@ use super::{icon, theme};
 use crate::app::CopyAs;
 use crate::app::{Edit, GridEvent};
 use crate::db::{ColumnInfo, QueryResult};
+use crate::sql::FilterOp;
 use crate::values::{SAMPLE_ROWS, ValueKind, column_info};
 
 const HEADER_HEIGHT: f32 = 28.0;
@@ -207,6 +208,8 @@ pub struct GridOpts<'a> {
     /// Cells with an unsaved edit, and rows marked for deletion.
     pub changed: Option<&'a HashSet<(usize, usize)>>,
     pub deleted: Option<&'a HashSet<usize>>,
+    /// Table tabs: offer "filter by this value" in the cell menu.
+    pub can_filter: bool,
 }
 
 /// Result grid. Returns at most one user action per frame.
@@ -228,6 +231,7 @@ pub fn grid(
         kinds,
         changed,
         deleted,
+        can_filter,
     } = *opts;
     let mut event = None;
     let t = theme::tokens();
@@ -390,6 +394,10 @@ pub fn grid(
                             );
                         }
                         let val = &res.rows[ri][ci];
+                        // Foreign keys read as links: Ctrl+click opens the referenced row.
+                        let fk = info[ci]
+                            .and_then(|c| c.references.as_ref())
+                            .filter(|_| val.is_some());
                         let text = match val {
                             None => RichText::new("NULL")
                                 .font(cell_font.clone())
@@ -397,6 +405,7 @@ pub fn grid(
                                 .italics(),
                             Some(v) => {
                                 let color = match kind {
+                                    _ if fk.is_some() => t.info,
                                     ValueKind::Number => t.number,
                                     ValueKind::Bool => t.boolean,
                                     ValueKind::Date => t.date,
@@ -433,12 +442,47 @@ pub fn grid(
                                 event = Some(e);
                             }
                         }
-                        if can_edit && r.double_clicked() {
+                        let r = match fk {
+                            Some(f) => r
+                                .on_hover_text(format!(
+                                    "Ctrl+clique abre {}.{} ({} = este valor)",
+                                    f.schema, f.table, f.column
+                                ))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand),
+                            None => r,
+                        };
+                        if fk.is_some() && r.clicked() && ui.input(|i| i.modifiers.command) {
+                            event = Some(GridEvent::FollowFk(ri, ci));
+                        } else if can_edit && r.double_clicked() {
                             event = Some(GridEvent::StartEdit(ri, ci));
                         } else if r.clicked() || r.secondary_clicked() {
                             event = Some(GridEvent::Select(ri, ci));
                         }
                         r.context_menu(|ui| {
+                            if let Some(f) = fk
+                                && ui
+                                    .button(format!("Abrir {} ({} = este valor)", f.table, f.column))
+                                    .clicked()
+                            {
+                                event = Some(GridEvent::FollowFk(ri, ci));
+                                ui.close();
+                            }
+                            if can_filter {
+                                let (eq, ne) = if val.is_some() {
+                                    ("Filtrar: igual a este valor", "Filtrar: diferente deste valor")
+                                } else {
+                                    ("Filtrar: é NULL", "Filtrar: não é NULL")
+                                };
+                                if ui.button(eq).clicked() {
+                                    event = Some(GridEvent::Filter(ri, ci, FilterOp::Eq));
+                                    ui.close();
+                                }
+                                if ui.button(ne).clicked() {
+                                    event = Some(GridEvent::Filter(ri, ci, FilterOp::Ne));
+                                    ui.close();
+                                }
+                                ui.separator();
+                            }
                             if ui.button("Copiar valor").clicked() {
                                 ui.ctx().copy_text(val.clone().unwrap_or_default());
                                 ui.close();
@@ -529,6 +573,7 @@ mod tests {
                     kinds: &[ValueKind::Number, ValueKind::Text],
                     changed: None,
                     deleted: None,
+                    can_filter: false,
                 },
             );
         });
@@ -558,6 +603,7 @@ mod tests {
                     kinds: &[ValueKind::Number, ValueKind::Text],
                     changed: None,
                     deleted: None,
+                    can_filter: false,
                 },
             ) {
                 got = Some(e);

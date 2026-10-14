@@ -77,6 +77,56 @@ pub fn count(kind: Kind, schema: &str, table: &str, filter: &str) -> String {
     sql
 }
 
+/// Quick filters from a cell's context menu.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FilterOp {
+    Eq,
+    Ne,
+}
+
+/// One condition on a column, e.g. `"nome" = 'ana'`. A NULL value becomes IS (NOT) NULL.
+pub fn filter_condition(kind: Kind, column: &str, op: FilterOp, value: Option<&str>) -> String {
+    let col = kind.quote_ident(column);
+    match (op, value) {
+        (FilterOp::Eq, None) => format!("{col} IS NULL"),
+        (FilterOp::Ne, None) => format!("{col} IS NOT NULL"),
+        (FilterOp::Eq, Some(v)) => format!("{col} = {}", kind.quote_str(v)),
+        // "Different" keeps NULLs too, which is what people mean.
+        (FilterOp::Ne, Some(v)) => format!("({col} <> {} OR {col} IS NULL)", kind.quote_str(v)),
+    }
+}
+
+fn contains(kind: Kind, col: &str, term: &str) -> String {
+    let pattern = kind.quote_str(&format!("%{term}%"));
+    match kind {
+        Kind::Postgres => format!("CAST({col} AS TEXT) ILIKE {pattern}"),
+        // MySQL compares case-insensitively with the default collations.
+        Kind::MySql => format!("CAST({col} AS CHAR) LIKE {pattern}"),
+    }
+}
+
+/// `term` in any of the columns (empty term: no condition).
+pub fn search_condition(kind: Kind, columns: &[String], term: &str) -> String {
+    let term = term.trim();
+    if term.is_empty() || columns.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = columns
+        .iter()
+        .map(|c| contains(kind, &kind.quote_ident(c), term))
+        .collect();
+    format!("({})", parts.join(" OR "))
+}
+
+/// `filter AND cond`, keeping the user's filter in one piece.
+pub fn and(filter: &str, cond: &str) -> String {
+    match (filter.trim().is_empty(), cond.trim().is_empty()) {
+        (true, _) => cond.trim().to_string(),
+        (false, true) => filter.trim().to_string(),
+        (false, false) => format!("({}) AND {}", filter.trim(), cond.trim()),
+    }
+}
+
 /// The WHERE box is pasted into generated SELECT / COUNT queries, and Postgres runs every
 /// `;`-separated statement in one call: `1=1; DELETE FROM t; SELECT 1 AS id` would delete rows
 /// without any confirmation. So the filter must be a single condition: no `;` and no `--`
@@ -517,6 +567,40 @@ mod tests {
         // Same statements, only whitespace and keyword case differ.
         let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
         assert_eq!(squash(&out), squash(raw));
+    }
+
+    #[test]
+    fn quick_filters() {
+        let k = Kind::Postgres;
+        assert_eq!(
+            filter_condition(k, "nome", FilterOp::Eq, Some("O'Neil")),
+            "\"nome\" = 'O''Neil'"
+        );
+        assert_eq!(filter_condition(k, "x", FilterOp::Eq, None), "\"x\" IS NULL");
+        assert_eq!(
+            filter_condition(k, "x", FilterOp::Ne, Some("1")),
+            "(\"x\" <> '1' OR \"x\" IS NULL)"
+        );
+        assert_eq!(
+            search_condition(Kind::MySql, &["x".into()], "an"),
+            "(CAST(`x` AS CHAR) LIKE '%an%')"
+        );
+        // Generated conditions always pass the WHERE-box check, whatever the value holds.
+        for v in ["a;b", "x -- y", "it's", "a\\'; DROP TABLE t; --"] {
+            for kind in [Kind::Postgres, Kind::MySql] {
+                let c = filter_condition(kind, "c", FilterOp::Eq, Some(v));
+                assert!(check_filter(&c).is_ok(), "{kind:?} {c}");
+            }
+        }
+        assert_eq!(and("", "a = 1"), "a = 1");
+        assert_eq!(and("b OR c", "a = 1"), "(b OR c) AND a = 1");
+        assert_eq!(and("b", ""), "b");
+        let s = search_condition(k, &["id".into(), "nome".into()], " ana ");
+        assert_eq!(
+            s,
+            "(CAST(\"id\" AS TEXT) ILIKE '%ana%' OR CAST(\"nome\" AS TEXT) ILIKE '%ana%')"
+        );
+        assert_eq!(search_condition(k, &["id".into()], "  "), "");
     }
 
     #[test]

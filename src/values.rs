@@ -136,6 +136,7 @@ mod tests {
                 pk: true,
                 nullable: true,
                 has_default: false,
+                references: None,
             },
             ColumnInfo {
                 name: "ativo".into(),
@@ -143,6 +144,7 @@ mod tests {
                 pk: false,
                 nullable: true,
                 has_default: false,
+                references: None,
             },
             ColumnInfo {
                 name: "nome".into(),
@@ -150,6 +152,7 @@ mod tests {
                 pk: false,
                 nullable: true,
                 has_default: false,
+                references: None,
             },
         ];
         let v: serde_json::Value = serde_json::from_str(&row_json(&res, &cols, 0)).unwrap();

@@ -21,6 +21,11 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Cancelamento de consultas em andamento e timeout por conexão (aplicado no servidor)
 - Túnel SSH pelo cliente `ssh` do sistema (chaves ou agente)
 - Cor por conexão: uma faixa colorida no topo enquanto conectado (ex.: vermelho para produção)
+- Busca em todas as colunas da tabela e "filtrar por este valor" (igual/diferente) no menu da célula
+- Chaves estrangeiras clicáveis: `Ctrl+clique` (ou o menu da célula) abre a linha referenciada
+- Tamanho em disco das tabelas na sidebar, com opção de ordenar por tamanho
+- Monitor de atividade: sessões do servidor, atualização automática, cancelar consulta ou
+  encerrar conexão (com confirmação)
 
 ## Segurança
 

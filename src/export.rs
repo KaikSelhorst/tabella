@@ -201,6 +201,7 @@ mod tests {
                 pk: true,
                 nullable: false,
                 has_default: false,
+                references: None,
             },
             ColumnInfo {
                 name: "nome".into(),
@@ -208,6 +209,7 @@ mod tests {
                 pk: false,
                 nullable: true,
                 has_default: false,
+                references: None,
             },
             ColumnInfo {
                 name: "ok".into(),
@@ -215,6 +217,7 @@ mod tests {
                 pk: false,
                 nullable: true,
                 has_default: false,
+                references: None,
             },
         ];
         let mut w = Writer::create(&path, format, Kind::Postgres, "\"t\"", &res, &cols).unwrap();

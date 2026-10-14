@@ -195,6 +195,8 @@ pub struct TableRef {
     pub estimate: Option<i64>,
     /// Lowercased name, computed once for the sidebar filter.
     pub search_key: String,
+    /// Size on disk (data + indexes), in bytes. `None` for views.
+    pub size: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +207,15 @@ pub struct ColumnInfo {
     pub nullable: bool,
     /// Gets a value on INSERT when omitted (DEFAULT, serial/identity, auto_increment).
     pub has_default: bool,
+    /// The row this column points to, for single-column foreign keys.
+    pub references: Option<FkRef>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FkRef {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
 }
 
 fn my_opts(cfg: &ConnConfig, via: Option<u16>) -> mysql::OptsBuilder {
@@ -382,7 +393,8 @@ impl Conn {
     pub fn tables(&mut self) -> DbResult<Vec<TableRef>> {
         let sql = match self {
             Conn::Pg(_) => {
-                "SELECT t.table_schema, t.table_name, t.table_type, c.reltuples::bigint \
+                "SELECT t.table_schema, t.table_name, t.table_type, c.reltuples::bigint, \
+                 CASE WHEN c.relkind IN ('r', 'p', 'm') THEN pg_total_relation_size(c.oid) END \
                  FROM information_schema.tables t \
                  LEFT JOIN pg_catalog.pg_namespace n ON n.nspname = t.table_schema \
                  LEFT JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name \
@@ -390,7 +402,7 @@ impl Conn {
                  ORDER BY 1, 2"
             }
             Conn::My(_) => {
-                "SELECT table_schema, table_name, table_type, table_rows \
+                "SELECT table_schema, table_name, table_type, table_rows, data_length + index_length \
                  FROM information_schema.tables \
                  WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') \
                  ORDER BY 1, 2"
@@ -400,9 +412,10 @@ impl Conn {
         r.rows
             .into_iter()
             .map(|row| {
-                let [schema, name, ty, rows] = cells(row)?;
+                let [schema, name, ty, rows, size] = cells(row)?;
                 let is_view = ty.contains("VIEW");
                 Ok(TableRef {
+                    size: size.parse().ok().filter(|_| !is_view),
                     search_key: name.to_lowercase(),
                     schema,
                     name,
@@ -486,6 +499,7 @@ impl Conn {
                     pk: yes(&pk),
                     nullable: nullable == "YES",
                     has_default: yes(&has_default),
+                    references: None,
                 })
             })
             .collect()
@@ -493,6 +507,82 @@ impl Conn {
 }
 
 impl Conn {
+    /// Columns of a table with their foreign keys filled in (single-column keys only: those are
+    /// the ones a cell value can be followed through).
+    pub fn columns_with_fks(&mut self, schema: &str, table: &str) -> DbResult<Vec<ColumnInfo>> {
+        let mut cols = self.columns(schema, table)?;
+        let stmt = match self.kind() {
+            Kind::Postgres => Stmt::new(
+                "SELECT a.attname, fn.nspname, fc.relname, fa.attname \
+                 FROM pg_constraint k \
+                 JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 JOIN pg_class fc ON fc.oid = k.confrelid JOIN pg_namespace fn ON fn.oid = fc.relnamespace \
+                 JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = k.conkey[1] \
+                 JOIN pg_attribute fa ON fa.attrelid = k.confrelid AND fa.attnum = k.confkey[1] \
+                 WHERE k.contype = 'f' AND array_length(k.conkey, 1) = 1 AND n.nspname = ",
+            )
+            .value(Some(schema))
+            .sql(" AND c.relname = ")
+            .value(Some(table)),
+            Kind::MySql => Stmt::new(
+                "SELECT k.column_name, k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name \
+                 FROM information_schema.key_column_usage k \
+                 WHERE k.referenced_table_name IS NOT NULL AND k.table_schema = ",
+            )
+            .value(Some(schema))
+            .sql(" AND k.table_name = ")
+            .value(Some(table))
+            .sql(
+                " AND (SELECT COUNT(*) FROM information_schema.key_column_usage k2 \
+                 WHERE k2.constraint_schema = k.constraint_schema AND k2.constraint_name = k.constraint_name \
+                 AND k2.table_name = k.table_name) = 1",
+            ),
+        };
+        for row in self.execute(&stmt)?.rows {
+            let [col, s, t, c] = cells(row)?;
+            if let Some(info) = cols.iter_mut().find(|i| i.name == col) {
+                info.references = Some(FkRef {
+                    schema: s,
+                    table: t,
+                    column: c,
+                });
+            }
+        }
+        Ok(cols)
+    }
+
+    /// Sessions on the server right now (excluding this one), most long-running first.
+    pub fn activity(&mut self) -> DbResult<QueryResult> {
+        self.query(match self.kind() {
+            Kind::Postgres => {
+                "SELECT pid, usename AS usuario, datname AS banco, state AS estado, \
+                 date_trunc('second', now() - query_start)::text AS duracao, \
+                 wait_event_type AS espera, client_addr AS cliente, left(query, 300) AS consulta \
+                 FROM pg_stat_activity \
+                 WHERE pid <> pg_backend_pid() AND backend_type = 'client backend' \
+                 ORDER BY state = 'active' DESC, query_start NULLS LAST"
+            }
+            Kind::MySql => {
+                "SELECT id, user AS usuario, db AS banco, command AS estado, \
+                 SEC_TO_TIME(time) AS duracao, state AS espera, host AS cliente, LEFT(info, 300) AS consulta \
+                 FROM information_schema.processlist \
+                 WHERE id <> CONNECTION_ID() AND command <> 'Daemon' \
+                 ORDER BY command = 'Query' DESC, time DESC"
+            }
+        })
+    }
+
+    /// Stops another session's statement (`terminate` = close that whole connection).
+    pub fn kill(&mut self, id: i64, terminate: bool) -> DbResult<()> {
+        let sql = match (self.kind(), terminate) {
+            (Kind::Postgres, false) => format!("SELECT pg_cancel_backend({id})"),
+            (Kind::Postgres, true) => format!("SELECT pg_terminate_backend({id})"),
+            (Kind::MySql, false) => format!("KILL QUERY {id}"),
+            (Kind::MySql, true) => format!("KILL {id}"),
+        };
+        self.query(&sql).map(|_| ())
+    }
+
     /// Runs row edits as one transaction. Every statement must touch exactly one row; if one
     /// doesn't (the row changed or vanished in another session) or fails, nothing is kept.
     pub fn run_batch(&mut self, stmts: &[Stmt]) -> DbResult<()> {
@@ -946,6 +1036,63 @@ mod tests {
             .unwrap_or_else(|e| panic!("{kind:?}: {e}\n{}", st.ddl));
         assert_eq!(c.count("SELECT COUNT(*) FROM dbl_t2").unwrap(), 0);
         c.query("DROP TABLE dbl_t2").unwrap();
+
+        // Single-column foreign keys are found and point at the right place.
+        c.query("DROP TABLE IF EXISTS dbl_child").unwrap();
+        c.query("CREATE TABLE dbl_child (id INT PRIMARY KEY, parent_id INT REFERENCES dbl_t (id))")
+            .unwrap();
+        if kind == Kind::MySql {
+            // MySQL ignores inline REFERENCES; it needs a table-level constraint.
+            c.query("ALTER TABLE dbl_child ADD CONSTRAINT dbl_child_fk FOREIGN KEY (parent_id) REFERENCES dbl_t (id)")
+                .unwrap();
+        }
+        let cols = c.columns_with_fks(s, "dbl_child").unwrap();
+        assert_eq!(
+            cols[1].references,
+            Some(FkRef {
+                schema: s.into(),
+                table: "dbl_t".into(),
+                column: "id".into()
+            }),
+            "{kind:?}"
+        );
+        assert_eq!(cols[0].references, None);
+        let t = c
+            .tables()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.name == "dbl_t")
+            .unwrap();
+        assert!(t.size.is_some_and(|b| b > 0), "{kind:?}: table size");
+        c.query("DROP TABLE dbl_child").unwrap();
+
+        // The activity monitor sees another session, and can stop its statement.
+        let mut other = Conn::connect(&cfg, None).unwrap();
+        let canceller_target = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let _ = other.query(match kind {
+                Kind::Postgres => "SELECT pg_sleep(20)",
+                Kind::MySql => "SELECT SLEEP(20)",
+            });
+            started.elapsed()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let act = c.activity().unwrap();
+        let q = act.columns.iter().position(|c| c == "consulta").unwrap();
+        let sleeper = act
+            .rows
+            .iter()
+            .find(|r| {
+                r[q].as_deref()
+                    .is_some_and(|t| t.to_lowercase().contains("sleep(20)"))
+            })
+            .unwrap_or_else(|| panic!("{kind:?}: sleeping session not listed: {act:?}"));
+        let id: i64 = sleeper[0].as_deref().unwrap().parse().unwrap();
+        c.kill(id, false).unwrap();
+        assert!(
+            canceller_target.join().unwrap() < std::time::Duration::from_secs(5),
+            "{kind:?}: kill"
+        );
 
         // A per-connection timeout stops long statements on the server.
         let timed = ConnConfig {
