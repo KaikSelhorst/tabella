@@ -107,7 +107,6 @@ impl eframe::App for App {
         self.favorite_prompt(&ctx);
         self.help_ui(&ctx);
         self.path_prompt_ui(&ctx);
-        self.prefs_ui(&ctx);
         self.track_zoom(&ctx);
     }
 }
@@ -292,9 +291,6 @@ impl App {
         use egui::{Key, Modifiers};
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
             self.help = !self.help;
-        }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)) {
-            self.prefs_open = !self.prefs_open;
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F))
             && self.session.as_ref().is_some_and(|s| s.ready)
@@ -1407,14 +1403,6 @@ mod screenshots {
             let state = harness.state_mut();
             state.tabs.pop();
             state.active = 0;
-            state.prefs_open = true;
-            harness.run();
-            harness
-                .render()
-                .unwrap()
-                .save(format!("{dir}/prefs.png"))
-                .unwrap();
-            harness.state_mut().prefs_open = false;
             let ctx = harness.ctx.clone();
             let light = crate::settings::Settings {
                 light: true,
@@ -1434,6 +1422,17 @@ mod screenshots {
                 .unwrap()
                 .save(format!("{dir}/light-sql.png"))
                 .unwrap();
+            harness.state_mut().palette = Some(crate::app::Palette {
+                query: "zoom".into(),
+                ..Default::default()
+            });
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/palette-zoom.png"))
+                .unwrap();
+            harness.state_mut().palette = None;
             let dark = crate::settings::Settings {
                 light: false,
                 ..harness.state().settings.clone()

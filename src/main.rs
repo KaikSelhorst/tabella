@@ -32,7 +32,6 @@ fn main() -> eframe::Result {
     let size = session::load().window.unwrap_or([1100.0, 700.0]);
     // Preferences first: the theme is built from them.
     let prefs = settings::load();
-    settings::publish(&prefs);
     ui::theme::set_light(prefs.light);
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size(size)

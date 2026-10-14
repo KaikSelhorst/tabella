@@ -657,7 +657,7 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     };
                     let popup = complete::before_editor(ui.ctx(), editor_id, text, catalog);
                     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-                        let mut job = syntax::highlight(buf.as_str(), egui::FontId::monospace(crate::settings::editor_font()));
+                        let mut job = syntax::highlight(buf.as_str(), egui::FontId::monospace(13.0));
                         if !query.is_empty() {
                             let ranges = find::find_all(buf.as_str(), &query, case);
                             find::mark(&mut job, &ranges, current_match);

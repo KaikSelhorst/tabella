@@ -746,7 +746,6 @@ pub struct App {
     pub closed: Vec<SavedTab>,
     pub path_prompt: Option<PathPrompt>,
     pub settings: crate::settings::Settings,
-    pub prefs_open: bool,
     /// The window title announces a finished job (cleared when the window is focused).
     title_changed: bool,
     /// Close the window once the transaction has been ended.
@@ -787,7 +786,6 @@ impl App {
             closed: Vec::new(),
             path_prompt: None,
             settings: crate::settings::load(),
-            prefs_open: false,
             title_changed: false,
             quit_after_tx: false,
             frames: 0,

@@ -15,7 +15,9 @@ const COLUMN_PENALTY: i32 = 24;
 #[derive(Clone)]
 enum Cmd {
     Activity,
-    Prefs,
+    Theme,
+    /// +1 / -1 steps; 0 back to 100%.
+    Zoom(i32),
     History,
     Diagram,
     Search,
@@ -167,12 +169,30 @@ impl App {
                 cmd: Cmd::Connect(c.id.clone()),
             });
         }
+        let (theme_icon, theme_label) = if self.settings.light {
+            (icon::MOON, "Tema escuro")
+        } else {
+            (icon::SUN, "Tema claro")
+        };
         items.push(Item {
-            icon: icon::GEAR,
-            label: "Preferências".into(),
-            detail: "tema, zoom, fontes, linhas por página · Ctrl+,".into(),
-            cmd: Cmd::Prefs,
+            icon: theme_icon,
+            label: theme_label.into(),
+            detail: "trocar o tema".into(),
+            cmd: Cmd::Theme,
         });
+        let zoom = format!("agora {:.0}%", self.settings.zoom * 100.0);
+        for (steps, glyph, label, keys) in [
+            (1, icon::MAGNIFYING_GLASS_PLUS, "Aumentar zoom", "Ctrl +"),
+            (-1, icon::MAGNIFYING_GLASS_MINUS, "Diminuir zoom", "Ctrl −"),
+            (0, icon::MAGNIFYING_GLASS, "Zoom 100%", "Ctrl 0"),
+        ] {
+            items.push(Item {
+                icon: glyph,
+                label: label.into(),
+                detail: format!("{keys} · {zoom}"),
+                cmd: Cmd::Zoom(steps),
+            });
+        }
         items.push(Item {
             icon: icon::KEYBOARD,
             label: "Atalhos de teclado".into(),
@@ -390,7 +410,8 @@ impl App {
                     })
                 }
                 Cmd::Activity => self.open_activity(),
-                Cmd::Prefs => self.prefs_open = true,
+                Cmd::Theme => self.toggle_theme(ctx),
+                Cmd::Zoom(steps) => self.zoom_by(ctx, steps),
                 Cmd::History => self.open_history(),
                 Cmd::Diagram => self.open_diagram(None),
                 Cmd::Search => self.open_search(),

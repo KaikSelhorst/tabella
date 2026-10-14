@@ -32,10 +32,9 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Tab / Ctrl+Shift+Tab", "Próxima / aba anterior"),
             ("F1", "Esta tela"),
             (
-                "Ctrl+,",
-                "Preferências: tema claro/escuro, zoom, fontes, linhas por página",
+                "Ctrl + / Ctrl − / Ctrl 0",
+                "Zoom da interface (no Ctrl+P também, junto com o tema)",
             ),
-            ("Ctrl + / Ctrl − / Ctrl 0", "Zoom da interface"),
         ],
     ),
     (

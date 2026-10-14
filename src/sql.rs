@@ -2,9 +2,9 @@
 
 use crate::db::Kind;
 
-/// Rows per page in table tabs (a preference).
+/// Rows per page in table tabs.
 pub fn page_size() -> usize {
-    crate::settings::page_size()
+    200
 }
 
 pub struct PageQuery<'a> {

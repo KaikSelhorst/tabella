@@ -84,8 +84,8 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Arquivos `.sql`: abrir (`Ctrl+O` ou arrastar), salvar (`Ctrl+S`) e salvar como
   (`Ctrl+Shift+S`); a aba marca alterações não salvas e avisa antes de fechar
 - Histórico completo (`Ctrl+Shift+H`): busca, filtro por conexão e por erro, abrir no editor
-- Preferências (`Ctrl+,`): tema claro ou escuro, zoom da interface (`Ctrl +`/`Ctrl −`),
-  fonte do editor e da grade, linhas por página, limite de linhas, vírgula decimal
+- Tema claro ou escuro e zoom da interface pelo `Ctrl+P` (zoom também com `Ctrl +`/`Ctrl −`/
+  `Ctrl 0`); os dois ficam lembrados
 
 ## Segurança
 

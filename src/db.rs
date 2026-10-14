@@ -11,9 +11,9 @@ use crate::sql::Stmt;
 use crate::tls;
 
 /// Rows kept in memory per result; protects against `SELECT *` on huge tables.
-/// Most rows kept from one query (a preference).
+/// Most rows kept from one query.
 fn max_rows() -> usize {
-    crate::settings::max_rows()
+    5000
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]

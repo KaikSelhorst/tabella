@@ -11,18 +11,17 @@ use crate::sql::FilterOp;
 use crate::values::{CellRange, SAMPLE_ROWS, ValueKind, column_info};
 
 const HEADER_HEIGHT: f32 = 28.0;
-/// Row height for the grid font (a preference): 24 at the default 12.
 fn row_height() -> f32 {
-    (crate::settings::grid_font() + 12.0).round()
+    24.0
 }
 
 fn cell_font_size() -> f32 {
-    crate::settings::grid_font()
+    12.0
 }
 /// Rough advance of one character of the cell font, for sizing columns to their content.
 /// Width of one monospace char at the grid font.
 fn char_width() -> f32 {
-    7.3 * crate::settings::grid_font() / 12.0
+    7.3
 }
 /// Space between a right-aligned number and its column's edge.
 const NUMBER_PAD: f32 = 4.0;
@@ -34,8 +33,6 @@ pub fn display_value(kind: ValueKind, v: &str) -> String {
     match (kind, v) {
         (ValueKind::Bool, "t" | "1" | "true") => "true".to_string(),
         (ValueKind::Bool, "f" | "0" | "false") => "false".to_string(),
-        // "Números com vírgula decimal": display only; editing and copying keep the real value.
-        (ValueKind::Number, v) if crate::settings::decimal_comma() => v.replace('.', ","),
         _ => v.replace('\n', icon::ARROW_ELBOW_DOWN_LEFT),
     }
 }
