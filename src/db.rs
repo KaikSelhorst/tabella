@@ -1373,6 +1373,13 @@ mod tests {
         );
         c.query("DROP TABLE dbl_child").unwrap();
 
+        // Errors carry the server's message, not just "db error".
+        let err = c
+            .query("SELECT * FROM tabela_que_nao_existe")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("tabela_que_nao_existe"), "{kind:?}: {err}");
+
         // Plans come back as a tree, estimated or measured.
         let p = c.explain("SELECT * FROM dbl_t WHERE id > 0;", false).unwrap();
         assert!(!p.analyzed && p.root.cost.is_some(), "{kind:?}: {p:?}");
