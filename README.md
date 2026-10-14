@@ -53,6 +53,13 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Atalhos de teclado e snippets em uma tela (`F1`)
 - Criar e alterar tabelas por formulário: colunas (nome, tipo, nulo, padrão), chave primária e
   índices, com o SQL gerado à vista; abre no editor ou executa (com confirmação)
+- Prévia de UPDATE/DELETE (botão "Prévia" ou `Ctrl+Shift+Enter`; automática se a conexão pedir):
+  quantas linhas e quais seriam afetadas, sem alterar nada
+- "Linhas que apontam para esta" no menu da célula: abre as tabelas cujas chaves estrangeiras
+  referenciam a linha
+- Monitor de atividade com três visões: sessões, bloqueios (quem trava quem) e consultas lentas
+  (`pg_stat_statements` / `performance_schema`), com "Zerar estatísticas"
+- Gráfico rápido do resultado do editor: barras ou linha, valor ao passar o mouse
 
 ## Segurança
 

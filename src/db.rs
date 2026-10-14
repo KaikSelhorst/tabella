@@ -81,6 +81,9 @@ pub struct ConnConfig {
     /// Writes open a transaction that the user confirms or undoes explicitly.
     #[serde(default)]
     pub manual_commit: bool,
+    /// UPDATE/DELETE from the editor show what they would touch before running.
+    #[serde(default)]
+    pub preview_writes: bool,
     /// Skip certificate verification (self-signed servers).
     #[serde(default)]
     pub ssl_insecure: bool,
@@ -171,6 +174,7 @@ impl ConnConfig {
             },
             password: String::new(),
             database: String::new(),
+            preview_writes: false,
             manual_commit: false,
             ssl: false,
             ssl_insecure: false,
@@ -180,6 +184,16 @@ impl ConnConfig {
             ssh: None,
         }
     }
+}
+
+/// Outcome of `Conn::preview`.
+#[derive(Clone, Debug)]
+pub struct PreviewData {
+    /// Rows the statement would change or delete.
+    pub count: u64,
+    /// Some of them: as they are now, or (`after`) as the statement would leave them.
+    pub sample: QueryResult,
+    pub after: bool,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -233,6 +247,27 @@ pub struct ColumnInfo {
     pub has_default: bool,
     /// The row this column points to, for single-column foreign keys.
     pub references: Option<FkRef>,
+}
+
+/// What the activity monitor shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ActivityView {
+    #[default]
+    Sessions,
+    /// Sessions waiting on another one's locks.
+    Locks,
+    /// Statements that took the most time overall (pg_stat_statements / performance_schema).
+    Slow,
+}
+
+/// A foreign key elsewhere pointing at this table: `schema.table.column` references our
+/// `target` column.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IncomingFk {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+    pub target: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -575,6 +610,112 @@ impl Conn {
         Ok(cols)
     }
 
+    /// Single-column foreign keys in other tables that point at this one ("quem aponta para cá").
+    pub fn incoming_fks(&mut self, schema: &str, table: &str) -> DbResult<Vec<IncomingFk>> {
+        let stmt = match self.kind() {
+            Kind::Postgres => Stmt::new(
+                "SELECT n.nspname, c.relname, a.attname, fa.attname \
+                 FROM pg_constraint k \
+                 JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 JOIN pg_class fc ON fc.oid = k.confrelid JOIN pg_namespace fn ON fn.oid = fc.relnamespace \
+                 JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = k.conkey[1] \
+                 JOIN pg_attribute fa ON fa.attrelid = k.confrelid AND fa.attnum = k.confkey[1] \
+                 WHERE k.contype = 'f' AND array_length(k.conkey, 1) = 1 AND fn.nspname = ",
+            )
+            .value(Some(schema))
+            .sql(" AND fc.relname = ")
+            .value(Some(table))
+            .sql(" ORDER BY 1, 2, 3"),
+            Kind::MySql => Stmt::new(
+                "SELECT k.table_schema, k.table_name, k.column_name, k.referenced_column_name \
+                 FROM information_schema.key_column_usage k \
+                 WHERE k.referenced_table_schema = ",
+            )
+            .value(Some(schema))
+            .sql(" AND k.referenced_table_name = ")
+            .value(Some(table))
+            .sql(
+                " AND (SELECT COUNT(*) FROM information_schema.key_column_usage k2 \
+                 WHERE k2.constraint_schema = k.constraint_schema AND k2.constraint_name = k.constraint_name \
+                 AND k2.table_name = k.table_name) = 1 ORDER BY 1, 2, 3",
+            ),
+        };
+        self.execute(&stmt)?
+            .rows
+            .into_iter()
+            .map(|row| {
+                let [schema, table, column, target] = cells(row)?;
+                Ok(IncomingFk {
+                    schema,
+                    table,
+                    column,
+                    target,
+                })
+            })
+            .collect()
+    }
+
+    /// One of the activity monitor's views. In every view where something can be cancelled,
+    /// the first column is the session id to act on.
+    pub fn activity_view(&mut self, view: ActivityView) -> DbResult<QueryResult> {
+        match view {
+            ActivityView::Sessions => self.activity(),
+            ActivityView::Locks => self.query(match self.kind() {
+                // Who waits for whom: the blocking session first (that's the one to stop).
+                Kind::Postgres => {
+                    "SELECT b.pid, b.usename AS usuario, b.state AS estado, left(b.query, 200) AS consulta_que_bloqueia, \
+                     w.pid AS esperando, date_trunc('second', now() - w.query_start)::text AS esperando_ha, \
+                     left(w.query, 200) AS consulta_esperando \
+                     FROM pg_stat_activity w \
+                     JOIN LATERAL unnest(pg_blocking_pids(w.pid)) AS x(pid) ON true \
+                     JOIN pg_stat_activity b ON b.pid = x.pid \
+                     ORDER BY w.query_start"
+                }
+                Kind::MySql => {
+                    "SELECT blocking_pid AS pid, blocking_query AS consulta_que_bloqueia, \
+                     waiting_pid AS esperando, wait_age AS esperando_ha, waiting_query AS consulta_esperando \
+                     FROM sys.innodb_lock_waits ORDER BY wait_age_secs DESC"
+                }
+            }),
+            ActivityView::Slow => {
+                let r = self.query(match self.kind() {
+                    Kind::Postgres => {
+                        "SELECT calls AS chamadas, round(total_exec_time::numeric, 1) AS total_ms, \
+                         round(mean_exec_time::numeric, 2) AS media_ms, rows AS linhas, left(query, 500) AS consulta \
+                         FROM pg_stat_statements \
+                         WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+                         ORDER BY total_exec_time DESC LIMIT 50"
+                    }
+                    Kind::MySql => {
+                        "SELECT COUNT_STAR AS chamadas, ROUND(SUM_TIMER_WAIT / 1e9, 1) AS total_ms, \
+                         ROUND(AVG_TIMER_WAIT / 1e9, 2) AS media_ms, SUM_ROWS_EXAMINED AS linhas_lidas, \
+                         SCHEMA_NAME AS banco, LEFT(DIGEST_TEXT, 500) AS consulta \
+                         FROM performance_schema.events_statements_summary_by_digest \
+                         WHERE DIGEST_TEXT IS NOT NULL ORDER BY SUM_TIMER_WAIT DESC LIMIT 50"
+                    }
+                });
+                r.map_err(|e| match self.kind() {
+                    Kind::Postgres if e.to_string().contains("pg_stat_statements") => DbError::Other(
+                        "Consultas lentas usam a extensão pg_stat_statements: inclua-a em \
+                         shared_preload_libraries (postgresql.conf), reinicie o servidor e rode \
+                         CREATE EXTENSION pg_stat_statements; no banco."
+                            .into(),
+                    ),
+                    _ => e,
+                })
+            }
+        }
+    }
+
+    /// Clears the "consultas lentas" counters.
+    pub fn reset_query_stats(&mut self) -> DbResult<()> {
+        self.query(match self.kind() {
+            Kind::Postgres => "SELECT pg_stat_statements_reset()",
+            Kind::MySql => "TRUNCATE TABLE performance_schema.events_statements_summary_by_digest",
+        })
+        .map(|_| ())
+    }
+
     /// Sessions on the server right now (excluding this one), most long-running first.
     pub fn activity(&mut self) -> DbResult<QueryResult> {
         self.query(match self.kind() {
@@ -686,6 +827,54 @@ impl Conn {
                 Err(e)
             }
         }
+    }
+
+    /// What an UPDATE or DELETE would touch. Simple forms are rewritten as reads and never run;
+    /// otherwise Postgres runs it with `RETURNING *` and rolls back (a savepoint inside an open
+    /// transaction). MySQL has no safe way for joined forms, so those are refused.
+    pub fn preview(&mut self, sql: &str, nested: bool) -> DbResult<PreviewData> {
+        use crate::sql::{PREVIEW_SAMPLE, preview_queries};
+        if let Some(q) = preview_queries(sql) {
+            let count = self.query(&q.count)?;
+            let count = count
+                .rows
+                .first()
+                .and_then(|r| r.first())
+                .and_then(|v| v.as_deref())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            return Ok(PreviewData {
+                count,
+                sample: self.query_limit(&q.sample, PREVIEW_SAMPLE)?,
+                after: false,
+            });
+        }
+        if self.kind() == Kind::MySql {
+            return Err(DbError::Other(
+                "prévia indisponível para UPDATE/DELETE com JOIN ou várias tabelas no MySQL".into(),
+            ));
+        }
+        let (begin, rollback) = if nested {
+            ("SAVEPOINT dblite_preview", "ROLLBACK TO SAVEPOINT dblite_preview")
+        } else {
+            ("BEGIN", "ROLLBACK")
+        };
+        let body = sql.trim().trim_end_matches(';');
+        let returning = if body.to_uppercase().contains("RETURNING") {
+            ""
+        } else {
+            " RETURNING *"
+        };
+        self.query(begin)?;
+        let res = self.query_limit(&format!("{body}{returning}"), PREVIEW_SAMPLE);
+        let undone = self.query(rollback);
+        let r = res?;
+        undone?;
+        Ok(PreviewData {
+            count: r.affected.unwrap_or(r.rows.len() as u64),
+            sample: r,
+            after: true,
+        })
     }
 
     /// Opens a transaction for the "commit manual" mode.
@@ -1157,6 +1346,15 @@ mod tests {
             .find(|t| t.name == "dbl_t")
             .unwrap();
         assert!(t.size.is_some_and(|b| b > 0), "{kind:?}: table size");
+        // And the other way round: dbl_t knows dbl_child points at it.
+        let schema_name = if kind == Kind::MySql { db } else { "public" };
+        let incoming = c.incoming_fks(schema_name, "dbl_t").unwrap();
+        assert!(
+            incoming
+                .iter()
+                .any(|f| f.table == "dbl_child" && f.target == "id"),
+            "{kind:?}: {incoming:?}"
+        );
         c.query("DROP TABLE dbl_child").unwrap();
 
         // Plans come back as a tree, estimated or measured.
@@ -1208,6 +1406,37 @@ mod tests {
             canceller_target.join().unwrap() < std::time::Duration::from_secs(5),
             "{kind:?}: kill"
         );
+
+        // Locks: a session holding a row lock shows up as blocking another one.
+        {
+            let mut holder = Conn::connect(&cfg, None).unwrap();
+            holder.begin().unwrap();
+            holder
+                .query("UPDATE dbl_t SET name = 'trava' WHERE id = 1")
+                .unwrap();
+            let mut waiter = Conn::connect(&cfg, None).unwrap();
+            let blocked = std::thread::spawn(move || {
+                let _ = waiter.query("UPDATE dbl_t SET name = 'espera' WHERE id = 1");
+            });
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            let locks = c.activity_view(ActivityView::Locks).unwrap();
+            assert_eq!(locks.rows.len(), 1, "{kind:?}: {locks:?}");
+            let blocker: i64 = locks.rows[0][0].as_deref().unwrap().parse().unwrap();
+            c.kill(blocker, true).unwrap();
+            blocked.join().unwrap();
+            drop(holder);
+        }
+        // Slow queries: MySQL always has them; the test Postgres preloads pg_stat_statements.
+        if kind == Kind::Postgres {
+            c.query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+                .unwrap();
+        }
+        let slow = c.activity_view(ActivityView::Slow).unwrap();
+        assert!(
+            slow.columns.contains(&"consulta".to_string()) && !slow.rows.is_empty(),
+            "{kind:?}"
+        );
+        c.reset_query_stats().unwrap();
 
         // A per-connection timeout stops long statements on the server.
         let timed = ConnConfig {
@@ -1270,6 +1499,36 @@ mod tests {
             "write must fail on a read-only session"
         );
         assert_eq!(c.count("SELECT COUNT(*) FROM dbl_t").unwrap(), 2);
+        // Preview of writes: rewritten as reads, or (Postgres, joined form) run and undone.
+        {
+            let p = c
+                .preview("UPDATE dbl_t SET name = 'x' WHERE id = 1", false)
+                .unwrap();
+            assert_eq!((p.count, p.sample.rows.len(), p.after), (1, 1, false), "{kind:?}");
+            let p = c.preview("DELETE FROM dbl_t", false).unwrap();
+            assert!(p.count >= 2, "{kind:?}");
+            let joined = "UPDATE dbl_t SET name = 'mudou' FROM (SELECT 1 AS one) o WHERE dbl_t.id = o.one";
+            if kind == Kind::Postgres {
+                let p = c.preview(joined, false).unwrap();
+                assert_eq!((p.count, p.after), (1, true));
+                assert_eq!(
+                    p.sample.rows[0][1].as_deref(),
+                    Some("mudou"),
+                    "shows the values after"
+                );
+                let r = c.query("SELECT name FROM dbl_t WHERE id = 1").unwrap();
+                assert_ne!(r.rows[0][0].as_deref(), Some("mudou"), "and undoes it");
+            } else {
+                assert!(
+                    c.preview(
+                        "UPDATE dbl_t JOIN (SELECT 1 AS one) o ON dbl_t.id = o.one SET name = 'x'",
+                        false
+                    )
+                    .is_err()
+                );
+            }
+        }
+
         // Table designer: create, then alter, through real DDL.
         {
             use crate::design::{ColDef, Design, IndexDef};

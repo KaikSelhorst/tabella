@@ -510,6 +510,138 @@ pub fn bind_params(kind: Kind, script: &str, value: impl Fn(&str) -> String) -> 
     out
 }
 
+/// Words outside parentheses, quotes and comments, uppercased, with their char ranges.
+fn top_level_words(script: &str) -> Vec<(String, usize, usize)> {
+    let chars: Vec<char> = script.chars().collect();
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '-' && chars.get(i + 1) == Some(&'-') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        if matches!(c, '\'' | '"' | '`') {
+            i += 1;
+            while i < chars.len() && chars[i] != c {
+                if chars[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+        if c.is_alphanumeric() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            if depth == 0 {
+                out.push((
+                    chars[start..i].iter().collect::<String>().to_uppercase(),
+                    start,
+                    i,
+                ));
+            }
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Reads for "prévia" of an UPDATE or DELETE, without running it: how many rows it would
+/// touch, and those rows as they are now.
+#[derive(Debug, PartialEq)]
+pub struct PreviewQueries {
+    pub count: String,
+    pub sample: String,
+}
+
+/// Rows shown in the preview.
+pub const PREVIEW_SAMPLE: usize = 50;
+
+/// `UPDATE t [alias] SET … [WHERE …]` and `DELETE FROM t [alias] [WHERE …]` become a count and
+/// a SELECT of the same rows. `None` for forms where that rewrite would be wrong (joins,
+/// `UPDATE … FROM`, `DELETE … USING`, multi-table MySQL statements).
+pub fn preview_queries(statement: &str) -> Option<PreviewQueries> {
+    let sql = statement.trim().trim_end_matches(';').trim_end();
+    let chars: Vec<char> = sql.chars().collect();
+    let text = |a: usize, b: usize| chars[a..b].iter().collect::<String>().trim().to_string();
+    let words = top_level_words(sql);
+    let find = |from: usize, w: &[&str]| {
+        words
+            .iter()
+            .skip(from)
+            .position(|(x, _, _)| w.contains(&x.as_str()))
+            .map(|p| p + from)
+    };
+    let first = words.first()?.0.as_str();
+    let (table, where_at) = match first {
+        "UPDATE" => {
+            let set = find(1, &["SET"])?;
+            // Skip MySQL modifiers and Postgres ONLY.
+            let mut t0 = 1;
+            while t0 < set && matches!(words[t0].0.as_str(), "LOW_PRIORITY" | "IGNORE" | "ONLY") {
+                t0 += 1;
+            }
+            let table = text(words.get(t0)?.1, words[set].1);
+            if table.contains(',') || words[t0..set].iter().any(|(w, _, _)| w == "JOIN") {
+                return None;
+            }
+            if find(set, &["FROM"]).is_some() {
+                return None;
+            }
+            (table, find(set, &["WHERE"]))
+        }
+        "DELETE" => {
+            if words.get(1)?.0 != "FROM" {
+                return None;
+            }
+            let mut t0 = 2;
+            while matches!(words.get(t0).map(|w| w.0.as_str()), Some("ONLY")) {
+                t0 += 1;
+            }
+            let stop = find(t0, &["WHERE", "USING", "ORDER", "LIMIT", "RETURNING"]);
+            let end = stop.map_or(chars.len(), |i| words[i].1);
+            let table = text(words.get(t0)?.1, end);
+            if stop.is_some_and(|i| words[i].0 == "USING") || table.contains(',') {
+                return None;
+            }
+            (table, stop.filter(|&i| words[i].0 == "WHERE"))
+        }
+        _ => return None,
+    };
+    let condition = match where_at {
+        Some(w) => {
+            let end = find(w + 1, &["ORDER", "LIMIT", "RETURNING"]).map_or(chars.len(), |i| words[i].1);
+            format!(" {}", text(words[w].1, end))
+        }
+        None => String::new(),
+    };
+    Some(PreviewQueries {
+        count: format!("SELECT count(*) FROM {table}{condition}"),
+        sample: format!("SELECT * FROM {table}{condition} LIMIT {PREVIEW_SAMPLE}"),
+    })
+}
+
 /// MySQL commits the open transaction by itself before (and after) DDL statements.
 pub fn mysql_implicit_commit(script: &str) -> bool {
     const DDL: &[&str] = &[
@@ -518,6 +650,11 @@ pub fn mysql_implicit_commit(script: &str) -> bool {
     statement_words(script)
         .iter()
         .any(|w| DDL.contains(&w[0].as_str()))
+}
+
+/// The first word of the first statement, uppercased.
+pub fn statement_words_first(script: &str) -> Option<String> {
+    statement_words(script).first()?.first().cloned()
 }
 
 /// What running a script would do, for read-only connections and the "are you sure" prompt.
@@ -881,6 +1018,40 @@ mod tests {
             "a = '1.2.3'"
         );
         assert!(param_names("SELECT $$ :x $$, '10:30'").is_empty());
+    }
+
+    #[test]
+    fn previews_rewrite_writes_as_reads() {
+        let p = preview_queries("UPDATE clientes c SET saldo = (SELECT 1 WHERE x) WHERE c.uf = 'SP' AND (a OR b) ORDER BY id LIMIT 10;").unwrap();
+        assert_eq!(
+            p.count,
+            "SELECT count(*) FROM clientes c WHERE c.uf = 'SP' AND (a OR b)"
+        );
+        assert_eq!(
+            p.sample,
+            "SELECT * FROM clientes c WHERE c.uf = 'SP' AND (a OR b) LIMIT 50"
+        );
+        let p = preview_queries("delete from public.pedidos where status = 'where' returning id").unwrap();
+        assert_eq!(
+            p.count,
+            "SELECT count(*) FROM public.pedidos where status = 'where'"
+        );
+        // Everything: no WHERE.
+        assert_eq!(
+            preview_queries("UPDATE LOW_PRIORITY t SET a = 1").unwrap().count,
+            "SELECT count(*) FROM t"
+        );
+        assert_eq!(
+            preview_queries("DELETE FROM t").unwrap().sample,
+            "SELECT * FROM t LIMIT 50"
+        );
+        // Forms the rewrite can't express.
+        assert!(preview_queries("UPDATE t SET a = o.a FROM o WHERE o.id = t.id").is_none());
+        assert!(preview_queries("UPDATE t JOIN o ON o.id = t.id SET t.a = 1").is_none());
+        assert!(preview_queries("UPDATE t, o SET t.a = 1").is_none());
+        assert!(preview_queries("DELETE FROM t USING o WHERE o.id = t.id").is_none());
+        assert!(preview_queries("DELETE t FROM t JOIN o ON o.id = t.id").is_none());
+        assert!(preview_queries("SELECT 1").is_none());
     }
 
     #[test]

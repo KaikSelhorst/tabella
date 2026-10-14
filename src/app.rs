@@ -10,7 +10,10 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::config;
-use crate::db::{Canceller, ColumnInfo, ConnConfig, Kind, QueryResult, TableRef, TableStructure};
+use crate::db::{
+    ActivityView, Canceller, ColumnInfo, ConnConfig, IncomingFk, Kind, PreviewData, QueryResult, TableRef,
+    TableStructure,
+};
 use crate::design::Design;
 use crate::export::{self, Format};
 use crate::favorites::{self, Favorite};
@@ -91,6 +94,8 @@ pub struct TableState {
     pub schema: String,
     pub table: String,
     pub cols: Vec<ColumnInfo>,
+    /// Foreign keys in other tables that point here ("linhas que apontam para esta").
+    pub incoming: Vec<IncomingFk>,
     pub page: usize,
     pub filter: String,
     /// Text searched in every column (the search box), on top of `filter`.
@@ -166,6 +171,7 @@ impl TableState {
             schema: schema.into(),
             table: table.into(),
             cols: vec![],
+            incoming: vec![],
             page: 0,
             filter: String::new(),
             search: String::new(),
@@ -295,6 +301,7 @@ pub enum TabKind {
 
 /// "Atividade" tab: sessions on the server, optionally refreshed every few seconds.
 pub struct ActivityState {
+    pub view: ActivityView,
     pub auto_refresh: bool,
     pub last_refresh: Option<Instant>,
     /// Session waiting for the user to confirm `(id, terminate)`.
@@ -360,6 +367,7 @@ pub struct Tab {
     /// Last value typed for each parameter name.
     pub param_values: std::collections::HashMap<String, String>,
     pub col_stats: Option<StatsView>,
+    pub preview: Option<PreviewState>,
     /// Columns hidden from the grid, and columns pinned to its left edge (by name, so they
     /// survive reloads and paging).
     pub hidden_cols: Vec<String>,
@@ -375,11 +383,29 @@ pub struct StatsView {
     pub data: Option<Result<values::ColumnStats, String>>,
 }
 
+/// "Prévia" of an UPDATE/DELETE: what it would touch, before deciding to run it.
+pub struct PreviewState {
+    pub sql: String,
+    /// `None` while the database is counting.
+    pub data: Option<Result<PreviewData, String>>,
+}
+
+/// What the editor does with a statement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RunMode {
+    Run,
+    /// Run without the automatic preview (the user just saw it).
+    RunPreviewed,
+    /// EXPLAIN, with ANALYZE when true.
+    Explain(bool),
+    Preview,
+}
+
 pub struct ParamPrompt {
     pub sql: String,
     pub names: Vec<String>,
-    /// `Some(analyze)` when the prompt came from "Explicar".
-    pub explain: Option<bool>,
+    /// What to do once the values are in.
+    pub mode: RunMode,
     pub focused: bool,
 }
 
@@ -404,6 +430,7 @@ impl Tab {
             params: None,
             param_values: Default::default(),
             col_stats: None,
+            preview: None,
             hidden_cols: Vec::new(),
             pinned_cols: Vec::new(),
         }
@@ -575,6 +602,8 @@ pub enum GridEvent {
     TogglePin(usize),
     /// Open the insert form filled with this row.
     DuplicateRow(usize),
+    /// Open the rows of another table whose foreign key (`incoming[i]`) points at this row.
+    FollowIncoming(usize, usize),
 }
 
 /// What `handle_grid_event` needs the app (or the clipboard) to do.
@@ -1012,6 +1041,15 @@ impl App {
             };
             match reply {
                 Reply::Tx(state) => s.txn = state,
+                Reply::Preview { tab, res } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    t.pending = t.pending.saturating_sub(1);
+                    if let Some(p) = &mut t.preview {
+                        p.data = Some(res.map_err(|e| e.to_string()));
+                    }
+                }
                 Reply::ColumnStats { tab, res } => {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
@@ -1206,13 +1244,16 @@ impl App {
                         Err(e) => t.error = Some(format!("Exportação falhou: {e}")),
                     }
                 }
-                Reply::Columns { tab, res } => {
+                Reply::Columns { tab, res, incoming } => {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
                     t.pending = t.pending.saturating_sub(1);
                     match (res, &mut t.kind) {
-                        (Ok(c), TabKind::Table(ts)) => ts.cols = c,
+                        (Ok(c), TabKind::Table(ts)) => {
+                            ts.cols = c;
+                            ts.incoming = incoming;
+                        }
                         (Err(e), _) => t.error = Some(e.to_string()),
                         _ => {}
                     }
@@ -1361,6 +1402,7 @@ impl App {
             return;
         }
         let state = ActivityState {
+            view: ActivityView::Sessions,
             auto_refresh: true,
             last_refresh: None,
             confirm_kill: None,
@@ -1608,8 +1650,18 @@ pub fn refresh_activity(tab: &mut Tab, s: &Session) {
         return;
     };
     st.last_refresh = Some(Instant::now());
+    let (id, view) = (tab.id, st.view);
+    tab.send_rows_job(s, Job::Activity { tab: id, view });
+}
+
+/// Zeroes the "consultas lentas" counters on the server.
+pub fn reset_query_stats(tab: &mut Tab, s: &Session) {
+    let TabKind::Activity(st) = &mut tab.kind else {
+        return;
+    };
+    st.last_refresh = Some(Instant::now());
     let id = tab.id;
-    tab.send_rows_job(s, Job::Activity { tab: id });
+    tab.send_rows_job(s, Job::ResetQueryStats { tab: id });
 }
 
 /// Cancels (or terminates) the session confirmed in the dialog.
@@ -1622,13 +1674,14 @@ pub fn kill_session(tab: &mut Tab, s: &Session) {
     };
     st.kill_error = None;
     st.last_refresh = Some(Instant::now());
-    let tab_id = tab.id;
+    let (tab_id, view) = (tab.id, st.view);
     tab.send_rows_job(
         s,
         Job::Kill {
             tab: tab_id,
             id,
             terminate,
+            view,
         },
     );
 }
@@ -1796,6 +1849,23 @@ pub fn filter_by_value(tab: &mut Tab, s: &Session, column: &str, value: Option<&
     reload(tab, s);
 }
 
+/// Whether `sql` is a single UPDATE or DELETE (what "Prévia" works on).
+pub fn previewable(sql: &str) -> bool {
+    sql::statement_ranges(sql, false).len() == 1
+        && sql::statement_words_first(sql).is_some_and(|w| w == "UPDATE" || w == "DELETE")
+}
+
+/// Starts a preview of an UPDATE/DELETE.
+pub fn preview(tab: &mut Tab, s: &Session, sql: String) {
+    tab.error = None;
+    tab.preview = Some(PreviewState {
+        sql: sql.clone(),
+        data: None,
+    });
+    tab.pending += 1;
+    s.send(Job::Preview { tab: tab.id, sql });
+}
+
 /// Asks for the plan of one statement. ANALYZE runs it, so it is refused for anything but reads.
 pub fn explain(tab: &mut Tab, s: &Session, sql: &str, analyze: bool) {
     let parts = sql::statement_ranges(sql, false);
@@ -1943,6 +2013,20 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             let shown = overlay.as_ref().map_or(res, |o| &o.result);
             return Some(Effect::Copy(values::to_tsv(shown, &range, *headers)));
         }
+        GridEvent::FollowIncoming(row, i) => {
+            let TabKind::Table(ts) = &tab.kind else {
+                return None;
+            };
+            let fk = ts.incoming.get(*i)?;
+            let col = res.columns.iter().position(|c| *c == fk.target)?;
+            let value = res.rows[*row][col].as_deref()?;
+            let filter = sql::filter_condition(k, &fk.column, FilterOp::Eq, Some(value));
+            return Some(Effect::OpenFiltered {
+                schema: fk.schema.clone(),
+                table: fk.table.clone(),
+                filter,
+            });
+        }
         GridEvent::FollowFk(row, col) => {
             let info = cols.iter().find(|c| c.name == res.columns[*col])?;
             let target = info.references.as_ref()?;
@@ -2063,6 +2147,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             open_duplicate_form(tab, row);
         }
         GridEvent::Select(..)
+        | GridEvent::FollowIncoming(..)
         | GridEvent::ColumnStats(..)
         | GridEvent::ToggleColumn(..)
         | GridEvent::ShowAllColumns

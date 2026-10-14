@@ -1,3 +1,4 @@
+mod chart;
 mod complete;
 mod design;
 mod detail;
@@ -573,6 +574,7 @@ mod screenshots {
                 previous: Vec::new(),
             };
             let st = crate::app::ActivityState {
+                view: crate::db::ActivityView::Sessions,
                 auto_refresh: false,
                 last_refresh: None,
                 confirm_kill: None,
@@ -600,6 +602,31 @@ mod screenshots {
                 .unwrap()
                 .save(format!("{dir}/activity-kill.png"))
                 .unwrap();
+            if let TabKind::Activity(st) = &mut harness.state_mut().tabs[2].kind {
+                st.confirm_kill = None;
+                st.view = crate::db::ActivityView::Slow;
+            }
+            let slow = QueryResult {
+                columns: ["chamadas", "total_ms", "media_ms", "linhas", "consulta"].map(String::from).to_vec(),
+                rows: [
+                    ["1240", "98213.4", "79.20", "1240", "SELECT count(*) FROM pedidos p JOIN clientes c ON c.id = p.cliente_id WHERE p.status = $1"],
+                    ["58201", "41022.8", "0.70", "58201", "SELECT * FROM clientes WHERE email = $1"],
+                    ["12", "8890.1", "740.84", "60000000", "SELECT * FROM eventos ORDER BY criado_em DESC"],
+                ]
+                .iter()
+                .map(|r| r.iter().map(|v| Some(v.to_string())).collect())
+                .collect(),
+                ..Default::default()
+            };
+            harness.state_mut().tabs[2].result = Some(slow);
+            harness.state_mut().tabs[2].selected = Some((0, 4));
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/activity-slow.png"))
+                .unwrap();
+
             let state = harness.state_mut();
             state.tabs.pop();
             state.sort_by_size = false;
@@ -803,7 +830,7 @@ mod screenshots {
             tab.params = Some(crate::app::ParamPrompt {
                 sql: String::new(),
                 names: vec!["id".into(), "cidade".into()],
-                explain: None,
+                mode: crate::app::RunMode::Run,
                 focused: true,
             });
             harness.run();
@@ -820,6 +847,131 @@ mod screenshots {
                 *text =
                     "SELECT id, nome, saldo\nFROM public.clientes\nWHERE ativo\nORDER BY saldo DESC;".into();
             }
+        }
+
+        // Quick chart (bars, then a line over dates) and the UPDATE preview.
+        {
+            let state = harness.state_mut();
+            state.active = 1;
+            let tab = &mut state.tabs[1];
+            let saved = tab.result.take();
+            let cities = [
+                "São Paulo",
+                "Rio de Janeiro",
+                "Belo Horizonte",
+                "Curitiba",
+                "Porto Alegre",
+                "Recife",
+                "Salvador",
+                "Fortaleza",
+            ];
+            tab.result = Some(QueryResult {
+                columns: vec!["cidade".into(), "total".into()],
+                rows: cities
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        vec![
+                            Some(c.to_string()),
+                            Some(format!("{}.50", 182_000 - i * 17_500 - (i % 3) * 9_000)),
+                        ]
+                    })
+                    .collect(),
+                ..Default::default()
+            });
+            let chart_id = egui::Id::new(("chart", 2u64));
+            harness.ctx.data_mut(|d| {
+                d.insert_temp(
+                    chart_id,
+                    Some(super::chart::ChartSpec {
+                        x: 0,
+                        y: 1,
+                        kind: super::chart::ChartKind::Bars,
+                    }),
+                )
+            });
+            harness.run();
+            harness.hover_at(egui::pos2(480.0, 450.0));
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/chart-bars.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.result = Some(QueryResult {
+                columns: vec!["dia".into(), "pedidos".into()],
+                rows: (1..=60)
+                    .map(|d: i32| {
+                        let v = 900 + (d * 37 % 200) + d * 12 - if d % 7 == 0 { 300 } else { 0 };
+                        vec![
+                            Some(format!("2026-{:02}-{:02}", 7 + (d - 1) / 31, (d - 1) % 31 + 1)),
+                            Some(v.to_string()),
+                        ]
+                    })
+                    .collect(),
+                ..Default::default()
+            });
+            harness.ctx.data_mut(|d| {
+                d.insert_temp(
+                    chart_id,
+                    Some(super::chart::ChartSpec {
+                        x: 0,
+                        y: 1,
+                        kind: super::chart::ChartKind::Line,
+                    }),
+                )
+            });
+            harness.run();
+            harness.hover_at(egui::pos2(800.0, 430.0));
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/chart-line.png"))
+                .unwrap();
+            harness
+                .ctx
+                .data_mut(|d| d.insert_temp::<Option<super::chart::ChartSpec>>(chart_id, None));
+
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.preview = Some(crate::app::PreviewState {
+                sql: "UPDATE clientes SET ativo = false\nWHERE uf = 'SP' AND criado_em < '2023-01-01'".into(),
+                data: Some(Ok(crate::db::PreviewData {
+                    count: 18_342,
+                    sample: QueryResult {
+                        columns: vec![
+                            "id".into(),
+                            "nome".into(),
+                            "uf".into(),
+                            "ativo".into(),
+                            "criado_em".into(),
+                        ],
+                        rows: (0..12)
+                            .map(|i| {
+                                vec![
+                                    Some((i * 10 + 3).to_string()),
+                                    Some(format!("Cliente {}", i * 10 + 3)),
+                                    Some("SP".into()),
+                                    Some("t".into()),
+                                    Some(format!("2022-0{}-1{} 10:00:00", i % 9 + 1, i % 9)),
+                                ]
+                            })
+                            .collect(),
+                        ..Default::default()
+                    },
+                    after: false,
+                })),
+            });
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/preview.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.preview = None;
+            tab.result = saved;
         }
 
         // Autocomplete: type a partial word and put the cursor after it.

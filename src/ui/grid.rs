@@ -6,7 +6,7 @@ use egui_extras::{Column, TableBuilder};
 use super::{icon, theme};
 use crate::app::CopyAs;
 use crate::app::{Edit, GridEvent};
-use crate::db::{ColumnInfo, QueryResult};
+use crate::db::{ColumnInfo, IncomingFk, QueryResult};
 use crate::sql::FilterOp;
 use crate::values::{CellRange, SAMPLE_ROWS, ValueKind, column_info};
 
@@ -219,6 +219,8 @@ pub struct GridOpts<'a> {
     /// Cells matching "buscar no resultado", and the one it is on.
     pub found: Option<&'a HashSet<(usize, usize)>>,
     pub found_current: Option<(usize, usize)>,
+    /// Foreign keys elsewhere pointing at this table, offered in the cell menu.
+    pub incoming: &'a [IncomingFk],
 }
 
 /// A cell of a pinned column (or the row-number gutter, `col: None`) as drawn this frame. The
@@ -263,6 +265,7 @@ pub fn grid(
         pinned,
         found,
         found_current,
+        incoming,
     } = *opts;
     let in_range = |ri: usize, ci: usize| range.is_some_and(|r| r.contains(ri, ci));
     // Dragging across cells selects a range: set when a drag starts on a cell, until release.
@@ -668,6 +671,32 @@ pub fn grid(
                                 event = Some(GridEvent::FollowFk(ri, ci));
                                 ui.close();
                             }
+                            // Other tables' rows that reference this one, by the column they point at.
+                            let pointing: Vec<(usize, &IncomingFk)> = incoming
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, f)| {
+                                    res.columns
+                                        .iter()
+                                        .position(|c| *c == f.target)
+                                        .is_some_and(|i| res.rows[ri][i].is_some())
+                                })
+                                .collect();
+                            if !pointing.is_empty() {
+                                ui.menu_button("Linhas que apontam para esta", |ui| {
+                                    for (i, f) in &pointing {
+                                        let label = format!(
+                                            "{}.{}  ({} = {})",
+                                            f.table, f.column, f.column, f.target
+                                        );
+                                        if ui.button(label).clicked() {
+                                            event = Some(GridEvent::FollowIncoming(ri, *i));
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                ui.separator();
+                            }
                             if can_filter {
                                 let (eq, ne) = if val.is_some() {
                                     ("Filtrar: igual a este valor", "Filtrar: diferente deste valor")
@@ -803,6 +832,7 @@ mod tests {
                     pinned: 0,
                     found: None,
                     found_current: None,
+                    incoming: &[],
                 },
                 &mut Vec::new(),
             );
@@ -839,6 +869,7 @@ mod tests {
                     pinned: 0,
                     found: None,
                     found_current: None,
+                    incoming: &[],
                 },
                 &mut Vec::new(),
             ) {

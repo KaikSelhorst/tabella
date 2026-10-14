@@ -10,9 +10,9 @@ use super::detail::{self, DetailAction};
 use super::grid::{self, GridOpts, grid};
 use super::import_form::{self, ImportAction};
 use super::structure::{self, InsertAction, StructAction};
-use super::{complete, find, icon, palette, plan_view, syntax, theme};
-use crate::app::{self, App, Effect, FavPrompt, GridEvent, Session, Tab, TabKind};
-use crate::db::QueryResult;
+use super::{chart, complete, find, icon, palette, plan_view, syntax, theme};
+use crate::app::{self, App, Effect, FavPrompt, GridEvent, RunMode, Session, Tab, TabKind};
+use crate::db::{ActivityView, QueryResult};
 use crate::export::{self, Format};
 use crate::favorites::{self, Favorite};
 use crate::filters::{self, SavedFilter};
@@ -298,6 +298,7 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     };
     let mut run: Option<String> = None;
     let mut explain: Option<(String, bool)> = None;
+    let mut preview: Option<String> = None;
     let t = theme::tokens();
     let f5 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
     egui::Panel::top(egui::Id::new(("editor", tab.id)))
@@ -360,6 +361,17 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         .clicked()
                 {
                     run = Some(all.clone());
+                }
+                if app::previewable(&one)
+                    && ui
+                        .add_enabled(
+                            !busy,
+                            egui::Button::new(theme::icon_text(icon::EYE, "Prévia", t.muted_foreground, t.foreground)),
+                        )
+                        .on_hover_text("Ctrl+Shift+Enter · quantas e quais linhas este UPDATE/DELETE alteraria, sem alterar")
+                        .clicked()
+                {
+                    preview = Some(one.clone());
                 }
                 if busy {
                     busy_indicator(ui, s);
@@ -533,7 +545,12 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     if ctrl_e {
                         explain = Some((one.clone(), false));
                     }
-                    if out.response.has_focus() && ctrl_enter {
+                    let shift = ui.input(|i| i.modifiers.shift);
+                    if out.response.has_focus() && ctrl_enter && shift {
+                        if app::previewable(&one) {
+                            preview = Some(one.clone());
+                        }
+                    } else if out.response.has_focus() && ctrl_enter {
                         run = Some(one.clone());
                     } else if f5 {
                         run = Some(all.clone());
@@ -549,14 +566,20 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     if let Some(sql) = run.filter(|q| !q.trim().is_empty())
         && !busy
     {
-        request_run(tab, s, sql, None);
+        request_run(tab, s, sql, RunMode::Run);
     }
     if let Some((sql, analyze)) = explain.filter(|(q, _)| !q.trim().is_empty())
         && !busy
     {
-        request_run(tab, s, sql, Some(analyze));
+        request_run(tab, s, sql, RunMode::Explain(analyze));
+    }
+    if let Some(sql) = preview
+        && !busy
+    {
+        request_run(tab, s, sql, RunMode::Preview);
     }
     params_prompt(ui.ctx(), tab, s);
+    preview_dialog(ui.ctx(), tab, s);
     if let Some((format, _)) = export {
         app::start_export(tab, s, format, false);
     }
@@ -574,25 +597,30 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     result_area(ui, tab, cx, false);
 }
 
-/// Runs (or explains, with `Some(analyze)`) editor SQL, asking for `:parameters` first.
-fn request_run(tab: &mut Tab, s: &Session, sql: String, explain: Option<bool>) {
+/// Runs, explains or previews editor SQL, asking for `:parameters` first.
+fn request_run(tab: &mut Tab, s: &Session, sql: String, mode: RunMode) {
     let names = sql::param_names(&sql);
     if names.is_empty() {
-        run_now(tab, s, sql, explain);
+        run_now(tab, s, sql, mode);
     } else {
         tab.params = Some(app::ParamPrompt {
             sql,
             names,
-            explain,
+            mode,
             focused: false,
         });
     }
 }
 
-fn run_now(tab: &mut Tab, s: &Session, sql: String, explain: Option<bool>) {
-    if let Some(analyze) = explain {
-        app::explain(tab, s, &sql, analyze);
-        return;
+fn run_now(tab: &mut Tab, s: &Session, sql: String, mode: RunMode) {
+    match mode {
+        RunMode::Explain(analyze) => return app::explain(tab, s, &sql, analyze),
+        RunMode::Preview => return app::preview(tab, s, sql),
+        // Connections set to "prévia antes de alterar" look first.
+        RunMode::Run if s.cfg.preview_writes && app::previewable(&sql) && !s.cfg.read_only => {
+            return app::preview(tab, s, sql);
+        }
+        RunMode::Run | RunMode::RunPreviewed => {}
     }
     let risk = sql::script_risk(&sql);
     if s.cfg.read_only && risk.writes {
@@ -653,10 +681,10 @@ fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 });
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let label = if p.explain.is_some() {
-                    "Explicar"
-                } else {
-                    "Executar"
+                let label = match p.mode {
+                    RunMode::Explain(_) => "Explicar",
+                    RunMode::Preview => "Prévia",
+                    RunMode::Run | RunMode::RunPreviewed => "Executar",
                 };
                 if ui.add(theme::primary_button(Some(icon::PLAY), label)).clicked() {
                     go = true;
@@ -670,10 +698,146 @@ fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
         let p = tab.params.take().expect("open prompt");
         let values = &tab.param_values;
         let sql = sql::bind_params(s.cfg.kind, &p.sql, |n| values.get(n).cloned().unwrap_or_default());
-        run_now(tab, s, sql, p.explain);
+        run_now(tab, s, sql, p.mode);
     } else if cancel || modal.should_close() {
         tab.params = None;
     }
+}
+
+/// "Prévia": how many rows an UPDATE/DELETE would touch and some of them; run it from here or
+/// give up.
+fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
+    let Some(p) = &tab.preview else { return };
+    let t = theme::tokens();
+    let delete = sql::statement_words_first(&p.sql).is_some_and(|w| w == "DELETE");
+    let (mut run, mut cancel) = (false, false);
+    let modal = egui::Modal::new(egui::Id::new(("preview", tab.id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(720.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::EYE).size(16.0).color(t.lime));
+                ui.label(egui::RichText::new("Prévia").size(15.0).color(t.foreground));
+                ui.label(
+                    egui::RichText::new("nada foi alterado")
+                        .size(11.0)
+                        .color(t.subtle),
+                );
+            });
+            ui.add_space(6.0);
+            egui::Frame::new()
+                .fill(t.sidebar)
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let job = syntax::highlight(&p.sql, egui::FontId::monospace(12.0));
+                    ui.add(egui::Label::new(job).wrap());
+                });
+            ui.add_space(8.0);
+            match &p.data {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new("Contando…").color(t.muted_foreground));
+                    });
+                }
+                Some(Err(e)) => {
+                    ui.label(egui::RichText::new(e).color(t.destructive));
+                }
+                Some(Ok(d)) => {
+                    let verb = if delete { "excluídas" } else { "alteradas" };
+                    let color = if d.count == 0 {
+                        t.muted_foreground
+                    } else if delete {
+                        t.destructive
+                    } else {
+                        t.warning
+                    };
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} linha(s) seriam {verb}",
+                            palette::format_count(d.count as i64)
+                        ))
+                        .size(18.0)
+                        .color(color),
+                    );
+                    if !d.sample.rows.is_empty() {
+                        let what = if d.after {
+                            "como ficariam (o comando rodou numa transação desfeita)"
+                        } else {
+                            "como estão agora"
+                        };
+                        let shown = d.sample.rows.len();
+                        ui.label(
+                            egui::RichText::new(format!("{shown} primeira(s), {what}"))
+                                .size(11.0)
+                                .color(t.subtle),
+                        );
+                        ui.add_space(4.0);
+                        preview_rows(ui, tab.id, &d.sample);
+                    }
+                }
+            }
+            ui.add_space(16.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let ready = matches!(&p.data, Some(Ok(_)));
+                let label = if delete { "Excluir" } else { "Executar" };
+                let button = if delete {
+                    danger_button(label)
+                } else {
+                    theme::primary_button(Some(icon::PLAY), label)
+                };
+                if ui.add_enabled(ready && !s.cfg.read_only, button).clicked() {
+                    run = true;
+                }
+                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if run {
+        let p = tab.preview.take().expect("open preview");
+        run_now(tab, s, p.sql, RunMode::RunPreviewed);
+    } else if cancel || modal.should_close() {
+        tab.preview = None;
+    }
+}
+
+/// A small read-only table for dialogs.
+fn preview_rows(ui: &mut egui::Ui, tab_id: u64, res: &QueryResult) {
+    let t = theme::tokens();
+    egui::ScrollArea::both()
+        .id_salt(("preview_rows", tab_id))
+        .auto_shrink([false, true])
+        .max_height(260.0)
+        .show(ui, |ui| {
+            egui::Grid::new(("preview_grid", tab_id))
+                .striped(true)
+                .spacing([12.0, 4.0])
+                .show(ui, |ui| {
+                    for c in &res.columns {
+                        ui.label(egui::RichText::new(c).size(11.0).color(t.subtle));
+                    }
+                    ui.end_row();
+                    for row in &res.rows {
+                        for v in row {
+                            let text = match v {
+                                Some(v) => egui::RichText::new(v.chars().take(60).collect::<String>())
+                                    .monospace()
+                                    .size(12.0)
+                                    .color(t.foreground),
+                                None => egui::RichText::new("NULL")
+                                    .monospace()
+                                    .size(12.0)
+                                    .italics()
+                                    .color(t.subtle),
+                            };
+                            ui.label(text);
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
 }
 
 /// Formats the selected chars of `text` (or all of it) as SQL.
@@ -764,24 +928,47 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             .parse::<i64>()
             .ok()
     });
+    // The statement of the selected row ("consultas lentas"), to open in the editor.
+    let selected_query = tab.selected.and_then(|(row, _)| {
+        let res = tab.result.as_ref()?;
+        let col = res.columns.iter().position(|c| c == "consulta")?;
+        res.rows.get(row)?.get(col)?.clone()
+    });
     let TabKind::Activity(st) = &mut tab.kind else {
         return;
     };
     let mut refresh = false;
+    let mut switched = false;
+    let mut reset_stats = false;
     egui::Frame::new()
         .fill(t.background)
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::PULSE).size(15.0).color(t.muted_foreground));
-                ui.label(
-                    egui::RichText::new("Atividade no servidor")
-                        .size(15.0)
-                        .color(t.foreground),
-                );
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (view, label, tip) in [
+                    (ActivityView::Sessions, "Sessões", "Quem está conectado e o que está executando"),
+                    (ActivityView::Locks, "Bloqueios", "Sessões esperando por travas de outra (a primeira coluna é quem bloqueia)"),
+                    (ActivityView::Slow, "Consultas lentas", "O que mais consumiu tempo no servidor desde a última vez que as estatísticas foram zeradas"),
+                ] {
+                    let on = st.view == view;
+                    let color = if on { t.foreground } else { t.muted_foreground };
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new(label).color(color)).selected(on))
+                        .on_hover_text(tip)
+                        .clicked()
+                        && !on
+                    {
+                        st.view = view;
+                        switched = true;
+                    }
+                }
+                ui.spacing_mut().item_spacing.x = 8.0;
                 if busy {
                     ui.spinner();
                 }
+                let view = st.view;
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let refresh_btn = theme::icon_text(
                         icon::ARROWS_CLOCKWISE,
@@ -794,6 +981,34 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     }
                     ui.checkbox(&mut st.auto_refresh, "a cada 2 s");
                     ui.separator();
+                    if view == ActivityView::Slow {
+                        if ui
+                            .add_enabled(!busy, egui::Button::new(theme::icon_text(
+                                icon::ERASER,
+                                "Zerar estatísticas",
+                                t.muted_foreground,
+                                t.foreground,
+                            )))
+                            .on_hover_text("Recomeça a contagem: útil para medir só o que acontece daqui em diante")
+                            .clicked()
+                        {
+                            reset_stats = true;
+                        }
+                        if ui
+                            .add_enabled(selected_query.is_some(), egui::Button::new(theme::icon_text(
+                                icon::CODE,
+                                "Abrir no editor",
+                                t.muted_foreground,
+                                t.foreground,
+                            )))
+                            .on_disabled_hover_text("Selecione uma consulta")
+                            .clicked()
+                            && let Some(q) = &selected_query
+                        {
+                            cx.request = Some(Request::Sql(q.clone()));
+                        }
+                        return;
+                    }
                     let end =
                         theme::icon_text(icon::PLUGS, "Encerrar conexão", t.muted_foreground, t.foreground);
                     if ui
@@ -815,8 +1030,23 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 });
             });
         });
+    if switched {
+        tab.result = None;
+        tab.selected = None;
+        tab.anchor = None;
+        tab.error = None;
+        app::refresh_activity(tab, s);
+        result_area(ui, tab, cx, false);
+        return;
+    }
+    if reset_stats {
+        app::reset_query_stats(tab, s);
+    }
+    let TabKind::Activity(st) = &mut tab.kind else {
+        return;
+    };
     // While the confirmation is open the list stays still, so the selection can't move under it.
-    if st.auto_refresh && st.confirm_kill.is_none() && !busy {
+    if st.auto_refresh && st.confirm_kill.is_none() && !busy && !reset_stats {
         let due = st.last_refresh.is_none_or(|at| at.elapsed() >= ACTIVITY_EVERY);
         if due {
             refresh = true;
@@ -1363,20 +1593,80 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         }
         return;
     };
+    // Editor results can be charted (kept in egui memory per tab).
+    let is_sql = matches!(tab.kind, TabKind::Sql { .. });
+    let chart_id = egui::Id::new(("chart", tab.id));
+    let mut chart_spec: Option<chart::ChartSpec> = ui.data(|d| d.get_temp(chart_id)).flatten();
+    let result_kinds = values::column_kinds(res, &[]);
+    // A new result may not have the chosen columns any more: pick again.
+    if let Some(c) = chart_spec
+        && (c.x >= res.columns.len()
+            || c.y >= res.columns.len()
+            || result_kinds[c.y] != values::ValueKind::Number)
+    {
+        chart_spec = chart::default_spec(res, &result_kinds);
+    }
     if !editable {
         egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(8, 2))
             .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(summary(res))
-                        .small()
-                        .color(t.muted_foreground),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(summary(res))
+                            .small()
+                            .color(t.muted_foreground),
+                    );
+                    let chartable =
+                        is_sql && chart::default_spec(res, &result_kinds).is_some() && !res.rows.is_empty();
+                    if chartable {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let on = chart_spec.is_some();
+                            let color = if on { t.lime } else { t.muted_foreground };
+                            let b = egui::Button::new(theme::icon_text(
+                                icon::CHART_BAR,
+                                "Gráfico",
+                                color,
+                                t.foreground,
+                            ))
+                            .frame(false);
+                            if ui
+                                .add(b)
+                                .on_hover_text("Barras ou linha de uma coluna numérica")
+                                .clicked()
+                            {
+                                chart_spec = if on {
+                                    None
+                                } else {
+                                    chart::default_spec(res, &result_kinds)
+                                };
+                            }
+                        });
+                    }
+                });
             });
     }
     if res.columns.is_empty() {
         return;
     }
+    let mut close_chart = false;
+    if is_sql && let Some(spec) = &mut chart_spec {
+        egui::Panel::top(egui::Id::new(("chart_panel", tab.id)))
+            .resizable(true)
+            .default_size(280.0)
+            .size_range(160.0..=640.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(t.background)
+                    .inner_margin(egui::Margin::symmetric(8, 4)),
+            )
+            .show(ui, |ui| {
+                close_chart = !chart::chart(ui, tab.id, res, &result_kinds, spec);
+            });
+    }
+    if close_chart {
+        chart_spec = None;
+    }
+    ui.data_mut(|d| d.insert_temp(chart_id, chart_spec));
 
     // Pending changes are shown in place: edited values, deleted rows struck through.
     let overlay = match &tab.kind {
@@ -1388,7 +1678,8 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     let pinned = tab.pinned_count();
     let range = tab.range().filter(|r| r.r1 < shown.rows.len());
     let no_cols = Vec::new();
-    let (cols, edit, order, bool_pick, row_offset, has_pk) = match &mut tab.kind {
+    let no_incoming = Vec::new();
+    let (cols, edit, order, bool_pick, row_offset, has_pk, incoming) = match &mut tab.kind {
         TabKind::Table(ts) if editable => {
             let has_pk = ts.cols.iter().any(|c| c.pk);
             (
@@ -1398,9 +1689,10 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
                 ts.bool_pick,
                 ts.page * PAGE_SIZE,
                 has_pk,
+                &ts.incoming,
             )
         }
-        _ => (&no_cols, None, None, None, 0, false),
+        _ => (&no_cols, None, None, None, 0, false, &no_incoming),
     };
     let can_edit = editable && has_pk && !s.cfg.read_only;
     let kinds = values::column_kinds(res, cols);
@@ -1514,6 +1806,7 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         pinned,
         found: found_set.as_ref(),
         found_current,
+        incoming,
     };
     // Wide results scroll sideways instead of running under the detail panel. A pinned cell
     // double-clicked while scrolled away scrolls back so its editor shows.

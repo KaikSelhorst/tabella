@@ -4,7 +4,10 @@ use std::thread;
 
 use std::path::PathBuf;
 
-use crate::db::{Canceller, ColumnInfo, Conn, ConnConfig, QueryResult, TableRef, TableStructure};
+use crate::db::{
+    ActivityView, Canceller, ColumnInfo, Conn, ConnConfig, IncomingFk, PreviewData, QueryResult, TableRef,
+    TableStructure,
+};
 use crate::error::{DbError, DbResult};
 use crate::export::{Format, Writer};
 use crate::import::ImportSpec;
@@ -60,16 +63,27 @@ pub enum Job {
     /// Sessions on the server (answers with `Reply::Rows`).
     Activity {
         tab: u64,
+        view: ActivityView,
+    },
+    /// Clear the "consultas lentas" counters, then show them again.
+    ResetQueryStats {
+        tab: u64,
     },
     /// Cancel another session's statement (or close it), then list sessions again.
     Kill {
         tab: u64,
         id: i64,
         terminate: bool,
+        view: ActivityView,
     },
     Export {
         tab: u64,
         spec: ExportSpec,
+    },
+    /// What an UPDATE/DELETE would touch, without keeping any change.
+    Preview {
+        tab: u64,
+        sql: String,
     },
     /// The two queries of `sql::column_stats`.
     ColumnStats {
@@ -137,6 +151,8 @@ pub enum Reply {
     Columns {
         tab: u64,
         res: DbResult<Vec<ColumnInfo>>,
+        /// Foreign keys elsewhere pointing at this table (empty if they couldn't be read).
+        incoming: Vec<IncomingFk>,
     },
     Count {
         tab: u64,
@@ -170,6 +186,10 @@ pub enum Reply {
     ColumnStats {
         tab: u64,
         res: DbResult<(QueryResult, QueryResult)>,
+    },
+    Preview {
+        tab: u64,
+        res: DbResult<PreviewData>,
     },
     Tx(TxState),
     /// Outcome of `Job::EndTx`.
@@ -280,6 +300,10 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                         notice: None,
                     }
                 }
+                Job::Preview { tab, sql } => Reply::Preview {
+                    tab,
+                    res: conn.preview(&sql, tx.open),
+                },
                 Job::ColumnStats { tab, summary, top } => Reply::ColumnStats {
                     tab,
                     res: conn.query(&summary).and_then(|a| Ok((a, conn.query(&top)?))),
@@ -333,6 +357,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                 Job::Columns { tab, schema, table } => Reply::Columns {
                     tab,
                     res: conn.columns_with_fks(&schema, &table),
+                    incoming: conn.incoming_fks(&schema, &table).unwrap_or_default(),
                 },
                 Job::Count { tab, sql } => Reply::Count {
                     tab,
@@ -355,17 +380,30 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                         res: Box::new(res.and_then(|()| conn.query(&refresh))),
                     }
                 }
-                Job::Activity { tab } => Reply::Rows {
+                Job::Activity { tab, view } => Reply::Rows {
                     tab,
-                    res: Box::new(conn.activity()),
+                    res: Box::new(conn.activity_view(view)),
                     notice: None,
                 },
-                Job::Kill { tab, id, terminate } => {
+                Job::ResetQueryStats { tab } => {
+                    let notice = conn.reset_query_stats().err().map(|e| e.to_string());
+                    Reply::Rows {
+                        tab,
+                        res: Box::new(conn.activity_view(ActivityView::Slow)),
+                        notice,
+                    }
+                }
+                Job::Kill {
+                    tab,
+                    id,
+                    terminate,
+                    view,
+                } => {
                     // A refused kill still refreshes the list; the reason comes as the notice.
                     let notice = conn.kill(id, terminate).err().map(|e| e.to_string());
                     Reply::Rows {
                         tab,
-                        res: Box::new(conn.activity()),
+                        res: Box::new(conn.activity_view(view)),
                         notice,
                     }
                 }

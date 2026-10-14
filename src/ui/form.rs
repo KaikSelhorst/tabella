@@ -165,6 +165,15 @@ impl App {
                                  Confirmar ou Desfazer",
                         );
                         ui.end_row();
+                        ui.label("");
+                        ui.add_enabled(
+                            !c.read_only,
+                            egui::Checkbox::new(&mut c.preview_writes, "Prévia antes de UPDATE/DELETE"),
+                        )
+                        .on_hover_text(
+                            "No editor, mostra quantas e quais linhas seriam alteradas antes de executar",
+                        );
+                        ui.end_row();
                         ui.label("Cor");
                         color_picker(ui, &mut c.color);
                         ui.end_row();
