@@ -76,6 +76,7 @@ services:
     volumes:
       - ./dev/postgres.sql:/docker-entrypoint-initdb.d/1-seed.sql:ro
       - ./dev/postgres-objects.sql:/docker-entrypoint-initdb.d/2-objects.sql:ro
+      - ./dev/postgres-extra.sql:/docker-entrypoint-initdb.d/3-extra.sql:ro
     # Over TCP: during the ~3 min seed the server only listens on its socket, so this
     # reports healthy once the data is really there.
     healthcheck:
@@ -91,6 +92,7 @@ services:
     volumes:
       - ./dev/mysql.sql:/docker-entrypoint-initdb.d/1-seed.sql:ro
       - ./dev/mysql-objects.sql:/docker-entrypoint-initdb.d/2-objects.sql:ro
+      - ./dev/mysql-extra.sql:/docker-entrypoint-initdb.d/3-extra.sql:ro
     healthcheck:
       <<: *mysql-health
       interval: 3s
