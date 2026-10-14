@@ -4,7 +4,7 @@ use super::icon;
 use super::theme;
 use crate::app::{App, MasterMode, Notice};
 use crate::config;
-use crate::db::{ConnConfig, Kind};
+use crate::db::{ConnConfig, Kind, SshConfig, Tag};
 
 const FIELD_WIDTH: f32 = 280.0;
 
@@ -117,10 +117,71 @@ impl App {
                                 "Bloqueia edições na grade e deixa a sessão read-only no próprio banco",
                             );
                         ui.end_row();
+                        ui.label("Cor");
+                        color_picker(ui, &mut c.color);
+                        ui.end_row();
+                        ui.label("Timeout");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut c.timeout_secs)
+                                    .range(0..=86_400)
+                                    .suffix(" s"),
+                            );
+                            let hint = if c.timeout_secs == 0 {
+                                "sem limite"
+                            } else {
+                                "por consulta, no servidor"
+                            };
+                            ui.label(egui::RichText::new(hint).size(11.0).color(t.subtle));
+                        });
+                        ui.end_row();
+                        ui.label("SSH");
+                        let mut tunnel = c.ssh.is_some();
+                        if ui.checkbox(&mut tunnel, "Conectar por túnel SSH").changed() {
+                            c.ssh = tunnel.then(SshConfig::default);
+                        }
+                        ui.end_row();
+                        if let Some(ssh) = &mut c.ssh {
+                            ui.label("");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    TextEdit::singleline(&mut ssh.user)
+                                        .hint_text("usuário")
+                                        .desired_width(80.0),
+                                );
+                                ui.label("@");
+                                ui.add(
+                                    TextEdit::singleline(&mut ssh.host)
+                                        .hint_text("servidor ssh")
+                                        .desired_width(124.0),
+                                );
+                                ui.add(egui::DragValue::new(&mut ssh.port).range(1..=65535));
+                            });
+                            ui.end_row();
+                            ui.label("");
+                            ui.add(
+                                TextEdit::singleline(&mut ssh.key_path)
+                                    .hint_text("chave privada (vazio = agente / chaves padrão)")
+                                    .desired_width(FIELD_WIDTH),
+                            );
+                            ui.end_row();
+                            ui.label("");
+                            ui.label(
+                                egui::RichText::new("Host e porta acima são vistos a partir do servidor SSH")
+                                    .size(11.0)
+                                    .color(t.subtle),
+                            );
+                            ui.end_row();
+                        }
                     });
                 ui.add_space(16.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let valid = !form.cfg.name.trim().is_empty() && !duplicate;
+                    let ssh_ok = form
+                        .cfg
+                        .ssh
+                        .as_ref()
+                        .is_none_or(|s| !s.host.trim().is_empty() && !s.user.trim().is_empty());
+                    let valid = !form.cfg.name.trim().is_empty() && !duplicate && ssh_ok;
                     save = ui
                         .add_enabled(valid, theme::primary_button(None, "Salvar"))
                         .clicked();
@@ -280,4 +341,37 @@ impl App {
             }
         }
     }
+}
+
+/// "None" plus one swatch per tag; the selected one gets a ring.
+fn color_picker(ui: &mut egui::Ui, color: &mut Option<Tag>) {
+    let t = theme::tokens();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let none = egui::RichText::new("nenhuma")
+            .size(11.0)
+            .color(if color.is_none() { t.foreground } else { t.subtle });
+        if ui
+            .add(egui::Button::new(none).selected(color.is_none()))
+            .clicked()
+        {
+            *color = None;
+        }
+        for tag in Tag::ALL {
+            let (rect, r) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+            let p = ui.painter();
+            p.rect_filled(rect.shrink(2.0), 0.0, theme::tag_color(tag));
+            if *color == Some(tag) {
+                p.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.5, t.foreground),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if r.on_hover_text(tag.label()).clicked() {
+                *color = Some(tag);
+            }
+        }
+    });
 }

@@ -166,12 +166,14 @@ impl App {
 
         let active_table = self.tabs.get(self.active).and_then(|t| match &t.kind {
             TabKind::Table(ts) => Some((ts.schema.as_str(), ts.table.as_str())),
+            TabKind::Structure(st) => Some((st.schema.as_str(), st.table.as_str())),
             TabKind::Sql { .. } => None,
         });
         let needle = self.filter.to_lowercase();
         let kind = s.cfg.kind;
         let mut to_open: Option<(String, String)> = None;
         let mut to_sql: Option<String> = None;
+        let mut to_structure: Option<(String, String)> = None;
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -233,6 +235,10 @@ impl App {
                                         to_open = Some((t.schema.clone(), t.name.clone()));
                                         ui.close();
                                     }
+                                    if ui.button("Estrutura").clicked() {
+                                        to_structure = Some((t.schema.clone(), t.name.clone()));
+                                        ui.close();
+                                    }
                                     if ui.button("SELECT em novo editor").clicked() {
                                         to_sql = Some(format!(
                                             "SELECT * FROM {} LIMIT 100;",
@@ -255,6 +261,9 @@ impl App {
         if let Some((schema, table)) = to_open {
             self.open_table(&schema, &table);
         }
+        if let Some((schema, table)) = to_structure {
+            self.open_structure(&schema, &table);
+        }
         if let Some(sql) = to_sql {
             self.open_sql(sql);
         }
@@ -270,6 +279,10 @@ fn conn_label(c: &ConnConfig) -> egui::text::LayoutJob {
         Kind::MySql => ("MySQL", t.warning),
     };
     let mut job = LayoutJob::default();
+    if let Some(tag) = c.color {
+        let dot = TextFormat::simple(egui::FontId::proportional(11.0), theme::tag_color(tag));
+        job.append("● ", 0.0, dot);
+    }
     job.append(
         &c.name,
         0.0,

@@ -4,6 +4,7 @@ mod form;
 mod grid;
 mod palette;
 mod sidebar;
+mod structure;
 mod syntax;
 mod tabs;
 pub mod theme;
@@ -57,6 +58,15 @@ impl eframe::App for App {
         }
         self.shortcuts(ui.ctx());
         let t = theme::tokens();
+        // Environment marker: a colored band across the window while connected to a tagged
+        // connection, so production is never mistaken for staging.
+        if let Some(tag) = self.session.as_ref().and_then(|s| s.cfg.color) {
+            egui::Panel::top("env_band")
+                .exact_size(3.0)
+                .frame(egui::Frame::new().fill(theme::tag_color(tag)))
+                .show_separator_line(false)
+                .show(ui, |_| {});
+        }
         egui::Panel::left("side")
             .frame(
                 egui::Frame::new()
@@ -181,6 +191,7 @@ mod screenshots {
             data_type: ty.into(),
             pk,
             nullable: !pk,
+            has_default: false,
         };
         let cols = vec![
             col("id", "integer", true),
@@ -244,6 +255,73 @@ mod screenshots {
         harness.run();
         let img = harness.render().unwrap();
         img.save(format!("{dir}/table.png")).unwrap();
+
+        // New features: environment band + export banner, insert form, structure tab.
+        harness.state_mut().session.as_mut().unwrap().cfg.color = Some(crate::db::Tag::Red);
+        harness.state_mut().tabs[0].exported =
+            Some(("/home/u/Downloads/clientes_20261013-190000.csv".into(), 500));
+        // `run` fails if the UI keeps asking to repaint: this layout used to make the scroll bars
+        // flip-flop forever.
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/band-export.png"))
+            .unwrap();
+        harness.state_mut().tabs[0].exported = None;
+        crate::app::open_insert_form(&mut harness.state_mut().tabs[0]);
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/insert.png"))
+            .unwrap();
+        if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
+            ts.insert = None;
+        }
+        harness.state_mut().session.as_mut().unwrap().cfg.color = None;
+        {
+            use crate::db::{StructColumn, TableStructure};
+            let col = |name: &str, ty: &str, nullable, default: Option<&str>, pk| StructColumn {
+                name: name.into(),
+                data_type: ty.into(),
+                nullable,
+                default: default.map(Into::into),
+                pk,
+            };
+            let data = TableStructure {
+                columns: vec![
+                    col("id", "integer", false, Some("nextval('clientes_id_seq'::regclass)"), true),
+                    col("nome", "text", true, None, false),
+                    col("email", "text", true, None, false),
+                    col("ativo", "boolean", true, Some("true"), false),
+                    col("saldo", "numeric(12,2)", true, None, false),
+                    col("criado_em", "timestamp without time zone", true, Some("now()"), false),
+                ],
+                indexes: vec![
+                    ("clientes_pkey".into(), "CREATE UNIQUE INDEX clientes_pkey ON public.clientes USING btree (id)".into()),
+                    ("clientes_email_idx".into(), "CREATE INDEX clientes_email_idx ON public.clientes USING btree (email)".into()),
+                ],
+                foreign_keys: vec![],
+                ddl: "CREATE TABLE \"public\".\"clientes\" (\n    \"id\" integer NOT NULL DEFAULT nextval('clientes_id_seq'::regclass),\n    \"nome\" text,\n    \"email\" text,\n    \"ativo\" boolean DEFAULT true,\n    \"saldo\" numeric(12,2),\n    \"criado_em\" timestamp without time zone DEFAULT now(),\n    CONSTRAINT \"clientes_pkey\" PRIMARY KEY (id)\n);\nCREATE INDEX clientes_email_idx ON public.clientes USING btree (email);".into(),
+            };
+            let st = crate::app::StructState {
+                schema: "public".into(),
+                table: "clientes".into(),
+                data: Some(data),
+            };
+            let tab = Tab::new(3, "clientes · estrutura".into(), TabKind::Structure(Box::new(st)));
+            harness.state_mut().tabs.push(tab);
+            harness.state_mut().active = 2;
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/structure.png"))
+                .unwrap();
+            harness.state_mut().tabs.pop();
+            harness.state_mut().active = 0;
+        }
         // 3x zoom on the grid header's left corner, to check pixel-level alignment.
         let crop = image::imageops::crop_imm(&img, 236, 64, 420, 80).to_image();
         image::imageops::resize(&crop, 1260, 240, image::imageops::FilterType::Nearest)
@@ -377,6 +455,13 @@ mod screenshots {
         let mut remote = ConnConfig::new(Kind::MySql);
         remote.host = "db.exemplo.com".into();
         remote.read_only = true;
+        remote.color = Some(crate::db::Tag::Red);
+        remote.timeout_secs = 30;
+        remote.ssh = Some(crate::db::SshConfig {
+            host: "bastion.exemplo.com".into(),
+            user: "deploy".into(),
+            ..Default::default()
+        });
         harness.state_mut().form = Some(crate::app::ConnForm {
             editing: None,
             cfg: remote,

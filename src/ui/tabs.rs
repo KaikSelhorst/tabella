@@ -5,9 +5,11 @@ use eframe::egui::{self, Align, Key, Layout, TextEdit};
 
 use super::detail::{self, DetailAction};
 use super::grid::{GridOpts, grid};
+use super::structure::{self, InsertAction, StructAction};
 use super::{complete, icon, palette, syntax, theme};
 use crate::app::{self, App, GridEvent, Session, Tab, TabKind};
 use crate::db::QueryResult;
+use crate::export::{self, Format};
 use crate::history::{self, Entry};
 use crate::sql::{self, PAGE_SIZE};
 use crate::values;
@@ -17,6 +19,14 @@ struct Cx<'a> {
     s: &'a Session,
     show_detail: &'a mut bool,
     history: &'a [Entry],
+    /// Something only the app can do (open another tab), carried out after drawing.
+    request: Option<Request>,
+}
+
+enum Request {
+    Structure(String, String),
+    Data(String, String),
+    Sql(String),
 }
 
 impl App {
@@ -38,6 +48,7 @@ impl App {
                         let glyph = match tab.kind {
                             TabKind::Table(_) => icon::TABLE,
                             TabKind::Sql { .. } => icon::CODE,
+                            TabKind::Structure(_) => icon::TREE_STRUCTURE,
                         };
                         if theme::tab_label(ui, glyph, &tab.title, i == self.active).clicked() {
                             self.active = i;
@@ -68,11 +79,122 @@ impl App {
             s,
             show_detail: &mut self.show_detail,
             history: &self.history,
+            request: None,
         };
         match &tab.kind {
             TabKind::Sql { .. } => sql_tab(ui, tab, &mut cx),
             TabKind::Table(_) => table_tab(ui, tab, &mut cx),
+            TabKind::Structure(st) => {
+                if let Some(e) = &tab.error {
+                    error_banner(ui, e);
+                }
+                cx.request = match structure::structure_tab(ui, st, tab.busy()) {
+                    Some(StructAction::OpenSql(ddl)) => Some(Request::Sql(ddl)),
+                    Some(StructAction::OpenData) => Some(Request::Data(st.schema.clone(), st.table.clone())),
+                    None => None,
+                };
+            }
         }
+        match cx.request {
+            Some(Request::Structure(schema, table)) => self.open_structure(&schema, &table),
+            Some(Request::Data(schema, table)) => self.open_table(&schema, &table),
+            Some(Request::Sql(text)) => self.open_sql(text),
+            None => {}
+        }
+    }
+}
+
+fn error_banner(ui: &mut egui::Ui, e: &str) {
+    let t = theme::tokens();
+    egui::Frame::new()
+        .fill(theme::mix(t.destructive, 0.12, t.background))
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(egui::Label::new(egui::RichText::new(e).color(t.destructive)).wrap());
+        });
+}
+
+/// "Exportar" dropdown: what is on screen, or (table tabs) the whole table. Returns the choice;
+/// the caller starts the export once it can borrow the tab again.
+fn export_menu(ui: &mut egui::Ui, is_table: bool, enabled: bool) -> Option<(Format, bool)> {
+    let t = theme::tokens();
+    let label = theme::icon_text(
+        icon::DOWNLOAD_SIMPLE,
+        "Exportar",
+        t.muted_foreground,
+        t.foreground,
+    );
+    let mut chosen = None;
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.menu_button(label, |ui| {
+            ui.set_width(220.0);
+            let heading = |ui: &mut egui::Ui, text: &str| {
+                ui.label(egui::RichText::new(text).size(11.0).color(t.subtle));
+            };
+            heading(ui, if is_table { "PÁGINA ATUAL" } else { "RESULTADO" });
+            for f in Format::ALL {
+                if ui.button(f.label()).clicked() {
+                    chosen = Some((f, false));
+                    ui.close();
+                }
+            }
+            if is_table {
+                ui.separator();
+                heading(ui, "TABELA INTEIRA (COM FILTRO)");
+                for f in Format::ALL {
+                    if ui.button(f.label()).clicked() {
+                        chosen = Some((f, true));
+                        ui.close();
+                    }
+                }
+            }
+            ui.separator();
+            ui.label(
+                egui::RichText::new("Salvo na pasta Downloads")
+                    .size(11.0)
+                    .color(t.subtle),
+            );
+        });
+    });
+    chosen
+}
+
+/// "Exportado N linhas para arquivo · Abrir pasta · ×" after an export finishes.
+fn export_banner(ui: &mut egui::Ui, tab: &mut Tab) {
+    let Some((path, rows)) = &tab.exported else { return };
+    let t = theme::tokens();
+    let mut dismiss = false;
+    egui::Frame::new()
+        .fill(theme::mix(t.lime, 0.10, t.background))
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::CHECK).color(t.lime));
+                let name = path
+                    .file_name()
+                    .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().to_string());
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} linha(s) exportada(s) para {name}",
+                        palette::format_count(*rows as i64)
+                    ))
+                    .color(t.foreground),
+                )
+                .on_hover_text(path.display().to_string());
+                if ui.link("Abrir pasta").clicked() {
+                    export::reveal(path);
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    dismiss = ui
+                        .add(egui::Button::new(theme::icon(icon::X).size(11.0).color(t.subtle)).frame(false))
+                        .clicked();
+                });
+            });
+        });
+    if dismiss {
+        tab.exported = None;
     }
 }
 
@@ -98,6 +220,8 @@ fn busy_indicator(ui: &mut egui::Ui, s: &Session) {
 fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
     let busy = tab.busy();
+    let can_export = !busy && tab.result.as_ref().is_some_and(|r| !r.columns.is_empty());
+    let mut export = None;
     let TabKind::Sql { text } = &mut tab.kind else {
         return;
     };
@@ -140,6 +264,7 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 if let Some(sql) = history_menu(ui, cx.history, &s.cfg.name) {
                     *text = sql;
                 }
+                export = export_menu(ui, false, can_export);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     detail_toggle(ui, cx.show_detail);
                     ui.label(egui::RichText::new("Ctrl+Enter / F5").size(11.0).color(t.subtle));
@@ -183,7 +308,11 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             app::run_sql(tab, s, sql);
         }
     }
+    if let Some((format, _)) = export {
+        app::start_export(tab, s, format, false);
+    }
     confirm_run(ui.ctx(), tab, s);
+    export_banner(ui, tab);
     result_area(ui, tab, cx, false);
 }
 
@@ -245,12 +374,16 @@ fn danger_button(label: &str) -> egui::Button<'static> {
 
 fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
+    let tab_id = tab.id;
     let mut reload_now = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
     let mut add_record = false;
     let status = status_text(tab, s.cfg.read_only);
     let busy = tab.busy();
     let rows = tab.result.as_ref().map_or(0, |r| r.rows.len());
     let full = rows >= PAGE_SIZE;
+    let can_export = !busy && tab.result.as_ref().is_some_and(|r| !r.columns.is_empty());
+    let mut export = None;
+    let mut show_structure = false;
     let TabKind::Table(ts) = &mut tab.kind else {
         return;
     };
@@ -315,8 +448,12 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         .monospace()
                         .color(syntax::keyword_color()),
                 );
-                // Measured after the labels; leaves room for the buttons on the right.
-                let w = (ui.available_width() - 200.0).max(120.0);
+                // The buttons on the right were measured last frame; the filter takes the rest.
+                // A guess here (instead of a measurement) made the row overflow, the panel grow,
+                // and the whole UI repaint forever.
+                let right_id = egui::Id::new(("toolbar_right", tab_id));
+                let right_w = ui.data(|d| d.get_temp::<f32>(right_id)).unwrap_or(440.0);
+                let w = (ui.available_width() - right_w - 8.0).max(120.0);
                 let r = ui.add(
                     TextEdit::singleline(&mut ts.filter)
                         .hint_text("id > 10 AND nome LIKE 'a%'   (Enter aplica)")
@@ -330,6 +467,7 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     reload_now = true;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let start = ui.cursor().right();
                     add_record = ui
                         .add_enabled(
                             !s.cfg.read_only,
@@ -345,19 +483,52 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         reload_now = true;
                     }
                     detail_toggle(ui, cx.show_detail);
+                    export = export_menu(ui, true, can_export);
+                    let structure = theme::icon_text(
+                        icon::TREE_STRUCTURE,
+                        "Estrutura",
+                        t.muted_foreground,
+                        t.foreground,
+                    );
+                    show_structure = ui
+                        .button(structure)
+                        .on_hover_text("Colunas, índices e DDL")
+                        .clicked();
+                    let used = start - ui.cursor().right();
+                    ui.data_mut(|d| d.insert_temp(right_id, used));
                 });
             })
         });
+    if show_structure {
+        cx.request = Some(Request::Structure(ts.schema.clone(), ts.table.clone()));
+    }
     let r = toolbar.response.rect;
     ui.painter()
         .hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, t.border));
+    if let Some((format, whole)) = export {
+        app::start_export(tab, s, format, whole);
+    }
     if add_record {
-        app::insert_default_row(tab, s);
+        app::open_insert_form(tab);
     } else if reload_now {
         app::reload(tab, s);
     }
+    export_banner(ui, tab);
     result_area(ui, tab, cx, true);
     confirm_delete(ui.ctx(), tab, s);
+    insert_form(ui.ctx(), tab, s);
+}
+
+fn insert_form(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
+    let id = tab.id;
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let name = format!("{}.{}", ts.schema, ts.table);
+    let Some(fields) = &mut ts.insert else { return };
+    match structure::insert_form(ctx, id, &name, fields) {
+        Some(InsertAction::Submit) => app::submit_insert(tab, s),
+        Some(InsertAction::Cancel) => ts.insert = None,
+        None => {}
+    }
 }
 
 /// Asks before deleting; shows the exact WHERE clause that will run.
@@ -454,13 +625,7 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     let s = cx.s;
     let t = theme::tokens();
     if let Some(e) = &tab.error {
-        egui::Frame::new()
-            .fill(theme::mix(t.destructive, 0.12, t.background))
-            .inner_margin(egui::Margin::symmetric(8, 4))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.add(egui::Label::new(egui::RichText::new(e).color(t.destructive)).wrap());
-            });
+        error_banner(ui, e);
     }
     let Some(res) = &tab.result else {
         if tab.busy() {

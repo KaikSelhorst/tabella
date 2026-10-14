@@ -43,6 +43,28 @@ services:
       - ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
     healthcheck: *pg-health
 
+  # SSH server for the tunnel test: reaches test-pg over the compose network (test-pg:5432).
+  test-ssh:
+    profiles: [test]
+    image: alpine:3.20
+    ports: ["52222:22"]
+    volumes: ["./dev/ssh/test_key.pub:/tmp/key.pub:ro"]
+    command:
+      - sh
+      - -c
+      - >-
+        apk add --no-cache openssh-server >/dev/null &&
+        ssh-keygen -A &&
+        adduser -D -s /bin/sh tunnel &&
+        sed -i 's/^tunnel:!/tunnel:*/' /etc/shadow &&
+        install -d -m 700 -o tunnel /home/tunnel/.ssh &&
+        install -m 600 -o tunnel /tmp/key.pub /home/tunnel/.ssh/authorized_keys &&
+        exec /usr/sbin/sshd -D -e -o AllowTcpForwarding=yes -o PasswordAuthentication=no
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "22"]
+      interval: 2s
+      retries: 60
+
   dev-pg:
     profiles: [dev]
     image: postgres:16-alpine

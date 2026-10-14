@@ -83,6 +83,69 @@ pub struct ConnConfig {
     /// Blocks writes: no grid edits, and the session itself is read-only on the server.
     #[serde(default)]
     pub read_only: bool,
+    /// Environment color shown around the app while connected (e.g. red for production).
+    #[serde(default)]
+    pub color: Option<Tag>,
+    /// Statements running longer than this are stopped by the server. 0 = no limit.
+    #[serde(default)]
+    pub timeout_secs: u32,
+    /// Reach the database through an SSH tunnel (key or agent authentication).
+    #[serde(default)]
+    pub ssh: Option<SshConfig>,
+}
+
+/// Connection color tags, in the order the form offers them.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub enum Tag {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Violet,
+}
+
+impl Tag {
+    pub const ALL: [Tag; 6] = [
+        Tag::Red,
+        Tag::Orange,
+        Tag::Yellow,
+        Tag::Green,
+        Tag::Blue,
+        Tag::Violet,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tag::Red => "Vermelho",
+            Tag::Orange => "Laranja",
+            Tag::Yellow => "Amarelo",
+            Tag::Green => "Verde",
+            Tag::Blue => "Azul",
+            Tag::Violet => "Violeta",
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub struct SshConfig {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    /// Private key file; empty uses the SSH agent / default keys.
+    #[serde(default)]
+    pub key_path: String,
+}
+
+impl Default for SshConfig {
+    fn default() -> Self {
+        SshConfig {
+            host: String::new(),
+            port: 22,
+            user: String::new(),
+            key_path: String::new(),
+        }
+    }
 }
 
 impl ConnConfig {
@@ -107,6 +170,9 @@ impl ConnConfig {
             ssl: false,
             ssl_insecure: false,
             read_only: false,
+            color: None,
+            timeout_secs: 0,
+            ssh: None,
         }
     }
 }
@@ -137,12 +203,19 @@ pub struct ColumnInfo {
     pub data_type: String,
     pub pk: bool,
     pub nullable: bool,
+    /// Gets a value on INSERT when omitted (DEFAULT, serial/identity, auto_increment).
+    pub has_default: bool,
 }
 
-fn my_opts(cfg: &ConnConfig) -> mysql::OptsBuilder {
+fn my_opts(cfg: &ConnConfig, via: Option<u16>) -> mysql::OptsBuilder {
+    let host = if via.is_some() {
+        "127.0.0.1".to_string()
+    } else {
+        cfg.host.clone()
+    };
     let mut b = mysql::OptsBuilder::new()
-        .ip_or_hostname(Some(cfg.host.clone()))
-        .tcp_port(cfg.port)
+        .ip_or_hostname(Some(host))
+        .tcp_port(via.unwrap_or(cfg.port))
         .user(Some(cfg.user.clone()))
         .pass(Some(cfg.password.clone()))
         .tcp_connect_timeout(Some(Duration::from_secs(10)))
@@ -180,14 +253,37 @@ impl Canceller {
     }
 }
 
+/// What the "Estrutura" tab shows.
+#[derive(Clone, Debug, Default)]
+pub struct TableStructure {
+    pub columns: Vec<StructColumn>,
+    /// `(name, definition)`.
+    pub indexes: Vec<(String, String)>,
+    /// `(name, definition)`.
+    pub foreign_keys: Vec<(String, String)>,
+    /// `CREATE TABLE ...` (plus separate indexes on Postgres), ready to copy.
+    pub ddl: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct StructColumn {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    /// Default expression; `None` when the column has none.
+    pub default: Option<String>,
+    pub pk: bool,
+}
+
 pub enum Conn {
     Pg(Box<postgres::Client>),
     My(mysql::Conn),
 }
 
 impl Conn {
-    pub fn connect(cfg: &ConnConfig) -> DbResult<Self> {
-        let mut conn = Self::open(cfg)?;
+    /// Connects to `cfg`, or through a local tunnel port when `via` is set (SSH).
+    pub fn connect(cfg: &ConnConfig, via: Option<u16>) -> DbResult<Self> {
+        let mut conn = Self::open(cfg, via)?;
         if cfg.read_only {
             // Enforced by the server, so the SQL editor can't write either.
             conn.query(match cfg.kind {
@@ -195,20 +291,33 @@ impl Conn {
                 Kind::MySql => "SET SESSION TRANSACTION READ ONLY",
             })?;
         }
+        if cfg.timeout_secs > 0 {
+            // Server-side limit: also covers COUNT(*) and exports, not just the SQL editor.
+            // MySQL's max_execution_time only applies to SELECT statements.
+            let ms = u64::from(cfg.timeout_secs) * 1000;
+            conn.query(&match cfg.kind {
+                Kind::Postgres => format!("SET statement_timeout = {ms}"),
+                Kind::MySql => format!("SET SESSION max_execution_time = {ms}"),
+            })?;
+        }
         Ok(conn)
     }
 
-    fn open(cfg: &ConnConfig) -> DbResult<Self> {
+    fn open(cfg: &ConnConfig, via: Option<u16>) -> DbResult<Self> {
         match cfg.kind {
             Kind::Postgres => {
                 let mut c = postgres::Config::new();
                 c.host(&cfg.host)
-                    .port(cfg.port)
+                    .port(via.unwrap_or(cfg.port))
                     .user(&cfg.user)
                     .password(&cfg.password)
                     .connect_timeout(Duration::from_secs(10));
                 if !cfg.database.is_empty() {
                     c.dbname(&cfg.database);
+                }
+                if via.is_some() {
+                    // Through the tunnel: TCP goes to localhost, TLS still checks the real name.
+                    c.hostaddr(std::net::IpAddr::from([127, 0, 0, 1]));
                 }
                 let client = if cfg.ssl {
                     c.ssl_mode(postgres::config::SslMode::Require);
@@ -221,15 +330,15 @@ impl Conn {
                 };
                 Ok(Conn::Pg(Box::new(client?)))
             }
-            Kind::MySql => Ok(Conn::My(mysql::Conn::new(my_opts(cfg))?)),
+            Kind::MySql => Ok(Conn::My(mysql::Conn::new(my_opts(cfg, via))?)),
         }
     }
 
     /// A handle that can stop the statement this connection is running, from another thread.
-    pub fn canceller(&self, cfg: &ConnConfig) -> Canceller {
+    pub fn canceller(&self, cfg: &ConnConfig, via: Option<u16>) -> Canceller {
         match self {
             Conn::Pg(c) => Canceller::Pg(c.cancel_token(), cfg.ssl_insecure || !cfg.ssl),
-            Conn::My(c) => Canceller::My(Box::new(my_opts(cfg)), c.connection_id()),
+            Conn::My(c) => Canceller::My(Box::new(my_opts(cfg, via)), c.connection_id()),
         }
     }
 
@@ -342,11 +451,13 @@ impl Conn {
                      USING (constraint_schema, constraint_name, table_schema, table_name) \
                    WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = c.table_schema \
                      AND tc.table_name = c.table_name AND u.column_name = c.column_name), \
-                 c.is_nullable \
+                 c.is_nullable, \
+                 c.column_default IS NOT NULL OR c.is_identity = 'YES' OR c.is_generated = 'ALWAYS' \
                  FROM information_schema.columns c WHERE c.table_schema = ",
             ),
             Kind::MySql => Stmt::new(
-                "SELECT column_name, column_type, column_key = 'PRI', is_nullable \
+                "SELECT column_name, column_type, column_key = 'PRI', is_nullable, \
+                 column_default IS NOT NULL OR extra LIKE '%auto_increment%' OR extra LIKE '%GENERATED%' \
                  FROM information_schema.columns WHERE table_schema = ",
             ),
         };
@@ -367,15 +478,173 @@ impl Conn {
         r.rows
             .into_iter()
             .map(|row| {
-                let [name, data_type, pk, nullable] = cells(row)?;
+                let [name, data_type, pk, nullable, has_default] = cells(row)?;
+                let yes = |v: &str| matches!(v, "t" | "1" | "true");
                 Ok(ColumnInfo {
                     name,
                     data_type,
-                    pk: matches!(pk.as_str(), "t" | "1" | "true"),
+                    pk: yes(&pk),
                     nullable: nullable == "YES",
+                    has_default: yes(&has_default),
                 })
             })
             .collect()
+    }
+}
+
+impl Conn {
+    pub fn structure(&mut self, schema: &str, table: &str) -> DbResult<TableStructure> {
+        match self.kind() {
+            Kind::Postgres => self.pg_structure(schema, table),
+            Kind::MySql => self.my_structure(schema, table),
+        }
+    }
+
+    fn pg_structure(&mut self, schema: &str, table: &str) -> DbResult<TableStructure> {
+        let k = Kind::Postgres;
+        // The table's oid, from the names as values (never spliced into the SQL text).
+        let rel = |sql: &str| {
+            Stmt::new(sql)
+                .sql("(quote_ident(")
+                .value(Some(schema))
+                .sql(") || '.' || quote_ident(")
+                .value(Some(table))
+                .sql("))::regclass")
+        };
+        let cols = self.execute(
+            &rel(
+                "SELECT a.attname, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
+             pg_get_expr(d.adbin, d.adrelid), \
+             EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = a.attrelid AND i.indisprimary \
+                     AND a.attnum = ANY (i.indkey)) \
+             FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attrelid = ",
+            )
+            .sql(" ORDER BY a.attnum"),
+        )?;
+        let columns: Vec<StructColumn> = cols
+            .rows
+            .into_iter()
+            .map(|r| StructColumn {
+                name: r[0].clone().unwrap_or_default(),
+                data_type: r[1].clone().unwrap_or_default(),
+                nullable: r[2].as_deref() == Some("t"),
+                default: r[3].clone(),
+                pk: r[4].as_deref() == Some("t"),
+            })
+            .collect();
+        let cons = self.execute(&rel(
+            "SELECT conname, contype::text, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = ",
+        ).sql(" ORDER BY CASE contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'f' THEN 2 ELSE 3 END, conname"))?;
+        let idx = self.execute(
+            &rel("SELECT i.relname, pg_get_indexdef(i.oid), \
+             EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.oid) \
+             FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = ")
+            .sql(" ORDER BY 1"),
+        )?;
+        let cell = |r: &Vec<Option<String>>, i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+
+        let mut lines: Vec<String> = columns
+            .iter()
+            .map(|c| {
+                let mut l = format!("    {} {}", k.quote_ident(&c.name), c.data_type);
+                if !c.nullable {
+                    l += " NOT NULL";
+                }
+                if let Some(d) = &c.default {
+                    l += &format!(" DEFAULT {d}");
+                }
+                l
+            })
+            .collect();
+        for r in &cons.rows {
+            lines.push(format!(
+                "    CONSTRAINT {} {}",
+                k.quote_ident(&cell(r, 0)),
+                cell(r, 2)
+            ));
+        }
+        let mut ddl = format!(
+            "CREATE TABLE {} (\n{}\n);",
+            k.qualified(schema, table),
+            lines.join(",\n")
+        );
+        // Indexes backing a constraint are created by it; the rest need their own statement.
+        for r in idx.rows.iter().filter(|r| r[2].as_deref() != Some("t")) {
+            ddl += &format!("\n{};", cell(r, 1));
+        }
+        Ok(TableStructure {
+            columns,
+            indexes: idx.rows.iter().map(|r| (cell(r, 0), cell(r, 1))).collect(),
+            foreign_keys: cons
+                .rows
+                .iter()
+                .filter(|r| r[1].as_deref() == Some("f"))
+                .map(|r| (cell(r, 0), cell(r, 2)))
+                .collect(),
+            ddl,
+        })
+    }
+
+    fn my_structure(&mut self, schema: &str, table: &str) -> DbResult<TableStructure> {
+        let filter = |sql: &str| {
+            Stmt::new(sql)
+                .value(Some(schema))
+                .sql(" AND table_name = ")
+                .value(Some(table))
+        };
+        let cols = self.execute(&filter(
+            "SELECT column_name, column_type, is_nullable = 'YES', column_default, column_key = 'PRI', extra \
+             FROM information_schema.columns WHERE table_schema = ",
+        ).sql(" ORDER BY ordinal_position"))?;
+        let columns = cols
+            .rows
+            .into_iter()
+            .map(|r| {
+                let extra = r[5].clone().unwrap_or_default();
+                StructColumn {
+                    name: r[0].clone().unwrap_or_default(),
+                    data_type: r[1].clone().unwrap_or_default(),
+                    nullable: r[2].as_deref() == Some("1"),
+                    // auto_increment has no default value, but it is what the column gets.
+                    default: r[3].clone().or_else(|| (!extra.is_empty()).then_some(extra)),
+                    pk: r[4].as_deref() == Some("1"),
+                }
+            })
+            .collect();
+        let idx = self.execute(
+            &filter(
+                "SELECT index_name, IF(non_unique = 0, 'UNIQUE ', ''), \
+             GROUP_CONCAT(column_name ORDER BY seq_in_index SEPARATOR ', ') \
+             FROM information_schema.statistics WHERE table_schema = ",
+            )
+            .sql(" GROUP BY index_name, non_unique ORDER BY index_name"),
+        )?;
+        let fks = self.execute(&filter(
+            "SELECT constraint_name, CONCAT('(', GROUP_CONCAT(column_name ORDER BY ordinal_position SEPARATOR ', '), \
+             ') REFERENCES ', referenced_table_name, ' (', \
+             GROUP_CONCAT(referenced_column_name ORDER BY ordinal_position SEPARATOR ', '), ')') \
+             FROM information_schema.key_column_usage WHERE referenced_table_name IS NOT NULL AND table_schema = ",
+        ).sql(" GROUP BY constraint_name, referenced_table_name ORDER BY constraint_name"))?;
+        let create = self.query(&format!(
+            "SHOW CREATE TABLE {}",
+            Kind::MySql.qualified(schema, table)
+        ))?;
+        let cell = |r: &Vec<Option<String>>, i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+        Ok(TableStructure {
+            columns,
+            indexes: idx
+                .rows
+                .iter()
+                .map(|r| (cell(r, 0), format!("{}({})", cell(r, 1), cell(r, 2))))
+                .collect(),
+            foreign_keys: fks.rows.iter().map(|r| (cell(r, 0), cell(r, 1))).collect(),
+            ddl: create
+                .rows
+                .first()
+                .map(|r| format!("{};", cell(r, 1)))
+                .unwrap_or_default(),
+        })
     }
 }
 
@@ -506,7 +775,7 @@ mod tests {
             name: "t".into(),
             ..ConnConfig::new(kind)
         };
-        let mut c = Conn::connect(&cfg).expect("connect");
+        let mut c = Conn::connect(&cfg, None).expect("connect");
         c.query("DROP TABLE IF EXISTS dbl_t").unwrap();
         c.query("CREATE TABLE dbl_t (id INT PRIMARY KEY, name VARCHAR(50), at TIMESTAMP NULL)")
             .unwrap();
@@ -556,6 +825,7 @@ mod tests {
             cols[1]
         );
         assert!(!cols[0].nullable && cols[1].nullable, "{cols:?}");
+        assert!(!cols[0].has_default && !cols[1].has_default, "{cols:?}");
         c.query("DROP TABLE dbl_b").unwrap();
 
         // Generated statements must store tricky values verbatim, even with the server settings
@@ -611,7 +881,7 @@ mod tests {
         assert_eq!(r.affected, Some(0), "{kind:?}: missing row");
 
         // A long statement can be stopped from another thread.
-        let canceller = c.canceller(&cfg);
+        let canceller = c.canceller(&cfg, None);
         let started = std::time::Instant::now();
         let stopper = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -632,12 +902,50 @@ mod tests {
             "{kind:?}: connection still usable after cancel"
         );
 
+        // Structure: the generated DDL must recreate the table (renamed) on the same server.
+        c.query("CREATE INDEX dbl_t_name_idx ON dbl_t (name)").unwrap();
+        let st = c.structure(s, "dbl_t").unwrap();
+        assert_eq!(
+            st.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["id", "name", "at"]
+        );
+        assert!(
+            st.columns[0].pk && !st.columns[0].nullable && st.columns[1].nullable,
+            "{kind:?}"
+        );
+        assert!(
+            st.indexes.iter().any(|(n, _)| n == "dbl_t_name_idx"),
+            "{:?}",
+            st.indexes
+        );
+        let _ = c.query("DROP TABLE IF EXISTS dbl_t2");
+        c.query(&st.ddl.replace("dbl_t", "dbl_t2"))
+            .unwrap_or_else(|e| panic!("{kind:?}: {e}\n{}", st.ddl));
+        assert_eq!(c.count("SELECT COUNT(*) FROM dbl_t2").unwrap(), 0);
+        c.query("DROP TABLE dbl_t2").unwrap();
+
+        // A per-connection timeout stops long statements on the server.
+        let timed = ConnConfig {
+            timeout_secs: 1,
+            ..cfg.clone()
+        };
+        let mut tc = Conn::connect(&timed, None).expect("connect with timeout");
+        let started = std::time::Instant::now();
+        let _ = tc.query(match kind {
+            Kind::Postgres => "SELECT pg_sleep(5)",
+            Kind::MySql => "SELECT SLEEP(5)",
+        });
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "{kind:?}: timeout not applied"
+        );
+
         // Read-only connections are enforced by the server.
         let ro = ConnConfig {
             read_only: true,
             ..cfg.clone()
         };
-        let mut r = Conn::connect(&ro).expect("read-only connect");
+        let mut r = Conn::connect(&ro, None).expect("read-only connect");
         assert_eq!(r.count("SELECT COUNT(*) FROM dbl_t").unwrap(), 2);
         assert!(
             r.query("DELETE FROM dbl_t").is_err(),
@@ -668,9 +976,12 @@ mod tests {
         cfg.port = 55433;
         cfg.password = "pw".into();
         cfg.ssl = true;
-        assert!(Conn::connect(&cfg).is_err(), "self-signed cert must be rejected");
+        assert!(
+            Conn::connect(&cfg, None).is_err(),
+            "self-signed cert must be rejected"
+        );
         cfg.ssl_insecure = true;
-        let mut c = Conn::connect(&cfg).expect("insecure tls connect");
+        let mut c = Conn::connect(&cfg, None).expect("insecure tls connect");
         let r = c
             .query("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
             .unwrap();
@@ -678,7 +989,7 @@ mod tests {
 
         // With TLS not required, a TLS-capable server is still used encrypted (sslmode=prefer).
         cfg.ssl = false;
-        let mut c = Conn::connect(&cfg).expect("prefer connect");
+        let mut c = Conn::connect(&cfg, None).expect("prefer connect");
         let r = c
             .query("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
             .unwrap();
@@ -694,7 +1005,7 @@ mod tests {
         cfg.password = "pw".into();
         cfg.ssl = true;
         cfg.ssl_insecure = true;
-        let mut c = Conn::connect(&cfg).expect("insecure tls connect");
+        let mut c = Conn::connect(&cfg, None).expect("insecure tls connect");
         let r = c.query("SHOW STATUS LIKE 'Ssl_cipher'").unwrap();
         assert!(!r.rows[0][1].as_deref().unwrap_or("").is_empty());
     }

@@ -15,6 +15,11 @@ pub struct PageQuery<'a> {
 }
 
 pub fn select_page(kind: Kind, q: &PageQuery) -> String {
+    select_range(kind, q, PAGE_SIZE, q.page * PAGE_SIZE)
+}
+
+/// Same query as a page but with any window; exports walk the table in big chunks.
+pub fn select_range(kind: Kind, q: &PageQuery, limit: usize, offset: usize) -> String {
     let mut sql = format!("SELECT * FROM {}", kind.qualified(q.schema, q.table));
     if !q.filter.trim().is_empty() {
         // Parenthesized so the filter stays one condition (see `check_filter`).
@@ -38,7 +43,30 @@ pub fn select_page(kind: Kind, q: &PageQuery) -> String {
     if !keys.is_empty() {
         sql += &format!(" ORDER BY {}", keys.join(", "));
     }
-    sql + &format!(" LIMIT {PAGE_SIZE} OFFSET {}", q.page * PAGE_SIZE)
+    sql + &format!(" LIMIT {limit} OFFSET {offset}")
+}
+
+/// `INSERT` with only the columns the user filled in; the rest get their defaults.
+pub fn insert_values(kind: Kind, schema: &str, table: &str, values: &[(String, Option<String>)]) -> Stmt {
+    if values.is_empty() {
+        return insert_default(kind, schema, table);
+    }
+    let cols = values
+        .iter()
+        .map(|(c, _)| kind.quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut stmt = Stmt::new(format!(
+        "INSERT INTO {} ({cols}) VALUES (",
+        kind.qualified(schema, table)
+    ));
+    for (i, (_, v)) in values.iter().enumerate() {
+        if i > 0 {
+            stmt = stmt.sql(", ");
+        }
+        stmt = stmt.value(v.as_deref());
+    }
+    stmt.sql(")")
 }
 
 pub fn count(kind: Kind, schema: &str, table: &str, filter: &str) -> String {
@@ -442,6 +470,21 @@ mod tests {
         assert!(check_filter("1=1; DELETE FROM t; SELECT 1 AS id").is_err());
         assert!(check_filter("1=1 -- ").is_err());
         assert!(check_filter("x = 'it''s -- fine'").is_ok());
+    }
+
+    #[test]
+    fn insert_only_filled_columns() {
+        let v = vec![
+            ("nome".to_string(), Some("ana".to_string())),
+            ("ativo".to_string(), None),
+        ];
+        let (sql, vals) = insert_values(Kind::MySql, "s", "t", &v).with_placeholders();
+        assert_eq!(sql, "INSERT INTO `s`.`t` (`nome`, `ativo`) VALUES (?, NULL)");
+        assert_eq!(vals, ["ana"]);
+        assert_eq!(
+            insert_values(Kind::Postgres, "s", "t", &[]).render(Kind::Postgres),
+            "INSERT INTO \"s\".\"t\" DEFAULT VALUES"
+        );
     }
 
     #[test]

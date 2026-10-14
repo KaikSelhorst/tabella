@@ -1,6 +1,7 @@
 //! Application state and the logic that acts on it. The `ui` modules draw this state and turn
 //! clicks and keys into calls here; nothing in this file draws anything.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Instant;
@@ -8,12 +9,13 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::config;
-use crate::db::{Canceller, ColumnInfo, ConnConfig, Kind, QueryResult, TableRef};
+use crate::db::{Canceller, ColumnInfo, ConnConfig, Kind, QueryResult, TableRef, TableStructure};
+use crate::export::{self, Format};
 use crate::history::{self, Entry};
 use crate::secrets::{Derived, SecretStore};
 use crate::sql::{self, PageQuery, Stmt};
 use crate::values::{self, ValueKind};
-use crate::worker::{self, Job, Reply};
+use crate::worker::{self, ExportSource, ExportSpec, Job, Reply};
 
 /// A message for the user, outside any tab (connection status, save problems).
 pub struct Notice {
@@ -94,6 +96,8 @@ pub struct TableState {
     pub confirm_delete: Option<usize>,
     /// Boolean cell whose true/false/NULL dropdown is open.
     pub bool_pick: Option<(usize, usize)>,
+    /// The "new row" form, while open.
+    pub insert: Option<Vec<InsertField>>,
 }
 
 /// Exact counts are skipped above this many (estimated) rows: COUNT(*) would hold the connection.
@@ -114,6 +118,7 @@ impl TableState {
             counted_filter: None,
             confirm_delete: None,
             bool_pick: None,
+            insert: None,
         }
     }
 
@@ -144,6 +149,32 @@ impl TableState {
 pub enum TabKind {
     Sql { text: String },
     Table(Box<TableState>),
+    Structure(Box<StructState>),
+}
+
+/// "Estrutura" tab: columns, indexes, foreign keys and DDL of one table.
+pub struct StructState {
+    pub schema: String,
+    pub table: String,
+    pub data: Option<TableStructure>,
+}
+
+/// How a column is filled in the "new row" form.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum FieldMode {
+    /// Left out of the INSERT: the database fills it (DEFAULT, serial, auto_increment...).
+    Default,
+    Null,
+    Value,
+}
+
+pub struct InsertField {
+    pub name: String,
+    pub data_type: String,
+    pub kind: ValueKind,
+    pub nullable: bool,
+    pub mode: FieldMode,
+    pub text: String,
 }
 
 pub struct Tab {
@@ -162,6 +193,8 @@ pub struct Tab {
     pub detail_hidden: Option<usize>,
     /// SQL waiting for the user to confirm destructive statements.
     pub confirm_run: Option<String>,
+    /// Last export of this tab: file and row count, shown until dismissed.
+    pub exported: Option<(PathBuf, u64)>,
 }
 
 impl Tab {
@@ -177,6 +210,7 @@ impl Tab {
             pending_sql: None,
             detail_hidden: None,
             confirm_run: None,
+            exported: None,
         }
     }
 
@@ -547,6 +581,27 @@ impl App {
                         ts.total = res.ok();
                     }
                 }
+                Reply::Structure { tab, res } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    t.pending = t.pending.saturating_sub(1);
+                    match (res, &mut t.kind) {
+                        (Ok(d), TabKind::Structure(st)) => st.data = Some(d),
+                        (Err(e), _) => t.error = Some(e.to_string()),
+                        _ => {}
+                    }
+                }
+                Reply::Exported { tab, res } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    t.pending = t.pending.saturating_sub(1);
+                    match res {
+                        Ok(done) => t.exported = Some(done),
+                        Err(e) => t.error = Some(format!("Exportação falhou: {e}")),
+                    }
+                }
                 Reply::Columns { tab, res } => {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
@@ -622,6 +677,140 @@ impl App {
     }
 }
 
+impl App {
+    pub fn open_structure(&mut self, schema: &str, table: &str) {
+        if self.session.is_none() {
+            return;
+        }
+        let existing = self.tabs.iter().position(
+            |t| matches!(&t.kind, TabKind::Structure(st) if st.schema == schema && st.table == table),
+        );
+        if let Some(i) = existing {
+            self.active = i;
+            return;
+        }
+        let st = StructState {
+            schema: schema.into(),
+            table: table.into(),
+            data: None,
+        };
+        let i = self.push_tab(format!("{table} · estrutura"), TabKind::Structure(Box::new(st)));
+        let Some(s) = &self.session else { return };
+        let tab = &mut self.tabs[i];
+        tab.pending += 1;
+        s.send(Job::Structure {
+            tab: tab.id,
+            schema: schema.into(),
+            table: table.into(),
+        });
+    }
+}
+
+/// Writes the tab's rows to a file in the Downloads folder. `whole_table` reads the entire table
+/// (with the tab's filter) in chunks; otherwise only what is on screen.
+pub fn start_export(tab: &mut Tab, s: &Session, format: Format, whole_table: bool) {
+    let k = s.cfg.kind;
+    let (base, table_name, cols, source) = match &tab.kind {
+        TabKind::Table(ts) if whole_table => {
+            if let Err(e) = sql::check_filter(&ts.filter) {
+                tab.error = Some(e);
+                return;
+            }
+            let source = ExportSource::Table {
+                schema: ts.schema.clone(),
+                table: ts.table.clone(),
+                filter: ts.filter.clone(),
+                order: ts.order.clone(),
+                pk: ts.pk_names(),
+            };
+            (
+                ts.table.clone(),
+                k.qualified(&ts.schema, &ts.table),
+                ts.cols.clone(),
+                source,
+            )
+        }
+        _ => {
+            let Some(res) = &tab.result else { return };
+            let (base, name, cols) = match &tab.kind {
+                TabKind::Table(ts) => (
+                    ts.table.clone(),
+                    k.qualified(&ts.schema, &ts.table),
+                    ts.cols.clone(),
+                ),
+                _ => ("consulta".to_string(), "tabela".to_string(), vec![]),
+            };
+            (base, name, cols, ExportSource::Rows(res.clone()))
+        }
+    };
+    let path = export::target_path(&base, format);
+    tab.exported = None;
+    let spec = ExportSpec {
+        format,
+        path,
+        table_name,
+        cols,
+        source,
+    };
+    let id = tab.id;
+    tab.pending += 1;
+    s.send(Job::Export { tab: id, spec });
+}
+
+/// Opens the "new row" form: columns with a default start as "default", the rest empty.
+pub fn open_insert_form(tab: &mut Tab) {
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let empty = QueryResult {
+        columns: ts.cols.iter().map(|c| c.name.clone()).collect(),
+        ..Default::default()
+    };
+    let kinds = values::column_kinds(&empty, &ts.cols);
+    ts.insert = Some(
+        ts.cols
+            .iter()
+            .zip(kinds)
+            .map(|(c, kind)| InsertField {
+                name: c.name.clone(),
+                data_type: c.data_type.clone(),
+                kind,
+                nullable: c.nullable,
+                mode: if c.has_default {
+                    FieldMode::Default
+                } else {
+                    FieldMode::Value
+                },
+                text: String::new(),
+            })
+            .collect(),
+    );
+}
+
+/// INSERTs the form's row. Booleans are normalized per engine like grid edits.
+pub fn submit_insert(tab: &mut Tab, s: &Session) {
+    let k = s.cfg.kind;
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let Some(fields) = ts.insert.take() else { return };
+    let mut values = Vec::new();
+    for f in &fields {
+        let v = match f.mode {
+            FieldMode::Default => continue,
+            FieldMode::Null => None,
+            FieldMode::Value if f.kind == ValueKind::Bool => match sql::parse_bool(&f.text) {
+                Some(b) => Some(sql::bool_value(k, b).to_string()),
+                None => {
+                    tab.error = Some(format!("{}: \"{}\" não é um booleano", f.name, f.text));
+                    ts.insert = Some(fields);
+                    return;
+                }
+            },
+            FieldMode::Value => Some(f.text.clone()),
+        };
+        values.push((f.name.clone(), v));
+    }
+    let stmt = sql::insert_values(k, &ts.schema, &ts.table, &values);
+    exec(tab, s, stmt, true);
+}
+
 /// Re-runs the current page query of a table tab.
 pub fn reload(tab: &mut Tab, s: &Session) {
     let TabKind::Table(ts) = &mut tab.kind else { return };
@@ -690,7 +879,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
     let no_cols = Vec::new();
     let cols = match &tab.kind {
         TabKind::Table(ts) => &ts.cols,
-        TabKind::Sql { .. } => &no_cols,
+        TabKind::Sql { .. } | TabKind::Structure(_) => &no_cols,
     };
     let kinds = values::column_kinds(res, cols);
 
@@ -707,7 +896,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         GridEvent::Copy(row, how) => {
             let table = match &tab.kind {
                 TabKind::Table(ts) => k.qualified(&ts.schema, &ts.table),
-                TabKind::Sql { .. } => "tabela".to_string(),
+                TabKind::Sql { .. } | TabKind::Structure(_) => "tabela".to_string(),
             };
             return Some(match how {
                 CopyAs::Json => values::row_json(res, cols, *row),
@@ -798,13 +987,6 @@ pub fn confirm_delete(tab: &mut Tab, s: &Session) {
     exec(tab, s, stmt, true);
 }
 
-/// Adds a row made of column defaults.
-pub fn insert_default_row(tab: &mut Tab, s: &Session) {
-    let TabKind::Table(ts) = &tab.kind else { return };
-    let stmt = sql::insert_default(s.cfg.kind, &ts.schema, &ts.table);
-    exec(tab, s, stmt, false);
-}
-
 #[cfg(test)]
 pub mod tests {
     use std::sync::mpsc::channel;
@@ -837,6 +1019,7 @@ pub mod tests {
             data_type: ty.into(),
             pk,
             nullable: !pk,
+            has_default: false,
         };
         let mut ts = TableState::new("public", "t", None);
         ts.cols = vec![
@@ -917,6 +1100,65 @@ pub mod tests {
         handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 2, Some("x".into())), true);
         assert!(jobs.try_recv().is_err());
         assert!(tab.error.is_some() && !tab.busy());
+    }
+
+    #[test]
+    fn insert_form_sends_only_what_was_filled() {
+        let (s, jobs, _replies) = fake_session(Kind::MySql);
+        let mut tab = table_tab();
+        open_insert_form(&mut tab);
+        let TabKind::Table(ts) = &mut tab.kind else {
+            unreachable!()
+        };
+        let fields = ts.insert.as_mut().unwrap();
+        // id has no default in the fixture: starts as a value to fill in.
+        assert_eq!(fields[0].mode, FieldMode::Value);
+        fields[0].text = "8".into();
+        fields[1].mode = FieldMode::Value;
+        fields[1].text = "sim".into();
+        fields[2].mode = FieldMode::Default;
+        submit_insert(&mut tab, &s);
+        let _count = jobs.try_recv().unwrap();
+        let Job::Exec { stmt, .. } = jobs.try_recv().unwrap() else {
+            panic!()
+        };
+        let (sql, values) = stmt.with_placeholders();
+        assert_eq!(sql, "INSERT INTO `public`.`t` (`id`, `ativo`) VALUES (?, ?)");
+        assert_eq!(values, ["8", "1"]);
+    }
+
+    #[test]
+    fn a_bad_boolean_keeps_the_form_open() {
+        let (s, jobs, _replies) = fake_session(Kind::Postgres);
+        let mut tab = table_tab();
+        open_insert_form(&mut tab);
+        if let TabKind::Table(ts) = &mut tab.kind {
+            let f = &mut ts.insert.as_mut().unwrap()[1];
+            f.mode = FieldMode::Value;
+            f.text = "talvez".into();
+        }
+        submit_insert(&mut tab, &s);
+        assert!(jobs.try_recv().is_err());
+        assert!(tab.error.is_some());
+        assert!(matches!(&tab.kind, TabKind::Table(ts) if ts.insert.is_some()));
+    }
+
+    #[test]
+    fn exports_go_to_the_worker() {
+        let (s, jobs, _replies) = fake_session(Kind::Postgres);
+        let mut tab = table_tab();
+        start_export(&mut tab, &s, Format::Csv, true);
+        let Ok(Job::Export { spec, .. }) = jobs.try_recv() else {
+            panic!("expected an export job")
+        };
+        assert!(matches!(spec.source, ExportSource::Table { .. }));
+        assert_eq!(spec.path.extension().unwrap(), "csv");
+        assert!(tab.busy());
+        start_export(&mut tab, &s, Format::Json, false);
+        let Ok(Job::Export { spec, .. }) = jobs.try_recv() else {
+            panic!()
+        };
+        assert!(matches!(spec.source, ExportSource::Rows(ref r) if r.rows.len() == 1));
     }
 
     #[test]

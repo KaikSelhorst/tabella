@@ -201,7 +201,13 @@ pub fn apply(ctx: &egui::Context) {
         style.spacing.icon_width_inner = 8.0;
         style.spacing.icon_spacing = 4.0;
         style.spacing.combo_height = 320.0;
-        style.spacing.scroll = egui::style::ScrollStyle::thin();
+        // Bars draw over the content and take no space. If they took space, a horizontal bar
+        // appearing could make the vertical one appear, which removes width, which hides the
+        // horizontal one... and the UI would repaint forever, burning CPU while idle.
+        style.spacing.scroll = egui::style::ScrollStyle {
+            floating_allocated_width: 0.0,
+            ..egui::style::ScrollStyle::thin()
+        };
         style.text_styles = [
             (TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional)),
             (TextStyle::Body, FontId::new(13.0, FontFamily::Proportional)),
@@ -265,6 +271,20 @@ fn install_fonts(ctx: &egui::Context) {
         list.push("phosphor".into());
     }
     ctx.set_fonts(fonts);
+}
+
+/// Color of a connection tag (environment marker), saturated enough to read at a glance.
+pub fn tag_color(tag: crate::db::Tag) -> Color32 {
+    use crate::db::Tag;
+    let hue = match tag {
+        Tag::Red => 25.0,
+        Tag::Orange => 55.0,
+        Tag::Yellow => 95.0,
+        Tag::Green => 150.0,
+        Tag::Blue => 255.0,
+        Tag::Violet => 300.0,
+    };
+    oklch(0.70, 0.16, hue)
 }
 
 /// Frame shared by every dialog (connection form, confirmations, palette, master password).

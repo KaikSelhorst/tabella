@@ -9,8 +9,14 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Edição direta na grade e num painel de detalhes da linha (tabelas com chave primária)
 - Editor SQL com realce de sintaxe, autocomplete, histórico e execução da seleção
 - Paleta de comandos (`Ctrl+P`) para abrir tabelas, conexões e consultas recentes
+- Inserção de linhas por formulário (cada coluna: padrão do banco, `NULL` ou valor)
+- Aba "Estrutura": colunas, índices, chaves estrangeiras e DDL pronto para copiar
+- Exportação para CSV, JSON ou SQL (`INSERT`): a página atual ou a tabela inteira (em blocos,
+  sem carregar tudo na memória), salva na pasta Downloads
 - Cópia de linhas como JSON ou `INSERT`
-- Cancelamento de consultas em andamento
+- Cancelamento de consultas em andamento e timeout por conexão (aplicado no servidor)
+- Túnel SSH pelo cliente `ssh` do sistema (chaves ou agente)
+- Cor por conexão: uma faixa colorida no topo enquanto conectado (ex.: vermelho para produção)
 
 ## Segurança
 
@@ -41,8 +47,11 @@ teste no binário: não use em builds distribuídos.
 docker compose --profile dev up -d --wait     # dados de exemplo: Postgres :5432, MySQL :3307
 docker compose --profile test up -d --wait    # bancos dos testes de integração
 cargo test                                    # testes de unidade e de interface
-cargo test -- --ignored db::                  # testes contra os bancos reais
+cargo test -- --ignored db:: worker:: tunnel::   # testes contra os bancos reais (e SSH)
 ```
+
+O perfil `test` inclui um servidor SSH descartável (porta 52222) que alcança o Postgres de teste;
+a chave em `dev/ssh/` serve só para ele.
 
 As capturas de tela da interface (dados falsos, sem banco) são geradas com
 `DBLITE_SHOTS=<pasta> cargo test screenshots -- --ignored` e precisam de um driver Vulkan

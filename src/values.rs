@@ -70,20 +70,29 @@ pub fn column_kinds(res: &QueryResult, cols: &[ColumnInfo]) -> Vec<ValueKind> {
 /// The row as a JSON object; numbers and booleans keep their JSON types.
 pub fn row_json(res: &QueryResult, cols: &[ColumnInfo], row: usize) -> String {
     let kinds = column_kinds(res, cols);
+    let obj = json_object(&res.columns, &kinds, &res.rows[row]);
+    serde_json::to_string_pretty(&obj).unwrap_or_default()
+}
+
+/// One row as a JSON object, keyed by column name in column order.
+pub fn json_object(
+    columns: &[String],
+    kinds: &[ValueKind],
+    row: &[Option<String>],
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::Value;
     let mut map = serde_json::Map::new();
-    for (ci, name) in res.columns.iter().enumerate() {
-        let v = match (&res.rows[row][ci], kinds[ci]) {
-            (None, _) => serde_json::Value::Null,
-            (Some(v), ValueKind::Bool) => serde_json::Value::Bool(matches!(v.as_str(), "t" | "1" | "true")),
-            (Some(v), ValueKind::Number) => serde_json::from_str::<serde_json::Number>(v).map_or_else(
-                |_| serde_json::Value::String(v.clone()),
-                serde_json::Value::Number,
-            ),
-            (Some(v), _) => serde_json::Value::String(v.clone()),
+    for (ci, name) in columns.iter().enumerate() {
+        let v = match (&row[ci], kinds[ci]) {
+            (None, _) => Value::Null,
+            (Some(v), ValueKind::Bool) => Value::Bool(matches!(v.as_str(), "t" | "1" | "true")),
+            (Some(v), ValueKind::Number) => serde_json::from_str::<serde_json::Number>(v)
+                .map_or_else(|_| Value::String(v.clone()), Value::Number),
+            (Some(v), _) => Value::String(v.clone()),
         };
         map.insert(name.clone(), v);
     }
-    serde_json::to_string_pretty(&map).unwrap_or_default()
+    map
 }
 
 #[cfg(test)]
@@ -126,18 +135,21 @@ mod tests {
                 data_type: "integer".into(),
                 pk: true,
                 nullable: true,
+                has_default: false,
             },
             ColumnInfo {
                 name: "ativo".into(),
                 data_type: "boolean".into(),
                 pk: false,
                 nullable: true,
+                has_default: false,
             },
             ColumnInfo {
                 name: "nome".into(),
                 data_type: "text".into(),
                 pk: false,
                 nullable: true,
+                has_default: false,
             },
         ];
         let v: serde_json::Value = serde_json::from_str(&row_json(&res, &cols, 0)).unwrap();
