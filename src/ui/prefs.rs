@@ -48,12 +48,25 @@ impl App {
 
                         ui.label("Zoom da interface");
                         ui.horizontal(|ui| {
-                            ui.add(
-                                egui::Slider::new(&mut s.zoom, ZOOM)
+                            // Zooming resizes this very slider: applied while dragging, the value
+                            // under the pointer keeps moving and the slider jumps around. So the
+                            // drag edits a draft, and the zoom changes when the mouse is released.
+                            let draft_id = egui::Id::new("prefs_zoom_draft");
+                            let mut draft = ui.data(|d| d.get_temp::<f32>(draft_id)).unwrap_or(s.zoom);
+                            let r = ui.add(
+                                egui::Slider::new(&mut draft, ZOOM)
                                     .trailing_fill(true)
                                     .step_by(0.05)
                                     .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
                             );
+                            if r.dragged() {
+                                ui.data_mut(|d| d.insert_temp(draft_id, draft));
+                            } else {
+                                ui.data_mut(|d| d.remove::<f32>(draft_id));
+                                if r.drag_stopped() || r.changed() {
+                                    s.zoom = draft;
+                                }
+                            }
                             ui.label(RichText::new("Ctrl + / Ctrl −").size(11.0).color(t.subtle));
                         });
                         ui.end_row();
@@ -138,5 +151,46 @@ impl App {
             };
             self.apply_settings(ctx, s);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::{self, accesskit::Role};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    /// Dragging the zoom slider must not zoom while the mouse is down (that resized the slider
+    /// under the pointer and made it jump), and must zoom once it is released.
+    #[test]
+    fn zoom_applies_when_the_drag_ends() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                let mut app = super::super::screenshots::fake_app(&cc.egui_ctx);
+                app.prefs_open = true;
+                app
+            });
+        harness.run();
+        let rail = harness
+            .get_all_by_role(Role::Slider)
+            .next()
+            .expect("zoom slider")
+            .rect();
+        let start = egui::pos2(rail.left() + rail.width() * 0.2, rail.center().y);
+        harness.hover_at(start);
+        harness.drag_at(start);
+        harness.step();
+        for i in 1..=10 {
+            harness.hover_at(start + egui::vec2(i as f32 * 12.0, 0.0));
+            harness.step();
+            assert_eq!(harness.ctx.zoom_factor(), 1.0, "no zoom while dragging");
+        }
+        harness.drop_at(start + egui::vec2(120.0, 0.0));
+        harness.run_steps(4);
+        let z = harness.ctx.zoom_factor();
+        assert!(z > 1.0, "zoomed on release: {z}");
+        assert_eq!(harness.state().settings.zoom, z, "and remembered");
     }
 }
