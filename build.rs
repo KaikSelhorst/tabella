@@ -1,0 +1,34 @@
+//! Windows builds get version info and a manifest embedded in the .exe: executables without any
+//! metadata are what antivirus heuristics flag most (Defender's `!ml` detections).
+
+const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="dblite" version="0.1.0.0"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>
+"#;
+
+fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let mut res = winresource::WindowsResource::new();
+    res.set("ProductName", "dblite")
+        .set("FileDescription", "dblite - cliente leve de PostgreSQL e MySQL")
+        .set("InternalName", "dblite")
+        .set("OriginalFilename", "dblite.exe")
+        .set_manifest(MANIFEST);
+    res.compile().expect("recursos do Windows (windres do MinGW instalado?)");
+}

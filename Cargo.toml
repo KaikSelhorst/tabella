@@ -44,3 +44,6 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 [features]
 # Preloads and auto-connects a local "dev" PostgreSQL connection (postgres/postgres@localhost:5432).
 dev-conn = []
+
+[build-dependencies]
+winresource = "0.1"
