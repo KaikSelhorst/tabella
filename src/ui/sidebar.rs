@@ -25,72 +25,74 @@ impl App {
         let mut delete = None;
         let mut add = false;
 
+        // Right to left inside one row: the menu button first, then the combo box fills what is
+        // left. (Without the row, the layout would center itself in the whole panel height.)
         ui.horizontal(|ui| {
-            let selected: egui::WidgetText = match current {
-                Some(i) => conn_label(&self.saved[i]).into(),
-                None => egui::RichText::new("Selecionar conexão…")
-                    .color(theme::tokens().muted_foreground)
-                    .into(),
-            };
-            egui::ComboBox::from_id_salt("connection")
-                .selected_text(selected)
-                // Leave room for the menu button and the gap before it, or the panel grows every frame.
-                .width(
-                    (ui.available_width() - ui.spacing().item_spacing.x - ui.spacing().interact_size.x - 4.0)
-                        .max(80.0),
-                )
-                .show_ui(ui, |ui| {
-                    for (i, c) in self.saved.iter().enumerate() {
-                        let r = ui.selectable_label(current == Some(i), conn_label(c));
-                        if r.clicked() {
-                            connect = Some(i);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let selected: egui::WidgetText = match current {
+                    Some(i) => conn_label(&self.saved[i]).into(),
+                    None => egui::RichText::new("Selecionar conexão…")
+                        .color(theme::tokens().muted_foreground)
+                        .into(),
+                };
+                ui.add_enabled_ui(current.is_some(), |ui| {
+                    ui.menu_button(theme::icon(icon::DOTS_THREE), |ui| {
+                        if ui.button("Reconectar").clicked() {
+                            connect = current;
                             ui.close();
                         }
-                        r.context_menu(|ui| {
-                            if ui.button("Editar").clicked() {
-                                edit = Some(i);
+                        if ui.button("Editar").clicked() {
+                            edit = current;
+                            ui.close();
+                        }
+                        if ui.button("Excluir").clicked() {
+                            delete = current;
+                            ui.close();
+                        }
+                    });
+                });
+                egui::ComboBox::from_id_salt("connection")
+                    .selected_text(selected)
+                    // Exactly the space left after the menu button: a guessed width made the row a
+                    // few pixels wider than the panel, and the panel grew by that much every frame.
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for (i, c) in self.saved.iter().enumerate() {
+                            let r = ui.selectable_label(current == Some(i), conn_label(c));
+                            if r.clicked() {
+                                connect = Some(i);
                                 ui.close();
                             }
-                            if ui.button("Excluir").clicked() {
-                                delete = Some(i);
-                                ui.close();
-                            }
-                        });
-                    }
-                    if !self.saved.is_empty() {
-                        ui.separator();
-                    }
-                    if ui
-                        .selectable_label(
-                            false,
-                            theme::icon_text(
-                                icon::PLUS,
-                                "Adicionar conexão…",
-                                theme::tokens().lime,
-                                theme::tokens().foreground,
-                            ),
-                        )
-                        .clicked()
-                    {
-                        add = true;
-                        ui.close();
-                    }
-                });
-            ui.add_enabled_ui(current.is_some(), |ui| {
-                ui.menu_button(theme::icon(icon::DOTS_THREE), |ui| {
-                    if ui.button("Reconectar").clicked() {
-                        connect = current;
-                        ui.close();
-                    }
-                    if ui.button("Editar").clicked() {
-                        edit = current;
-                        ui.close();
-                    }
-                    if ui.button("Excluir").clicked() {
-                        delete = current;
-                        ui.close();
-                    }
-                });
+                            r.context_menu(|ui| {
+                                if ui.button("Editar").clicked() {
+                                    edit = Some(i);
+                                    ui.close();
+                                }
+                                if ui.button("Excluir").clicked() {
+                                    delete = Some(i);
+                                    ui.close();
+                                }
+                            });
+                        }
+                        if !self.saved.is_empty() {
+                            ui.separator();
+                        }
+                        if ui
+                            .selectable_label(
+                                false,
+                                theme::icon_text(
+                                    icon::PLUS,
+                                    "Adicionar conexão…",
+                                    theme::tokens().lime,
+                                    theme::tokens().foreground,
+                                ),
+                            )
+                            .clicked()
+                        {
+                            add = true;
+                            ui.close();
+                        }
+                    });
             });
         });
 

@@ -147,7 +147,7 @@ mod screenshots {
     use crate::app::{App, Tab, TabKind, TableState};
     use crate::db::{ColumnInfo, ConnConfig, Kind, QueryResult, TableRef};
 
-    fn fake_app(ctx: &egui::Context) -> App {
+    pub fn fake_app(ctx: &egui::Context) -> App {
         // Keep the real config untouched: App::new reads (and may migrate) it.
         let dir = std::env::temp_dir().join("dblite-screenshots-config");
         // SAFETY: set before any other thread reads the environment in this test binary's run.
@@ -336,6 +336,10 @@ mod screenshots {
         image::imageops::resize(&crop, 1260, 240, image::imageops::FilterType::Nearest)
             .save(format!("{dir}/header-zoom.png"))
             .unwrap();
+        let crop = image::imageops::crop_imm(&img, 0, 0, 260, 110).to_image();
+        image::imageops::resize(&crop, 780, 330, image::imageops::FilterType::Nearest)
+            .save(format!("{dir}/sidebar-zoom.png"))
+            .unwrap();
         let crop = image::imageops::crop_imm(&img, 236, 32, 1044, 48).to_image();
         image::imageops::resize(&crop, 2088, 96, image::imageops::FilterType::Nearest)
             .save(format!("{dir}/toolbar-zoom.png"))
@@ -507,5 +511,32 @@ mod screenshots {
         });
         harness.run();
         harness.render().unwrap().save(format!("{dir}/form.png")).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use eframe::egui;
+    use egui_kittest::Harness;
+
+    use super::screenshots::fake_app;
+
+    /// The sidebar must keep its width: content wider than the panel makes it grow a little on
+    /// every frame (which looked like a slow-motion animation on startup).
+    #[test]
+    fn sidebar_keeps_its_width() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        let width = |h: &Harness<'_, crate::app::App>| {
+            egui::containers::panel::PanelState::load(&h.ctx, egui::Id::new("side")).map(|p| p.size().x)
+        };
+        harness.run_steps(3);
+        let first = width(&harness);
+        harness.run_steps(30);
+        assert_eq!(width(&harness), first, "sidebar width changed between frames");
     }
 }
