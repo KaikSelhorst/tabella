@@ -1,12 +1,15 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::search::{SearchHit, SearchTarget};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
 use std::path::PathBuf;
 
 use crate::db::{
-    ActivityView, Canceller, ColumnInfo, Conn, ConnConfig, IncomingFk, PreviewData, QueryResult, ServerInfo,
-    TableRef, TableStructure,
+    ActivityView, Canceller, ColumnInfo, Conn, ConnConfig, FkEdge, IncomingFk, PreviewData, QueryResult,
+    SchemaColumn, ServerInfo, TableRef, TableStructure,
 };
 use crate::error::{DbError, DbResult};
 use crate::export::{Format, Writer};
@@ -64,6 +67,19 @@ pub enum Job {
     Activity {
         tab: u64,
         view: ActivityView,
+    },
+    /// A value in every table, one table after another, reporting as it goes; stops early
+    /// when `cancel` is set.
+    SearchValue {
+        tab: u64,
+        term: String,
+        exact: bool,
+        targets: Vec<SearchTarget>,
+        cancel: Arc<AtomicBool>,
+    },
+    /// Every foreign key, for the ER diagram.
+    Fks {
+        tab: u64,
     },
     /// The "Servidor" panel.
     ServerInfo {
@@ -163,7 +179,7 @@ pub enum Reply {
         res: DbResult<i64>,
     },
     /// `(table, column)` pairs for autocomplete; sent after connecting and on table reloads.
-    AllColumns(DbResult<Vec<(String, String)>>),
+    AllColumns(DbResult<Vec<SchemaColumn>>),
     Structure {
         tab: u64,
         res: DbResult<TableStructure>,
@@ -198,6 +214,20 @@ pub enum Reply {
     ServerInfo {
         tab: u64,
         res: DbResult<ServerInfo>,
+    },
+    /// One table of a `SearchValue` done: where it was found, or why that table failed.
+    SearchProgress {
+        tab: u64,
+        hit: Option<SearchHit>,
+        error: Option<String>,
+    },
+    SearchDone {
+        tab: u64,
+        cancelled: bool,
+    },
+    Fks {
+        tab: u64,
+        res: DbResult<Vec<FkEdge>>,
     },
     Tx(TxState),
     /// Outcome of `Job::EndTx`.
@@ -392,6 +422,33 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     tab,
                     res: Box::new(conn.activity_view(view)),
                     notice: None,
+                },
+                Job::SearchValue {
+                    tab,
+                    term,
+                    exact,
+                    targets,
+                    cancel,
+                } => {
+                    for t in &targets {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let (hit, error) =
+                            match crate::search::search_table(&mut conn, cfg.kind, t, &term, exact) {
+                                Ok(h) => (h, None),
+                                Err(e) => (None, Some(format!("{}.{}: {e}", t.schema, t.table))),
+                            };
+                        send(Reply::SearchProgress { tab, hit, error });
+                    }
+                    Reply::SearchDone {
+                        tab,
+                        cancelled: cancel.load(Ordering::Relaxed),
+                    }
+                }
+                Job::Fks { tab } => Reply::Fks {
+                    tab,
+                    res: conn.all_fks(),
                 },
                 Job::ServerInfo { tab } => Reply::ServerInfo {
                     tab,

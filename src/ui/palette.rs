@@ -9,10 +9,14 @@ use crate::favorites;
 use crate::history;
 
 const MAX_RESULTS: usize = 12;
+/// Columns rank below tables and actions with a similar match.
+const COLUMN_PENALTY: i32 = 24;
 
 #[derive(Clone)]
 enum Cmd {
     Activity,
+    Diagram,
+    Search,
     NewTable,
     Help,
     OpenTable(String, String),
@@ -174,6 +178,18 @@ impl App {
             cmd: Cmd::NewConnection,
         });
         if self.session.is_some() {
+            items.push(Item {
+                icon: icon::GRAPH,
+                label: "Diagrama ER".into(),
+                detail: "tabelas e chaves estrangeiras (clique direito no schema para outro)".into(),
+                cmd: Cmd::Diagram,
+            });
+            items.push(Item {
+                icon: icon::MAGNIFYING_GLASS,
+                label: "Buscar valor em todas as tabelas".into(),
+                detail: "Ctrl+Shift+F".into(),
+                cmd: Cmd::Search,
+            });
             if !self.session.as_ref().is_some_and(|s| s.cfg.read_only) {
                 items.push(Item {
                     icon: icon::PLUS,
@@ -220,6 +236,25 @@ impl App {
                     .into_iter()
                     .filter_map(|it| fuzzy_score(&p.query, &it.label).map(|s| (s, it)))
                     .collect();
+                // Columns ("onde está a coluna cpf?") from two letters on, below tables and actions
+                // that match as well.
+                if p.query.trim().chars().count() >= 2
+                    && let Some(s) = self.session.as_ref().filter(|s| s.ready)
+                {
+                    scored.extend(s.schema_cols.iter().filter_map(|c| {
+                        let label = format!("{}.{}", c.table, c.column);
+                        let score = fuzzy_score(&p.query, &label)?;
+                        Some((
+                            score - COLUMN_PENALTY,
+                            Item {
+                                icon: icon::COLUMNS,
+                                label,
+                                detail: format!("coluna · {} · {}", c.data_type, c.schema),
+                                cmd: Cmd::OpenTable(c.schema.clone(), c.table.clone()),
+                            },
+                        ))
+                    }));
+                }
                 scored.sort_by_key(|m| std::cmp::Reverse(m.0));
                 scored.truncate(MAX_RESULTS);
                 let items: Vec<Item> = scored.into_iter().map(|(_, it)| it).collect();
@@ -341,6 +376,8 @@ impl App {
                     })
                 }
                 Cmd::Activity => self.open_activity(),
+                Cmd::Diagram => self.open_diagram(None),
+                Cmd::Search => self.open_search(),
                 Cmd::NewTable => self.open_new_table(None),
                 Cmd::Help => self.help = true,
                 Cmd::Disconnect => {

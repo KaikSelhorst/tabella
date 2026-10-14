@@ -510,6 +510,34 @@ pub fn bind_params(kind: Kind, script: &str, value: impl Fn(&str) -> String) -> 
     out
 }
 
+/// Char range of the identifier at `cursor` (letters, digits, `_`, `$`, dots and quotes, so
+/// `public."Tabela"` comes whole). `None` on whitespace or punctuation.
+pub fn word_at(text: &str, cursor: usize) -> Option<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '$' | '.' | '"' | '`');
+    // The pointer sits between chars: take the one after it, or the one before at a word's end.
+    let at = if chars.get(cursor).is_some_and(|c| is_word(*c)) {
+        cursor
+    } else if cursor > 0 && chars.get(cursor - 1).is_some_and(|c| is_word(*c)) {
+        cursor - 1
+    } else {
+        return None;
+    };
+    let mut a = at;
+    while a > 0 && is_word(chars[a - 1]) {
+        a -= 1;
+    }
+    let mut b = at + 1;
+    while b < chars.len() && is_word(chars[b]) {
+        b += 1;
+    }
+    // Trailing dots ("tabela.") aren't part of the name.
+    while b > a && chars[b - 1] == '.' {
+        b -= 1;
+    }
+    (a < b).then_some((a, b))
+}
+
 /// Words outside parentheses, quotes and comments, uppercased, with their char ranges.
 fn top_level_words(script: &str) -> Vec<(String, usize, usize)> {
     let chars: Vec<char> = script.chars().collect();
@@ -1107,6 +1135,21 @@ mod tests {
             "a = '1.2.3'"
         );
         assert!(param_names("SELECT $$ :x $$, '10:30'").is_empty());
+    }
+
+    #[test]
+    fn words_under_the_pointer() {
+        let text = "SELECT * FROM public.\"Clientes\" c WHERE c.id = 1";
+        let w =
+            |i: usize| word_at(text, i).map(|(a, b)| text.chars().skip(a).take(b - a).collect::<String>());
+        assert_eq!(w(16).as_deref(), Some("public.\"Clientes\""));
+        assert_eq!(
+            w(31).as_deref(),
+            Some("public.\"Clientes\""),
+            "right after the word"
+        );
+        assert_eq!(w(7), None, "on punctuation");
+        assert_eq!(w(0).as_deref(), Some("SELECT"));
     }
 
     #[test]

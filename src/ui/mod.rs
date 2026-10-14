@@ -2,6 +2,7 @@ mod chart;
 mod complete;
 mod design;
 mod detail;
+mod diagram;
 mod find;
 mod form;
 mod grid;
@@ -226,6 +227,15 @@ impl App {
         use egui::{Key, Modifiers};
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
             self.help = !self.help;
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F))
+            && self.session.as_ref().is_some_and(|s| s.ready)
+        {
+            self.open_search();
+        }
+        // Before Ctrl+T, which would match it too.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::T)) {
+            self.reopen_closed_tab();
         }
         let (palette, new_sql, close, prev, next) = ctx.input_mut(|i| {
             (
@@ -1142,6 +1152,125 @@ mod screenshots {
             let tab = &mut harness.state_mut().tabs[1];
             tab.selected = None;
             tab.result = saved;
+        }
+
+        // Schema columns for the hover card, the column search and the diagram.
+        {
+            let col = |schema: &str, table: &str, column: &str, ty: &str| crate::db::SchemaColumn {
+                schema: schema.into(),
+                table: table.into(),
+                column: column.into(),
+                data_type: ty.into(),
+            };
+            let s = harness.state_mut().session.as_mut().unwrap();
+            s.schema_cols = vec![
+                col("public", "clientes", "id", "integer"),
+                col("public", "clientes", "nome", "text"),
+                col("public", "clientes", "email", "text"),
+                col("public", "clientes", "ativo", "boolean"),
+                col("public", "clientes", "saldo", "numeric"),
+                col("public", "clientes", "criado_em", "timestamp"),
+                col("public", "pedidos", "id", "bigint"),
+                col("public", "pedidos", "cliente_id", "integer"),
+                col("public", "pedidos", "produto_id", "integer"),
+                col("public", "pedidos", "status", "text"),
+                col("public", "pedidos", "total", "numeric"),
+                col("public", "produtos", "id", "integer"),
+                col("public", "produtos", "nome", "text"),
+                col("public", "produtos", "preco", "numeric"),
+                col("public", "produtos", "categoria_id", "integer"),
+            ];
+        }
+        // Hover card over a table name in the editor.
+        {
+            let state = harness.state_mut();
+            state.active = 1;
+            if let TabKind::Sql { text } = &mut state.tabs[1].kind {
+                *text = "SELECT *\nFROM clientes\nWHERE ativo;".into();
+            }
+            harness.run();
+            harness.hover_at(egui::pos2(316.0, 104.0));
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/hover-table.png"))
+                .unwrap();
+            harness.hover_at(egui::pos2(900.0, 700.0));
+        }
+        // ER diagram of "public".
+        {
+            let fk = |t: &str, c: &str, rt: &str| crate::db::FkEdge {
+                schema: "public".into(),
+                table: t.into(),
+                column: c.into(),
+                ref_schema: "public".into(),
+                ref_table: rt.into(),
+                ref_column: "id".into(),
+            };
+            let state = harness.state_mut();
+            state.open_diagram(Some("public"));
+            let (tables, cols) = {
+                let s = state.session.as_ref().unwrap();
+                (s.tables.clone(), s.schema_cols.clone())
+            };
+            // As if the foreign keys had arrived.
+            state.tabs.last_mut().unwrap().end_job();
+            if let Some(TabKind::Diagram(d)) = state.tabs.last_mut().map(|t| &mut t.kind) {
+                d.edges = Some(Ok(vec![
+                    fk("pedidos", "cliente_id", "clientes"),
+                    fk("pedidos", "produto_id", "produtos"),
+                ]));
+                d.build(&tables, &cols);
+            }
+            harness.run();
+            harness.hover_at(egui::pos2(500.0, 300.0));
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/diagram.png"))
+                .unwrap();
+            let state = harness.state_mut();
+            state.tabs.pop();
+            state.active = 1;
+        }
+        // "Buscar valor" with a finished search.
+        {
+            let state = harness.state_mut();
+            state.open_search();
+            if let Some(TabKind::Search(st)) = state.tabs.last_mut().map(|t| &mut t.kind) {
+                st.term = "cliente42@exemplo.com".into();
+                st.focus = false;
+                st.total = 214;
+                st.done = 214;
+                st.skipped = 1;
+                st.hits = vec![
+                    crate::search::SearchHit {
+                        schema: "public".into(),
+                        table: "clientes".into(),
+                        columns: vec!["email".into()],
+                        rows: 1,
+                        filter: "(CAST(\"email\" AS TEXT) ILIKE '%cliente42@exemplo.com%')".into(),
+                    },
+                    crate::search::SearchHit {
+                        schema: "public".into(),
+                        table: "eventos".into(),
+                        columns: vec!["payload".into(), "descricao".into()],
+                        rows: 5,
+                        filter: String::new(),
+                    },
+                ];
+            }
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/search.png"))
+                .unwrap();
+            let state = harness.state_mut();
+            state.tabs.pop();
+            state.active = 1;
         }
 
         // Autocomplete: type a partial word and put the cursor after it.

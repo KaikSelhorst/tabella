@@ -19,6 +19,9 @@ pub struct Saved {
 pub enum SavedTab {
     Sql {
         text: String,
+        /// Set when the user renamed the tab.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     Table {
         schema: String,
@@ -66,6 +69,7 @@ mod tests {
             tabs: vec![
                 SavedTab::Sql {
                     text: "select 1".into(),
+                    title: Some("Relatório".into()),
                 },
                 SavedTab::Table {
                     schema: "public".into(),

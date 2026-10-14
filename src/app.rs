@@ -11,16 +11,18 @@ use eframe::egui;
 
 use crate::config;
 use crate::db::{
-    ActivityView, Canceller, ColumnInfo, ConnConfig, IncomingFk, Kind, PreviewData, QueryResult, ServerInfo,
-    TableRef, TableStructure,
+    ActivityView, Canceller, ColumnInfo, ConnConfig, IncomingFk, Kind, PreviewData, QueryResult,
+    SchemaColumn, ServerInfo, TableRef, TableStructure,
 };
 use crate::design::Design;
+use crate::diagram::DiagramState;
 use crate::export::{self, Format};
 use crate::favorites::{self, Favorite};
 use crate::filters::{self, SavedFilter};
 use crate::history::{self, Entry};
 use crate::import;
 use crate::plan::Plan;
+use crate::search::SearchHit;
 use crate::secrets::{Derived, SecretStore};
 use crate::session::{self, SavedTab};
 use crate::sql::{self, FilterOp, PageQuery, Stmt};
@@ -59,6 +61,8 @@ pub struct Session {
     pub tables: Vec<TableRef>,
     /// `(table, column)` pairs for SQL autocomplete.
     pub columns: Vec<(String, String)>,
+    /// The same columns with schema and type (schema search, hover info, ER diagram).
+    pub schema_cols: Vec<SchemaColumn>,
     /// Manual-commit mode and the open transaction, as last reported by the worker.
     pub txn: TxState,
 }
@@ -297,6 +301,27 @@ pub enum TabKind {
     Activity(Box<ActivityState>),
     /// "Nova tabela" / "Editar estrutura".
     Design(Box<Design>),
+    /// "Buscar valor em todas as tabelas".
+    Search(Box<SearchState>),
+    /// ER diagram of a schema.
+    Diagram(Box<DiagramState>),
+}
+
+pub struct SearchState {
+    pub term: String,
+    pub exact: bool,
+    pub include_big: bool,
+    pub running: bool,
+    pub done: usize,
+    pub total: usize,
+    /// Big tables left out of the last search.
+    pub skipped: usize,
+    pub hits: Vec<SearchHit>,
+    pub errors: Vec<String>,
+    /// Set to stop the search between tables.
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// Focus the field on the first frame.
+    pub focus: bool,
 }
 
 /// "Atividade" tab: sessions on the server, optionally refreshed every few seconds.
@@ -381,6 +406,12 @@ pub struct Tab {
     pub source: Option<Box<TableState>>,
     /// The SELECT behind `source`, re-run after saving.
     pub source_query: String,
+    /// The user gave the tab its own name.
+    pub renamed: bool,
+    /// "Repetir a cada": seconds between automatic re-runs of `last_query` (editor tabs).
+    pub repeat: Option<u64>,
+    pub last_query: String,
+    pub last_run: Option<Instant>,
 }
 
 /// "Estatísticas da coluna" dialog.
@@ -445,6 +476,10 @@ impl Tab {
             pinned_cols: Vec::new(),
             source: None,
             source_query: String::new(),
+            renamed: false,
+            repeat: None,
+            last_query: String::new(),
+            last_run: None,
         }
     }
 
@@ -539,7 +574,7 @@ impl Tab {
     }
 
     /// Counts a reply. Returns how long the tab was busy when this was the last one.
-    fn end_job(&mut self) -> Option<std::time::Duration> {
+    pub(crate) fn end_job(&mut self) -> Option<std::time::Duration> {
         self.pending = self.pending.saturating_sub(1);
         if self.pending > 0 {
             return None;
@@ -684,6 +719,8 @@ pub struct App {
     pub quit_prompt: bool,
     /// F1 shortcuts screen.
     pub help: bool,
+    /// Recently closed tabs, newest last.
+    pub closed: Vec<SavedTab>,
     /// The window title announces a finished job (cleared when the window is focused).
     title_changed: bool,
     /// Close the window once the transaction has been ended.
@@ -721,6 +758,7 @@ impl App {
             sort_by_size: false,
             quit_prompt: false,
             help: false,
+            closed: Vec::new(),
             title_changed: false,
             quit_after_tx: false,
             frames: 0,
@@ -752,26 +790,7 @@ impl App {
 
     /// What to restore next time: open connection, tabs and window size.
     pub fn snapshot(&self) -> session::Saved {
-        let tabs = self
-            .tabs
-            .iter()
-            .filter_map(|t| match &t.kind {
-                TabKind::Activity(_) | TabKind::Design(_) => None,
-                TabKind::Sql { text } => Some(SavedTab::Sql { text: text.clone() }),
-                TabKind::Table(ts) => Some(SavedTab::Table {
-                    schema: ts.schema.clone(),
-                    table: ts.table.clone(),
-                    filter: ts.filter.clone(),
-                    order: ts.order.clone(),
-                    hidden: t.hidden_cols.clone(),
-                    pinned: t.pinned_cols.clone(),
-                }),
-                TabKind::Structure(st) => Some(SavedTab::Structure {
-                    schema: st.schema.clone(),
-                    table: st.table.clone(),
-                }),
-            })
-            .collect();
+        let tabs = self.tabs.iter().filter_map(saved_tab).collect();
         session::Saved {
             conn: self.session.as_ref().map(|s| s.cfg.id.clone()),
             tabs,
@@ -782,8 +801,22 @@ impl App {
 
     fn restore_tabs(&mut self, saved: session::Saved) {
         for t in saved.tabs {
+            self.restore_tab(t);
+        }
+        self.active = saved.active.min(self.tabs.len().saturating_sub(1));
+    }
+
+    /// Opens a tab as it was saved (session restore, "reabrir aba fechada").
+    fn restore_tab(&mut self, t: SavedTab) {
+        {
             match t {
-                SavedTab::Sql { text } => self.open_sql(text),
+                SavedTab::Sql { text, title } => {
+                    self.open_sql(text);
+                    if let (Some(title), Some(tab)) = (title, self.tabs.last_mut()) {
+                        tab.title = title;
+                        tab.renamed = true;
+                    }
+                }
                 SavedTab::Structure { schema, table } => self.open_structure(&schema, &table),
                 SavedTab::Table {
                     schema,
@@ -806,7 +839,56 @@ impl App {
                 }
             }
         }
-        self.active = saved.active.min(self.tabs.len().saturating_sub(1));
+    }
+
+    /// Ctrl+Shift+T: the most recently closed tab comes back.
+    pub fn reopen_closed_tab(&mut self) {
+        if self.session.as_ref().is_some_and(|s| s.ready)
+            && let Some(t) = self.closed.pop()
+        {
+            self.restore_tab(t);
+        }
+    }
+
+    /// A copy of an editor tab, next to it.
+    pub fn duplicate_tab(&mut self, i: usize) {
+        let Some(Tab {
+            kind: TabKind::Sql { text },
+            title,
+            ..
+        }) = self.tabs.get(i)
+        else {
+            return;
+        };
+        let (text, title) = (text.clone(), format!("{title} (cópia)"));
+        self.open_sql(text);
+        if let Some(t) = self.tabs.last_mut() {
+            t.title = title;
+            t.renamed = true;
+        }
+    }
+
+    /// Closes every tab but `keep` (tabs with unsaved changes stay, with their warning).
+    pub fn close_others(&mut self, keep: usize, only_right: bool) {
+        let ids: Vec<u64> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != keep && (!only_right || *i > keep))
+            .map(|(_, t)| t.id)
+            .collect();
+        for id in ids {
+            if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                self.close_tab(i);
+            }
+        }
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| self.tabs.get(keep).is_some_and(|k| k.id == t.id))
+        {
+            self.active = i;
+        }
     }
 
     /// Test databases from the docker setup, listed first (`dev-conn` feature only: it embeds
@@ -1029,6 +1111,7 @@ impl App {
             ready: false,
             tables: vec![],
             columns: vec![],
+            schema_cols: vec![],
             txn: TxState {
                 manual: cfg_manual,
                 ..Default::default()
@@ -1085,6 +1168,46 @@ impl App {
             };
             match reply {
                 Reply::Tx(state) => s.txn = state,
+                Reply::SearchProgress { tab, hit, error } => {
+                    if let Some(Tab {
+                        kind: TabKind::Search(st),
+                        ..
+                    }) = self.tabs.iter_mut().find(|t| t.id == tab)
+                    {
+                        st.done += 1;
+                        st.hits.extend(hit);
+                        // A cancelled statement isn't an error worth listing.
+                        if !st.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            st.errors.extend(error);
+                        }
+                    }
+                }
+                Reply::SearchDone { tab, cancelled } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
+                    if let TabKind::Search(st) = &mut t.kind {
+                        st.running = false;
+                        if cancelled {
+                            self.notice = Notice::info("Busca cancelada");
+                        }
+                    }
+                }
+                Reply::Fks { tab, res } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
+                    if let TabKind::Diagram(d) = &mut t.kind {
+                        d.edges = Some(res.map_err(|e| e.to_string()));
+                        d.build(&s.tables, &s.schema_cols);
+                    }
+                }
                 Reply::ServerInfo { tab, res } => {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
@@ -1157,7 +1280,10 @@ impl App {
                 }
                 Reply::Tables(Ok(t)) => s.tables = t,
                 Reply::Tables(Err(e)) => self.notice = Notice::error(e.to_string()),
-                Reply::AllColumns(Ok(c)) => s.columns = c,
+                Reply::AllColumns(Ok(c)) => {
+                    s.columns = c.iter().map(|c| (c.table.clone(), c.column.clone())).collect();
+                    s.schema_cols = c;
+                }
                 // Autocomplete just has no columns then.
                 Reply::AllColumns(Err(_)) => {}
                 Reply::Rows { tab, res, notice } => {
@@ -1486,7 +1612,13 @@ impl App {
             return;
         }
         if i < self.tabs.len() {
-            self.tabs.remove(i);
+            let t = self.tabs.remove(i);
+            if let Some(saved) = saved_tab(&t) {
+                self.closed.push(saved);
+                if self.closed.len() > MAX_CLOSED {
+                    self.closed.remove(0);
+                }
+            }
             self.active = self.active.min(self.tabs.len().saturating_sub(1));
         }
     }
@@ -1518,6 +1650,60 @@ impl App {
         }
         s.txn.manual = on;
         s.send(Job::SetManual(on));
+    }
+
+    /// Opens (or focuses) the ER diagram of `schema` (the connection's first one when `None`).
+    pub fn open_diagram(&mut self, schema: Option<&str>) {
+        let Some(s) = &self.session else { return };
+        let schema = schema
+            .map(str::to_string)
+            .or_else(|| s.tables.first().map(|t| t.schema.clone()))
+            .unwrap_or_default();
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(&t.kind, TabKind::Diagram(d) if d.schema == schema))
+        {
+            self.active = i;
+            return;
+        }
+        let i = self.push_tab(
+            format!("diagrama · {schema}"),
+            TabKind::Diagram(Box::new(DiagramState::new(&schema))),
+        );
+        let Some(s) = &self.session else { return };
+        let tab = &mut self.tabs[i];
+        tab.begin_job();
+        s.send(Job::Fks { tab: tab.id });
+    }
+
+    /// Opens the "buscar valor" tab (or focuses it).
+    pub fn open_search(&mut self) {
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Search(_)))
+        {
+            self.active = i;
+            return;
+        }
+        if self.session.is_none() {
+            return;
+        }
+        let st = SearchState {
+            term: String::new(),
+            exact: false,
+            include_big: false,
+            running: false,
+            done: 0,
+            total: 0,
+            skipped: 0,
+            hits: Vec::new(),
+            errors: Vec::new(),
+            cancel: Arc::default(),
+            focus: true,
+        };
+        self.push_tab("Buscar valor".into(), TabKind::Search(Box::new(st)));
     }
 
     /// Opens (or focuses) the server activity monitor.
@@ -1792,6 +1978,47 @@ pub fn refresh_activity(tab: &mut Tab, s: &Session) {
     tab.send_rows_job(s, Job::Activity { tab: id, view });
 }
 
+/// Starts looking for the tab's term in every table.
+pub fn start_search(tab: &mut Tab, s: &Session) {
+    let TabKind::Search(st) = &mut tab.kind else {
+        return;
+    };
+    let term = st.term.trim().to_string();
+    if term.is_empty() || st.running {
+        return;
+    }
+    let (targets, skipped) = crate::search::targets(&s.tables, &s.schema_cols, &term, st.include_big);
+    st.cancel = Arc::default();
+    st.running = !targets.is_empty();
+    st.done = 0;
+    st.total = targets.len();
+    st.skipped = skipped;
+    st.hits.clear();
+    st.errors.clear();
+    if targets.is_empty() {
+        return;
+    }
+    let job = Job::SearchValue {
+        tab: tab.id,
+        term,
+        exact: st.exact,
+        targets,
+        cancel: st.cancel.clone(),
+    };
+    tab.begin_job();
+    s.send(job);
+}
+
+/// Stops the search: after the current table, or right away by cancelling its query.
+pub fn cancel_search(tab: &mut Tab, s: &Session) {
+    if let TabKind::Search(st) = &mut tab.kind
+        && st.running
+    {
+        st.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        s.cancel();
+    }
+}
+
 /// Zeroes the "consultas lentas" counters on the server.
 pub fn reset_query_stats(tab: &mut Tab, s: &Session) {
     let TabKind::Activity(st) = &mut tab.kind else {
@@ -1844,6 +2071,33 @@ fn resolve_table(s: &Session, schema: Option<&str>, table: &str) -> Option<(Stri
         }
     };
     pick(true).or_else(|| pick(false))
+}
+
+/// Closed tabs remembered for "reabrir aba fechada".
+const MAX_CLOSED: usize = 20;
+
+/// A tab as the session file (and the closed-tabs list) keeps it; `None` for tabs that are
+/// only meaningful while open.
+fn saved_tab(t: &Tab) -> Option<SavedTab> {
+    match &t.kind {
+        TabKind::Activity(_) | TabKind::Design(_) | TabKind::Search(_) | TabKind::Diagram(_) => None,
+        TabKind::Sql { text } => Some(SavedTab::Sql {
+            text: text.clone(),
+            title: t.renamed.then(|| t.title.clone()),
+        }),
+        TabKind::Table(ts) => Some(SavedTab::Table {
+            schema: ts.schema.clone(),
+            table: ts.table.clone(),
+            filter: ts.filter.clone(),
+            order: ts.order.clone(),
+            hidden: t.hidden_cols.clone(),
+            pinned: t.pinned_cols.clone(),
+        }),
+        TabKind::Structure(st) => Some(SavedTab::Structure {
+            schema: st.schema.clone(),
+            table: st.table.clone(),
+        }),
+    }
 }
 
 /// Jobs at least this long announce themselves when they finish in the background.
@@ -1936,6 +2190,8 @@ pub fn run_sql(tab: &mut Tab, s: &Session, sql: String) {
     tab.source = None;
     tab.error = None;
     tab.plan = None;
+    tab.last_query = sql.clone();
+    tab.last_run = Some(Instant::now());
     tab.pending_sql = Some(sql.clone());
     let id = tab.id;
     tab.send_rows_job(s, Job::Query { tab: id, sql });
@@ -2050,6 +2306,18 @@ pub fn preview(tab: &mut Tab, s: &Session, sql: String) {
     s.send(Job::Preview { tab: tab.id, sql });
 }
 
+/// "Repetir a cada": runs the tab's last query again, quietly (no history entry, the
+/// editable source and the selection stay).
+pub fn rerun(tab: &mut Tab, s: &Session) {
+    if tab.last_query.trim().is_empty() || has_unsaved(tab) {
+        return;
+    }
+    tab.last_run = Some(Instant::now());
+    let id = tab.id;
+    let sql = tab.last_query.clone();
+    tab.send_rows_job(s, Job::Query { tab: id, sql });
+}
+
 /// Asks for the plan of one statement. ANALYZE runs it, so it is refused for anything but reads.
 pub fn explain(tab: &mut Tab, s: &Session, sql: &str, analyze: bool) {
     let parts = sql::statement_ranges(sql, false);
@@ -2095,11 +2363,11 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             return None;
         }
         GridEvent::Copy(row, how) => {
-            let table = match &tab.kind {
-                TabKind::Table(ts) => k.qualified(&ts.schema, &ts.table),
-                TabKind::Sql { .. } | TabKind::Structure(_) | TabKind::Activity(_) | TabKind::Design(_) => {
-                    "tabela".to_string()
-                }
+            let table = match (&tab.kind, &tab.source) {
+                (TabKind::Table(ts), _) => k.qualified(&ts.schema, &ts.table),
+                // An editable editor result knows its table too.
+                (_, Some(src)) => k.qualified(&src.schema, &src.table),
+                _ => "tabela".to_string(),
             };
             return Some(Effect::Copy(match how {
                 CopyAs::Json => values::row_json(res, cols, *row),
@@ -2480,6 +2748,7 @@ pub mod tests {
             ready: true,
             tables: vec![],
             columns: vec![],
+            schema_cols: vec![],
             txn: TxState::default(),
         };
         (s, jobs, replies)
@@ -2796,6 +3065,33 @@ mod poll_tests {
             .map(|j| matches!(j, Job::Columns { .. } | Job::Structure { .. }))
             .collect();
         assert_eq!(kinds, [true, true]);
+    }
+
+    #[test]
+    fn closed_tabs_come_back_with_their_name() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.open_sql("select 1".into());
+        app.tabs[0].title = "Relatório".into();
+        app.tabs[0].renamed = true;
+        app.open_table("public", "clientes");
+        if let TabKind::Table(ts) = &mut app.tabs[1].kind {
+            ts.filter = "ativo".into();
+        }
+        app.close_tab(0);
+        app.close_tab(0);
+        assert!(app.tabs.is_empty());
+        app.reopen_closed_tab();
+        assert!(
+            matches!(&app.tabs[0].kind, TabKind::Table(ts) if ts.filter == "ativo"),
+            "last closed first"
+        );
+        app.reopen_closed_tab();
+        assert_eq!(app.tabs[1].title, "Relatório");
+        app.duplicate_tab(1);
+        assert_eq!(app.tabs[2].title, "Relatório (cópia)");
+        app.close_others(2, false);
+        assert_eq!(app.tabs.len(), 1);
     }
 
     #[test]

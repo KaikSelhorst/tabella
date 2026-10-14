@@ -13,9 +13,17 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Geral",
         &[
-            ("Ctrl+P", "Paleta: tabelas, conexões, consultas recentes, ações"),
+            (
+                "Ctrl+P",
+                "Paleta: tabelas, colunas (\"tabela.coluna\"), conexões, consultas, ações",
+            ),
+            ("Ctrl+Shift+F", "Buscar um valor em todas as tabelas"),
             ("Ctrl+T", "Nova aba SQL"),
-            ("Ctrl+W", "Fechar aba"),
+            (
+                "Ctrl+W",
+                "Fechar aba (clique direito na aba: renomear, duplicar, fechar outras)",
+            ),
+            ("Ctrl+Shift+T", "Reabrir a última aba fechada"),
             ("Ctrl+Tab / Ctrl+Shift+Tab", "Próxima / aba anterior"),
             ("F1", "Esta tela"),
         ],
@@ -30,6 +38,10 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+F / Ctrl+H", "Buscar / substituir"),
             ("Tab / Enter", "Aceitar sugestão do autocomplete"),
             (":nome", "Parâmetro: o valor é pedido antes de executar"),
+            (
+                "Ctrl+clique numa tabela",
+                "Abre a tabela (passar o mouse mostra as colunas)",
+            ),
         ],
     ),
     (

@@ -202,6 +202,26 @@ impl ConnConfig {
     }
 }
 
+/// A single-column foreign key: `schema.table.column` points at `ref_schema.ref_table.ref_column`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FkEdge {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+    pub ref_schema: String,
+    pub ref_table: String,
+    pub ref_column: String,
+}
+
+/// One column of the connection's tables, as `Conn::all_columns` lists them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SchemaColumn {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+    pub data_type: String,
+}
+
 /// Outcome of `Conn::preview`.
 #[derive(Clone, Debug)]
 pub struct PreviewData {
@@ -515,21 +535,27 @@ impl Conn {
     }
 
     /// Every `(table, column)` outside system schemas, for editor autocomplete.
-    pub fn all_columns(&mut self) -> DbResult<Vec<(String, String)>> {
+    /// Every column of every table, for autocomplete, the schema search and the ER diagram.
+    pub fn all_columns(&mut self) -> DbResult<Vec<SchemaColumn>> {
         let system = match self {
             Conn::Pg(_) => "'pg_catalog', 'information_schema'",
             Conn::My(_) => "'information_schema', 'mysql', 'performance_schema', 'sys'",
         };
         let sql = format!(
-            "SELECT table_name, column_name FROM information_schema.columns \
-             WHERE table_schema NOT IN ({system}) ORDER BY 1, 2"
+            "SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns \
+             WHERE table_schema NOT IN ({system}) ORDER BY 1, 2, ordinal_position"
         );
         let r = self.query_limit(&sql, 100_000)?;
         r.rows
             .into_iter()
             .map(|row| {
-                let [t, c] = cells(row)?;
-                Ok((t, c))
+                let [schema, table, column, data_type] = cells(row)?;
+                Ok(SchemaColumn {
+                    schema,
+                    table,
+                    column,
+                    data_type,
+                })
             })
             .collect()
     }
@@ -636,6 +662,47 @@ impl Conn {
             }
         }
         Ok(cols)
+    }
+
+    /// Every single-column foreign key of the connection (for the ER diagram).
+    pub fn all_fks(&mut self) -> DbResult<Vec<FkEdge>> {
+        let sql = match self.kind() {
+            Kind::Postgres => {
+                "SELECT n.nspname, c.relname, a.attname, fn.nspname, fc.relname, fa.attname \
+                 FROM pg_constraint k \
+                 JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 JOIN pg_class fc ON fc.oid = k.confrelid JOIN pg_namespace fn ON fn.oid = fc.relnamespace \
+                 JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = k.conkey[1] \
+                 JOIN pg_attribute fa ON fa.attrelid = k.confrelid AND fa.attnum = k.confkey[1] \
+                 WHERE k.contype = 'f' AND array_length(k.conkey, 1) = 1 \
+                 AND n.nspname NOT IN ('pg_catalog', 'information_schema') ORDER BY 1, 2, 3"
+            }
+            Kind::MySql => {
+                "SELECT k.table_schema, k.table_name, k.column_name, \
+                 k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name \
+                 FROM information_schema.key_column_usage k \
+                 WHERE k.referenced_table_name IS NOT NULL \
+                 AND k.table_schema NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') \
+                 AND (SELECT COUNT(*) FROM information_schema.key_column_usage k2 \
+                  WHERE k2.constraint_schema = k.constraint_schema AND k2.constraint_name = k.constraint_name \
+                  AND k2.table_name = k.table_name) = 1 ORDER BY 1, 2, 3"
+            }
+        };
+        self.query_limit(sql, 100_000)?
+            .rows
+            .into_iter()
+            .map(|row| {
+                let [schema, table, column, ref_schema, ref_table, ref_column] = cells(row)?;
+                Ok(FkEdge {
+                    schema,
+                    table,
+                    column,
+                    ref_schema,
+                    ref_table,
+                    ref_column,
+                })
+            })
+            .collect()
     }
 
     /// Single-column foreign keys in other tables that point at this one ("quem aponta para cá").
@@ -1307,7 +1374,38 @@ mod tests {
         assert!(tables.iter().any(|t| t.name == "dbl_t"));
         assert_eq!(c.count("SELECT COUNT(*) FROM dbl_t").unwrap(), 2);
         let cols = c.all_columns().unwrap();
-        assert!(cols.contains(&("dbl_t".to_string(), "name".to_string())));
+        assert!(
+            cols.iter()
+                .any(|c| c.table == "dbl_t" && c.column == "name" && !c.data_type.is_empty())
+        );
+        // "Buscar valor": finds the row by part of a value, in the right column, and the filter
+        // it offers opens exactly there.
+        {
+            use crate::search::{search_table, targets};
+            let (ts, _) = targets(&tables, &cols, "NEIL", true);
+            let t = ts.iter().find(|t| t.table == "dbl_t").expect("dbl_t is searched");
+            let hit = search_table(&mut c, kind, t, "NEIL", false)
+                .unwrap()
+                .expect("found");
+            assert_eq!(hit.columns, ["name"], "{kind:?}");
+            let r = c
+                .query(&format!(
+                    "SELECT count(*) FROM {} WHERE {}",
+                    kind.qualified(&t.schema, "dbl_t"),
+                    hit.filter
+                ))
+                .unwrap();
+            assert_eq!(r.rows[0][0].as_deref(), Some("1"), "{kind:?}");
+            assert!(
+                search_table(&mut c, kind, t, "o'neil", true).unwrap().is_some(),
+                "{kind:?}: exact"
+            );
+            assert!(
+                search_table(&mut c, kind, t, "nada-disso", false)
+                    .unwrap()
+                    .is_none()
+            );
+        }
         let lit = kind.quote_str("x'y");
         let r = c.query(&format!("SELECT {lit}")).unwrap();
         assert_eq!(r.rows[0][0].as_deref(), Some("x'y"));
@@ -1459,6 +1557,15 @@ mod tests {
             .find(|t| t.name == "dbl_t")
             .unwrap();
         assert!(t.size.is_some_and(|b| b > 0), "{kind:?}: table size");
+        // The ER diagram's edges include it.
+        let fks = c.all_fks().unwrap();
+        assert!(
+            fks.iter().any(|e| e.table == "dbl_child"
+                && e.column == "parent_id"
+                && e.ref_table == "dbl_t"
+                && e.ref_column == "id"),
+            "{kind:?}: {fks:?}"
+        );
         // And the other way round: dbl_t knows dbl_child points at it.
         let schema_name = if kind == Kind::MySql { db } else { "public" };
         let incoming = c.incoming_fks(schema_name, "dbl_t").unwrap();

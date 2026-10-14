@@ -7,6 +7,7 @@ use eframe::egui::{self, Align, Key, Layout, TextEdit};
 
 use super::design::{self, DesignAction};
 use super::detail::{self, DetailAction};
+use super::diagram::{self, DiagramAction};
 use super::grid::{self, GridOpts, grid};
 use super::import_form::{self, ImportAction};
 use super::structure::{self, InsertAction, StructAction};
@@ -31,6 +32,15 @@ struct Cx<'a> {
     request: Option<Request>,
 }
 
+/// From the tab strip's context menu.
+enum TabAction {
+    Rename(usize, String),
+    Duplicate(usize),
+    /// Close the others (`true`: only those to the right).
+    CloseOthers(usize, bool),
+    Reopen,
+}
+
 enum Request {
     Structure(String, String),
     Data(String, String),
@@ -38,6 +48,8 @@ enum Request {
     OpenFiltered(String, String, String),
     SaveFavorite(String),
     DeleteFavorite(String),
+    /// The ER diagram of a schema.
+    Diagram(String),
     /// "Editar estrutura" of schema.table (its Estrutura tab has the data).
     Design(String, String),
     /// schema, table, name, filter
@@ -53,6 +65,7 @@ impl App {
         }
         let t = theme::tokens();
         let mut close = None;
+        let mut action: Option<TabAction> = None;
         let strip = egui::Frame::new()
             .fill(t.sidebar)
             .inner_margin(egui::Margin::symmetric(8, 0))
@@ -67,10 +80,64 @@ impl App {
                             TabKind::Structure(_) => icon::TREE_STRUCTURE,
                             TabKind::Activity(_) => icon::PULSE,
                             TabKind::Design(_) => icon::PENCIL_SIMPLE,
+                            TabKind::Search(_) => icon::MAGNIFYING_GLASS,
+                            TabKind::Diagram(_) => icon::GRAPH,
                         };
-                        if theme::tab_label(ui, glyph, &tab.title, i == self.active).clicked() {
+                        let label = theme::tab_label(ui, glyph, &tab.title, i == self.active);
+                        if label.clicked() {
                             self.active = i;
                         }
+                        let is_sql = matches!(tab.kind, TabKind::Sql { .. });
+                        let closed = !self.closed.is_empty();
+                        let n = self.tabs.len();
+                        label.context_menu(|ui| {
+                            // Rename in place: type and press Enter.
+                            let name_id = egui::Id::new(("tab_name", tab.id));
+                            let mut name = ui
+                                .data(|d| d.get_temp::<String>(name_id))
+                                .unwrap_or_else(|| tab.title.clone());
+                            ui.label(egui::RichText::new("Nome da aba").size(11.0).color(t.subtle));
+                            let r = ui.add(TextEdit::singleline(&mut name).desired_width(200.0));
+                            if r.lost_focus()
+                                && ui.input(|i| i.key_pressed(Key::Enter))
+                                && !name.trim().is_empty()
+                            {
+                                action = Some(TabAction::Rename(i, name.trim().to_string()));
+                                ui.data_mut(|d| d.remove::<String>(name_id));
+                                ui.close();
+                            } else {
+                                ui.data_mut(|d| d.insert_temp(name_id, name));
+                            }
+                            ui.separator();
+                            if is_sql && ui.button("Duplicar").clicked() {
+                                action = Some(TabAction::Duplicate(i));
+                                ui.close();
+                            }
+                            if ui
+                                .add_enabled(n > 1, egui::Button::new("Fechar as outras"))
+                                .clicked()
+                            {
+                                action = Some(TabAction::CloseOthers(i, false));
+                                ui.close();
+                            }
+                            if ui
+                                .add_enabled(i + 1 < n, egui::Button::new("Fechar as da direita"))
+                                .clicked()
+                            {
+                                action = Some(TabAction::CloseOthers(i, true));
+                                ui.close();
+                            }
+                            if ui
+                                .add_enabled(
+                                    closed,
+                                    egui::Button::new("Reabrir aba fechada").shortcut_text("Ctrl+Shift+T"),
+                                )
+                                .clicked()
+                            {
+                                action = Some(TabAction::Reopen);
+                                ui.close();
+                            }
+                        });
                         let x = theme::icon(icon::X).size(11.0).color(t.subtle);
                         if ui
                             .add(egui::Button::new(x).frame(false))
@@ -90,6 +157,18 @@ impl App {
             self.close_tab(i);
             return;
         }
+        match action {
+            Some(TabAction::Rename(i, name)) => {
+                if let Some(tab) = self.tabs.get_mut(i) {
+                    tab.title = name;
+                    tab.renamed = true;
+                }
+            }
+            Some(TabAction::Duplicate(i)) => self.duplicate_tab(i),
+            Some(TabAction::CloseOthers(i, right)) => self.close_others(i, right),
+            Some(TabAction::Reopen) => self.reopen_closed_tab(),
+            None => {}
+        }
         let (Some(s), Some(tab)) = (&self.session, self.tabs.get_mut(self.active)) else {
             return;
         };
@@ -105,6 +184,25 @@ impl App {
             TabKind::Sql { .. } => sql_tab(ui, tab, &mut cx),
             TabKind::Table(_) => table_tab(ui, tab, &mut cx),
             TabKind::Activity(_) => activity_tab(ui, tab, &mut cx),
+            TabKind::Search(_) => search_tab(ui, tab, &mut cx),
+            TabKind::Diagram(_) => {
+                let busy = tab.busy();
+                let schemas: Vec<String> = {
+                    let mut v: Vec<String> = s.tables.iter().map(|t| t.schema.clone()).collect();
+                    v.dedup();
+                    v
+                };
+                let TabKind::Diagram(d) = &mut tab.kind else {
+                    unreachable!()
+                };
+                match diagram::diagram_tab(ui, tab.id, d, busy, &schemas, s) {
+                    Some(DiagramAction::OpenTable(table)) => {
+                        cx.request = Some(Request::Data(d.schema.clone(), table))
+                    }
+                    Some(DiagramAction::Schema(schema)) => cx.request = Some(Request::Diagram(schema)),
+                    None => {}
+                }
+            }
             TabKind::Design(_) => {
                 let busy = tab.busy();
                 if let Some(e) = &tab.error {
@@ -157,6 +255,7 @@ impl App {
                 });
             }
             Some(Request::DeleteFavorite(id)) => self.delete_favorite(&id),
+            Some(Request::Diagram(schema)) => self.open_diagram(Some(&schema)),
             Some(Request::Design(schema, table)) => {
                 let data = self.tabs.iter().find_map(|t| match &t.kind {
                     TabKind::Structure(st) if st.schema == schema && st.table == table => st.data.clone(),
@@ -293,12 +392,16 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let busy = tab.busy();
     let can_export = !busy && tab.result.as_ref().is_some_and(|r| !r.columns.is_empty());
     let mut export = None;
+    let tab_last_query = tab.last_query.clone();
+    let mut repeat_value = tab.repeat;
+    let repeat = &mut repeat_value;
     let TabKind::Sql { text } = &mut tab.kind else {
         return;
     };
     let mut run: Option<String> = None;
     let mut explain: Option<(String, bool)> = None;
     let mut preview: Option<String> = None;
+    let mut open_table: Option<(String, String)> = None;
     let t = theme::tokens();
     let f5 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
     egui::Panel::top(egui::Id::new(("editor", tab.id)))
@@ -408,6 +511,29 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         explain = Some((one.clone(), true));
                         ui.close();
                     }
+                });
+                // "Repetir a cada": the last query again on a timer (reads only).
+                let last_reads = !tab_last_query.trim().is_empty() && !sql::script_risk(&tab_last_query).writes;
+                let repeat_label = match *repeat {
+                    Some(n) => theme::icon_text(icon::ARROWS_CLOCKWISE, &format!("a cada {n} s"), t.lime, t.lime),
+                    None => theme::icon_text(icon::ARROWS_CLOCKWISE, "Repetir", t.muted_foreground, t.foreground),
+                };
+                ui.add_enabled_ui(last_reads || repeat.is_some(), |ui| {
+                    ui.menu_button(repeat_label, |ui| {
+                        ui.label(
+                            egui::RichText::new("Roda a última consulta de novo, sozinha")
+                                .size(11.0)
+                                .color(t.subtle),
+                        );
+                        for (n, label) in [(None, "Desligado"), (Some(2), "2 s"), (Some(5), "5 s"), (Some(10), "10 s"), (Some(30), "30 s"), (Some(60), "1 min")] {
+                            if ui.selectable_label(*repeat == n, label).clicked() {
+                                *repeat = n;
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_disabled_hover_text("Execute uma consulta de leitura primeiro (SELECT…)");
                 });
                 let format = theme::icon_text(
                     icon::TEXT_ALIGN_LEFT,
@@ -534,6 +660,23 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             egui::Stroke::new(2.0, t.lime),
                         );
                     }
+                    // A table name under the pointer: its columns on hover, Ctrl+click opens it.
+                    let hovered = out.response.hover_pos().and_then(|p| {
+                        let at = out.galley.cursor_from_pos(p - out.galley_pos);
+                        let (a, b) = sql::word_at(text, usize::from(at.index))?;
+                        let word: String = text.chars().skip(a).take(b - a).collect();
+                        table_named(s, &word)
+                    });
+                    if let Some(t) = hovered {
+                        let ctrl = ui.input(|i| i.modifiers.command);
+                        if ctrl {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if ctrl && out.response.clicked() {
+                            open_table = Some((t.schema.clone(), t.name.clone()));
+                        }
+                        out.response.response.clone().on_hover_ui_at_pointer(|ui| table_tooltip(ui, s, t));
+                    }
                     if let (Some((sugg, selected)), Some(range)) = (popup, out.cursor_range) {
                         let at = out.galley.pos_from_cursor(range.primary);
                         let anchor = out.galley_pos + at.left_bottom().to_vec2() + egui::vec2(0.0, 2.0);
@@ -563,6 +706,22 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 None => d.remove::<find::FindState>(find_id),
             });
         });
+    if let Some((schema, table)) = open_table {
+        cx.request = Some(Request::Data(schema, table));
+    }
+    tab.repeat = repeat_value;
+    // "Repetir a cada": stops at the first error, so a broken query doesn't keep failing.
+    if let Some(every) = tab.repeat {
+        if tab.error.is_some() {
+            tab.repeat = None;
+        } else if !tab.busy() {
+            let wait = std::time::Duration::from_secs(every);
+            match tab.last_run.map(|at| at.elapsed()) {
+                Some(passed) if passed < wait => ui.ctx().request_repaint_after(wait - passed),
+                _ => app::rerun(tab, s),
+            }
+        }
+    }
     if let Some(sql) = run.filter(|q| !q.trim().is_empty())
         && !busy
     {
@@ -618,6 +777,77 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     }
     result_area(ui, tab, cx, false);
 }
+
+/// The sidebar's table for a name typed in the editor (`clientes`, `public.clientes`,
+/// `"Clientes"`), ignoring case when there's no exact match.
+fn table_named<'a>(s: &'a Session, word: &str) -> Option<&'a crate::db::TableRef> {
+    let parts: Vec<String> = word
+        .split('.')
+        .map(|p| p.trim_matches(|c| c == '"' || c == '`').to_string())
+        .collect();
+    let (schema, name) = match &parts[..] {
+        [n] => (None, n.as_str()),
+        [sc, n] => (Some(sc.as_str()), n.as_str()),
+        _ => return None,
+    };
+    let find = |exact: bool| {
+        let same = |a: &str, b: &str| if exact { a == b } else { a.eq_ignore_ascii_case(b) };
+        s.tables
+            .iter()
+            .find(|t| same(&t.name, name) && schema.is_none_or(|sc| same(&t.schema, sc)))
+    };
+    find(true).or_else(|| find(false))
+}
+
+/// Hover card for a table name in the editor: its columns and types.
+fn table_tooltip(ui: &mut egui::Ui, s: &Session, t: &crate::db::TableRef) {
+    let tk = theme::tokens();
+    ui.horizontal(|ui| {
+        ui.label(theme::icon(if t.is_view { icon::EYE } else { icon::TABLE }).color(tk.muted_foreground));
+        ui.label(egui::RichText::new(format!("{}.{}", t.schema, t.name)).color(tk.foreground));
+        if let Some(n) = t.estimate {
+            ui.label(
+                egui::RichText::new(format!("~{} linhas", palette::format_count(n)))
+                    .size(11.0)
+                    .color(tk.subtle),
+            );
+        }
+    });
+    let cols: Vec<&crate::db::SchemaColumn> = s
+        .schema_cols
+        .iter()
+        .filter(|c| c.schema == t.schema && c.table == t.name)
+        .collect();
+    egui::Grid::new(("table_tip", &t.schema, &t.name))
+        .spacing([12.0, 2.0])
+        .show(ui, |ui| {
+            for c in cols.iter().take(TOOLTIP_COLUMNS) {
+                ui.label(
+                    egui::RichText::new(&c.column)
+                        .monospace()
+                        .size(12.0)
+                        .color(tk.foreground),
+                );
+                ui.label(egui::RichText::new(&c.data_type).size(11.0).color(tk.number));
+                ui.end_row();
+            }
+        });
+    if cols.len() > TOOLTIP_COLUMNS {
+        ui.label(
+            egui::RichText::new(format!("… mais {}", cols.len() - TOOLTIP_COLUMNS))
+                .size(11.0)
+                .color(tk.subtle),
+        );
+    }
+    ui.label(
+        egui::RichText::new("Ctrl+clique abre a tabela")
+            .size(11.0)
+            .color(tk.subtle),
+    );
+}
+
+/// Columns listed in the editor's hover card.
+const TOOLTIP_COLUMNS: usize = 16;
 
 /// Tables smaller than this aren't worth an index suggestion: reading them whole is cheap.
 const INDEX_HINT_ROWS: i64 = 10_000;
@@ -1152,6 +1382,156 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         error_banner(ui, e);
     }
     result_area(ui, tab, cx, false);
+}
+
+/// "Buscar valor em todas as tabelas": the term, options, progress and where it was found.
+fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
+    let s = cx.s;
+    let t = theme::tokens();
+    let TabKind::Search(st) = &mut tab.kind else {
+        return;
+    };
+    let (mut start, mut cancel) = (false, false);
+    let mut open: Option<(String, String, String)> = None;
+    egui::Frame::new()
+        .fill(t.background)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::MAGNIFYING_GLASS).size(15.0).color(t.muted_foreground));
+                ui.label(egui::RichText::new("Buscar valor em todas as tabelas").size(15.0).color(t.foreground));
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().interact_size.y = 28.0;
+                let r = ui.add_enabled(
+                    !st.running,
+                    TextEdit::singleline(&mut st.term)
+                        .hint_text("e-mail, CPF, código, id…  (Enter busca)")
+                        .font(egui::FontId::monospace(13.0))
+                        .margin(egui::Margin::symmetric(8, 6))
+                        .desired_width(360.0),
+                );
+                if std::mem::take(&mut st.focus) {
+                    r.request_focus();
+                }
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    start = true;
+                }
+                if st.running {
+                    if ui.add(theme::outline_button("Cancelar")).clicked() {
+                        cancel = true;
+                    }
+                } else if ui
+                    .add_enabled(!st.term.trim().is_empty(), theme::primary_button(Some(icon::MAGNIFYING_GLASS), "Buscar"))
+                    .clicked()
+                {
+                    start = true;
+                }
+                ui.add_enabled(!st.running, egui::Checkbox::new(&mut st.exact, "valor exato"))
+                    .on_hover_text("Desmarcado: procura o texto dentro dos valores (qualquer caixa)");
+                ui.add_enabled(
+                    !st.running,
+                    egui::Checkbox::new(&mut st.include_big, "incluir tabelas grandes"),
+                )
+                .on_hover_text("Tabelas com mais de 1 milhão de linhas: cada uma é lida inteira e leva segundos");
+            });
+            ui.label(
+                egui::RichText::new(
+                    "Lê as tabelas uma a uma (só colunas onde o valor caberia). Enquanto isso, as outras abas \
+                     desta conexão esperam.",
+                )
+                .size(11.0)
+                .color(t.subtle),
+            );
+            if st.running || st.total > 0 {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let frac = if st.total == 0 { 0.0 } else { st.done as f32 / st.total as f32 };
+                    ui.add(egui::ProgressBar::new(frac).desired_width(240.0).desired_height(6.0).fill(t.lime));
+                    let mut text = format!(
+                        "{} de {} tabelas · encontrado em {}",
+                        st.done,
+                        st.total,
+                        st.hits.len()
+                    );
+                    if st.skipped > 0 {
+                        text.push_str(&format!(" · {} grandes puladas", st.skipped));
+                    }
+                    if !st.errors.is_empty() {
+                        text.push_str(&format!(" · {} com erro", st.errors.len()));
+                    }
+                    let r = ui.label(egui::RichText::new(text).size(12.0).color(t.muted_foreground));
+                    if !st.errors.is_empty() {
+                        r.on_hover_text(st.errors.join("\n"));
+                    }
+                });
+            }
+        });
+
+    egui::ScrollArea::vertical()
+        .id_salt(("search_hits", tab.id))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(12, 4))
+                .show(ui, |ui| {
+                    if st.hits.is_empty() {
+                        if !st.running && st.total > 0 {
+                            ui.label(egui::RichText::new("Nada encontrado").color(t.subtle));
+                        }
+                        return;
+                    }
+                    egui::Grid::new(("search_grid", tab.id))
+                        .num_columns(4)
+                        .spacing([16.0, 6.0])
+                        .show(ui, |ui| {
+                            for h in ["tabela", "colunas", "linhas", ""] {
+                                ui.label(egui::RichText::new(h).size(11.0).color(t.subtle));
+                            }
+                            ui.end_row();
+                            for h in &st.hits {
+                                ui.label(
+                                    egui::RichText::new(format!("{}.{}", h.schema, h.table))
+                                        .monospace()
+                                        .color(t.foreground),
+                                );
+                                ui.label(
+                                    egui::RichText::new(h.columns.join(", "))
+                                        .monospace()
+                                        .color(t.info),
+                                );
+                                let rows = if h.rows >= crate::search::ROWS_PER_TABLE {
+                                    format!("{}+", h.rows)
+                                } else {
+                                    h.rows.to_string()
+                                };
+                                ui.label(egui::RichText::new(rows).monospace().color(t.number));
+                                if ui
+                                    .button(theme::icon_text(
+                                        icon::TABLE,
+                                        "Abrir",
+                                        t.muted_foreground,
+                                        t.foreground,
+                                    ))
+                                    .on_hover_text(egui::RichText::new(&h.filter).monospace())
+                                    .clicked()
+                                {
+                                    open = Some((h.schema.clone(), h.table.clone(), h.filter.clone()));
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+        });
+    if start {
+        app::start_search(tab, s);
+    } else if cancel {
+        app::cancel_search(tab, s);
+    }
+    if let Some((schema, table, filter)) = open {
+        cx.request = Some(Request::OpenFiltered(schema, table, filter));
+    }
 }
 
 /// "Servidor": headline numbers as tiles, then the biggest tables and the least used indexes.

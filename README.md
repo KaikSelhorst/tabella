@@ -68,6 +68,16 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
   cache, maiores tabelas e índices sem uso
 - Ícone próprio, e aviso (botão piscando na barra de tarefas e título) quando algo que levou
   10 s ou mais termina com a janela em segundo plano
+- Colunas no `Ctrl+P`: digite parte do nome ("cpf", "clientes.email") para achar onde está
+- Buscar um valor em todas as tabelas (`Ctrl+Shift+F`): olha só colunas onde o valor caberia,
+  pula tabelas grandes por padrão, mostra o progresso, pode ser cancelada e abre cada achado
+  já filtrado
+- No editor, passar o mouse sobre o nome de uma tabela mostra as colunas; `Ctrl+clique` abre
+- Abas: clique direito para renomear, duplicar, fechar as outras/da direita; `Ctrl+Shift+T`
+  reabre a última fechada
+- "Repetir": roda a última consulta de leitura a cada 2 s … 1 min
+- Diagrama ER por schema (`Ctrl+P` ou clique direito no schema): tabelas e chaves
+  estrangeiras organizadas sozinhas, com zoom, arrastar e duplo clique para abrir
 
 ## Segurança
 

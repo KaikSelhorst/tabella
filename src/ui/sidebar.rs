@@ -164,6 +164,7 @@ impl App {
         let mut disconnect = false;
         let mut open_activity = false;
         let mut new_table = false;
+        let mut schema_action: Option<(String, bool)> = None;
         let mut sort_by_size_toggle = false;
         let mut open_sql = false;
         let tk = theme::tokens();
@@ -217,7 +218,11 @@ impl App {
         let active_table = self.tabs.get(self.active).and_then(|t| match &t.kind {
             TabKind::Table(ts) => Some((ts.schema.as_str(), ts.table.as_str())),
             TabKind::Structure(st) => Some((st.schema.as_str(), st.table.as_str())),
-            TabKind::Sql { .. } | TabKind::Activity(_) | TabKind::Design(_) => None,
+            TabKind::Sql { .. }
+            | TabKind::Activity(_)
+            | TabKind::Design(_)
+            | TabKind::Search(_)
+            | TabKind::Diagram(_) => None,
         });
         let needle = self.filter.to_lowercase();
         let by_size = self.sort_by_size;
@@ -246,7 +251,7 @@ impl App {
                     let header = egui::RichText::new(format!("{schema}  {}", visible.len()))
                         .size(11.0)
                         .color(tk.subtle);
-                    egui::CollapsingHeader::new(header)
+                    let section = egui::CollapsingHeader::new(header)
                         .id_salt(("schema", schema))
                         .default_open(!needle.is_empty() || group.len() < AUTO_EXPAND_BELOW)
                         .show(ui, |ui| {
@@ -315,6 +320,16 @@ impl App {
                                 });
                             }
                         });
+                    section.header_response.context_menu(|ui| {
+                        if ui.button("Diagrama ER deste schema").clicked() {
+                            schema_action = Some((schema.clone(), true));
+                            ui.close();
+                        }
+                        if !s.cfg.read_only && ui.button("Nova tabela aqui").clicked() {
+                            schema_action = Some((schema.clone(), false));
+                            ui.close();
+                        }
+                    });
                 }
             });
         if sort_by_size_toggle {
@@ -325,6 +340,12 @@ impl App {
         }
         if new_table {
             self.open_new_table(None);
+        }
+        // (schema, true): diagram; (schema, false): new table there.
+        match schema_action {
+            Some((schema, true)) => self.open_diagram(Some(&schema)),
+            Some((schema, false)) => self.open_new_table(Some(&schema)),
+            None => {}
         }
         if disconnect {
             self.disconnect();
