@@ -721,6 +721,42 @@ impl Conn {
         Ok(cols)
     }
 
+    /// Where unqualified names go now, and where else they could: `(databases, current database,
+    /// current schema)`. MySQL has no schemas inside a database (the schema is empty).
+    pub fn location(&mut self) -> DbResult<(Vec<String>, String, String)> {
+        let (list, here) = match self.kind() {
+            Kind::Postgres => (
+                "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY 1",
+                "SELECT current_database(), coalesce(current_schema(), '')",
+            ),
+            Kind::MySql => (
+                "SELECT schema_name FROM information_schema.schemata \
+                 WHERE schema_name NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') ORDER BY 1",
+                "SELECT coalesce(DATABASE(), ''), ''",
+            ),
+        };
+        let dbs = self
+            .query(list)?
+            .rows
+            .into_iter()
+            .filter_map(|r| r.into_iter().next().flatten())
+            .collect();
+        let [db, schema] = cells(self.query(here)?.rows.into_iter().next().unwrap_or_default())?;
+        Ok((dbs, db, schema))
+    }
+
+    /// Unqualified names from now on: MySQL `USE db`; Postgres the schema first in
+    /// `search_path` (public stays after it).
+    pub fn use_schema(&mut self, name: &str) -> DbResult<()> {
+        let k = self.kind();
+        let sql = match k {
+            Kind::MySql => format!("USE {}", k.quote_ident(name)),
+            Kind::Postgres if name == "public" => "SET search_path TO public".to_string(),
+            Kind::Postgres => format!("SET search_path TO {}, public", k.quote_ident(name)),
+        };
+        self.query(&sql).map(|_| ())
+    }
+
     /// Functions, procedures, triggers, views and sequences outside the system schemas (and not
     /// installed by extensions).
     pub fn objects(&mut self) -> DbResult<Vec<DbObject>> {
@@ -750,8 +786,12 @@ impl Conn {
                     .collect::<DbResult<_>>()?
             }
             Kind::MySql => {
-                let sql = "SELECT routine_schema, routine_name, IF(routine_type = 'PROCEDURE', 'p', 'f'), '', '', '' \
-                     FROM information_schema.routines \
+                let sql = "SELECT routine_schema, routine_name, IF(routine_type = 'PROCEDURE', 'p', 'f'), \
+                     coalesce((SELECT GROUP_CONCAT(CONCAT(coalesce(p.parameter_mode, 'IN'), ' ', p.parameter_name, ' ', \
+                       p.dtd_identifier) ORDER BY p.ordinal_position SEPARATOR ', ') \
+                       FROM information_schema.parameters p WHERE p.specific_schema = r.routine_schema \
+                       AND p.specific_name = r.routine_name AND p.ordinal_position > 0), ''), '', '' \
+                     FROM information_schema.routines r \
                      WHERE routine_schema NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') \
                      UNION ALL \
                      SELECT trigger_schema, trigger_name, 't', '', event_object_table, '' FROM information_schema.triggers \
@@ -1255,6 +1295,19 @@ impl Conn {
             sample: r,
             after: true,
         })
+    }
+
+    /// pg_dump's `COPY … FROM stdin` with its rows. Returns how many rows went in.
+    pub fn copy_in(&mut self, sql: &str, data: &[u8]) -> DbResult<u64> {
+        use std::io::Write;
+        match self {
+            Conn::Pg(c) => {
+                let mut w = c.copy_in(sql)?;
+                w.write_all(data).map_err(|e| DbError::Other(e.to_string()))?;
+                Ok(w.finish()?)
+            }
+            Conn::My(_) => Err(DbError::Other("COPY … FROM stdin só existe no Postgres".into())),
+        }
     }
 
     /// Opens a transaction for the "commit manual" mode.
@@ -1915,6 +1968,16 @@ mod tests {
             assert_eq!(find("dbl_v").kind, ObjKind::View);
             let src = c.object_source(find("dbl_f")).unwrap();
             assert!(src.contains("dbl_f") && src.contains("a + 1"), "{kind:?}: {src}");
+            // "Executar…": the call built from the listed arguments, with the value filled in.
+            {
+                let f = find("dbl_f");
+                let args = crate::sql::parse_args(&f.args);
+                assert_eq!(args.len(), 1, "{kind:?}: {}", f.args);
+                let call = crate::sql::call_template(kind, &f.schema, &f.name, &args, false);
+                let sql = crate::sql::bind_params(kind, &call, |_| "41".into());
+                let r = c.query(&sql).unwrap_or_else(|e| panic!("{kind:?}: {e}\n{sql}"));
+                assert_eq!(r.rows[0][0].as_deref(), Some("42"), "{kind:?}: {sql}");
+            }
             assert!(
                 c.object_source(find("dbl_tr")).unwrap().contains("dbl_t"),
                 "{kind:?}"
@@ -1952,6 +2015,81 @@ mod tests {
                     .any(|c| c.table == "dbl_t" && c.column == "name" && !c.pk),
                 "{kind:?}"
             );
+        }
+
+        // Table actions: duplicate with rows, rename, empty, drop.
+        {
+            use crate::sql::{TableAction, table_action};
+            let schema = if kind == Kind::MySql { db } else { "public" };
+            c.query("DROP TABLE IF EXISTS dbl_copia").unwrap();
+            c.query("DROP TABLE IF EXISTS dbl_copia2").unwrap();
+            let count = |c: &mut Conn, t: &str| {
+                c.query(&format!("SELECT count(*) FROM {t}")).unwrap().rows[0][0]
+                    .clone()
+                    .unwrap()
+            };
+            let n = count(&mut c, "dbl_t");
+            c.query(&table_action(
+                kind,
+                schema,
+                "dbl_t",
+                TableAction::Duplicate(true),
+                "dbl_copia",
+            ))
+            .unwrap();
+            assert_eq!(count(&mut c, "dbl_copia"), n, "{kind:?}: rows copied");
+            c.query(&table_action(
+                kind,
+                schema,
+                "dbl_copia",
+                TableAction::Rename,
+                "dbl_copia2",
+            ))
+            .unwrap();
+            c.query(&table_action(
+                kind,
+                schema,
+                "dbl_copia2",
+                TableAction::Truncate,
+                "",
+            ))
+            .unwrap();
+            assert_eq!(count(&mut c, "dbl_copia2"), "0", "{kind:?}");
+            c.query(&table_action(kind, schema, "dbl_copia2", TableAction::Drop, ""))
+                .unwrap();
+            assert!(c.query("SELECT 1 FROM dbl_copia2").is_err(), "{kind:?}: dropped");
+        }
+
+        // Switching where unqualified names go.
+        {
+            let (dbs, here, schema) = c.location().unwrap();
+            assert!(dbs.contains(&here), "{kind:?}: {dbs:?} / {here}");
+            match kind {
+                Kind::Postgres => {
+                    assert_eq!(schema, "public");
+                    c.query("CREATE SCHEMA IF NOT EXISTS dbl_outro").unwrap();
+                    c.query("CREATE TABLE IF NOT EXISTS dbl_outro.so_aqui (x int)")
+                        .unwrap();
+                    c.use_schema("dbl_outro").unwrap();
+                    assert_eq!(c.location().unwrap().2, "dbl_outro");
+                    c.query("SELECT * FROM so_aqui").unwrap();
+                    // public still answers after it.
+                    c.query("SELECT * FROM dbl_t").unwrap();
+                    c.use_schema("public").unwrap();
+                    assert!(c.query("SELECT * FROM so_aqui").is_err());
+                    c.query("DROP SCHEMA dbl_outro CASCADE").unwrap();
+                }
+                Kind::MySql => {
+                    c.query("CREATE DATABASE IF NOT EXISTS dbl_outro").unwrap();
+                    c.query("CREATE TABLE IF NOT EXISTS dbl_outro.so_aqui (x int)")
+                        .unwrap();
+                    c.use_schema("dbl_outro").unwrap();
+                    assert_eq!(c.location().unwrap().1, "dbl_outro");
+                    c.query("SELECT * FROM so_aqui").unwrap();
+                    c.use_schema(db).unwrap();
+                    c.query("DROP DATABASE dbl_outro").unwrap();
+                }
+            }
         }
 
         // Server overview: every fact present, and the test table among the biggest.

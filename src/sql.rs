@@ -542,6 +542,141 @@ pub fn word_at(text: &str, cursor: usize) -> Option<(usize, usize)> {
     (a < b).then_some((a, b))
 }
 
+/// One argument of a function or procedure, from its signature text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoutineArg {
+    /// IN, OUT, INOUT or VARIADIC.
+    pub mode: String,
+    pub name: String,
+    pub data_type: String,
+}
+
+/// `a integer, OUT total numeric, numeric(10,2)` (Postgres) or `IN pid int, IN qtd int` (MySQL)
+/// into its arguments. Unnamed ones are called `p1`, `p2`…
+pub fn parse_args(args: &str) -> Vec<RoutineArg> {
+    let mut parts = Vec::new();
+    let (mut depth, mut cur) = (0, String::new());
+    for c in args.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    parts.push(cur);
+    parts
+        .into_iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .enumerate()
+        .map(|(i, p)| {
+            let mut words: Vec<&str> = p.split_whitespace().collect();
+            let mode = match words.first().map(|w| w.to_uppercase()) {
+                Some(m) if matches!(m.as_str(), "IN" | "OUT" | "INOUT" | "VARIADIC") => {
+                    words.remove(0);
+                    m
+                }
+                _ => "IN".to_string(),
+            };
+            // "name type…" when there are two or more words and the first isn't a type that
+            // takes several words ("double precision", "character varying").
+            let multi_word_type = matches!(
+                words.first().map(|w| w.to_lowercase()).as_deref(),
+                Some("double" | "character" | "timestamp" | "time" | "bit" | "interval")
+            );
+            let (name, data_type) = if words.len() >= 2 && !multi_word_type {
+                (words[0].trim_matches('"').to_string(), words[1..].join(" "))
+            } else {
+                (format!("p{}", i + 1), words.join(" "))
+            };
+            RoutineArg {
+                mode,
+                name,
+                data_type,
+            }
+        })
+        .collect()
+}
+
+/// The call of a function or procedure with `:parâmetros` for its inputs. OUT arguments are
+/// NULL placeholders (Postgres) or session variables read back afterwards (MySQL).
+pub fn call_template(kind: Kind, schema: &str, name: &str, args: &[RoutineArg], procedure: bool) -> String {
+    let target = kind.qualified(schema, name);
+    let mut outs = Vec::new();
+    let values: Vec<String> = args
+        .iter()
+        .map(|a| match (a.mode.as_str(), kind) {
+            ("OUT", Kind::Postgres) => "NULL".to_string(),
+            ("OUT" | "INOUT", Kind::MySql) => {
+                let var = format!("@{}", a.name);
+                outs.push(var.clone());
+                var
+            }
+            _ => {
+                let p: String = a
+                    .name
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                    .collect();
+                format!(":{p}")
+            }
+        })
+        .collect();
+    let call = format!("{target}({})", values.join(", "));
+    match (procedure, kind) {
+        (false, Kind::Postgres) => format!("SELECT * FROM {call};"),
+        (false, Kind::MySql) => format!("SELECT {call} AS resultado;"),
+        (true, _) if outs.is_empty() => format!("CALL {call};"),
+        (true, _) => format!("CALL {call};\nSELECT {};", outs.join(", ")),
+    }
+}
+
+/// Table actions from the sidebar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TableAction {
+    Rename,
+    /// A copy with the same columns, indexes and defaults; with the rows too when `true`.
+    Duplicate(bool),
+    Truncate,
+    Drop,
+}
+
+/// The statements for a table action (`name`: the new name for rename / duplicate).
+pub fn table_action(kind: Kind, schema: &str, table: &str, action: TableAction, name: &str) -> String {
+    let t = kind.qualified(schema, table);
+    let new = kind.qualified(schema, name.trim());
+    match (action, kind) {
+        (TableAction::Rename, Kind::Postgres) => {
+            format!("ALTER TABLE {t} RENAME TO {};", kind.quote_ident(name.trim()))
+        }
+        (TableAction::Rename, Kind::MySql) => format!("RENAME TABLE {t} TO {new};"),
+        (TableAction::Duplicate(data), Kind::Postgres) => {
+            let mut s = format!("CREATE TABLE {new} (LIKE {t} INCLUDING ALL);");
+            if data {
+                // Identity columns refuse given values unless told otherwise.
+                s.push_str(&format!(
+                    "\nINSERT INTO {new} OVERRIDING SYSTEM VALUE SELECT * FROM {t};"
+                ));
+            }
+            s
+        }
+        (TableAction::Duplicate(data), Kind::MySql) => {
+            let mut s = format!("CREATE TABLE {new} LIKE {t};");
+            if data {
+                s.push_str(&format!("\nINSERT INTO {new} SELECT * FROM {t};"));
+            }
+            s
+        }
+        (TableAction::Truncate, _) => format!("TRUNCATE TABLE {t};"),
+        (TableAction::Drop, _) => format!("DROP TABLE {t};"),
+    }
+}
+
 /// What "Gerar SQL" writes for a table.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Template {
@@ -1203,6 +1338,65 @@ mod tests {
             "a = '1.2.3'"
         );
         assert!(param_names("SELECT $$ :x $$, '10:30'").is_empty());
+    }
+
+    #[test]
+    fn table_actions() {
+        let a = |k, w, n: &str| table_action(k, "s", "t", w, n);
+        assert_eq!(
+            a(Kind::Postgres, TableAction::Rename, "novo"),
+            "ALTER TABLE \"s\".\"t\" RENAME TO \"novo\";"
+        );
+        assert_eq!(
+            a(Kind::MySql, TableAction::Rename, "novo"),
+            "RENAME TABLE `s`.`t` TO `s`.`novo`;"
+        );
+        assert_eq!(
+            a(Kind::Postgres, TableAction::Duplicate(true), "copia"),
+            "CREATE TABLE \"s\".\"copia\" (LIKE \"s\".\"t\" INCLUDING ALL);\nINSERT INTO \"s\".\"copia\" OVERRIDING SYSTEM VALUE SELECT * FROM \"s\".\"t\";"
+        );
+        assert_eq!(
+            a(Kind::MySql, TableAction::Duplicate(false), "copia"),
+            "CREATE TABLE `s`.`copia` LIKE `s`.`t`;"
+        );
+        assert_eq!(a(Kind::MySql, TableAction::Drop, ""), "DROP TABLE `s`.`t`;");
+    }
+
+    #[test]
+    fn calls_routines_with_parameters() {
+        let a = parse_args("a integer, OUT total numeric, numeric(10,2), double precision");
+        assert_eq!(
+            a.iter()
+                .map(|x| (x.mode.as_str(), x.name.as_str(), x.data_type.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("IN", "a", "integer"),
+                ("OUT", "total", "numeric"),
+                ("IN", "p3", "numeric(10,2)"),
+                ("IN", "p4", "double precision"),
+            ]
+        );
+        assert_eq!(
+            call_template(Kind::Postgres, "public", "f", &parse_args("cid integer"), false),
+            "SELECT * FROM \"public\".\"f\"(:cid);"
+        );
+        assert_eq!(
+            call_template(Kind::Postgres, "public", "p", &a, true),
+            "CALL \"public\".\"p\"(:a, NULL, :p3, :p4);"
+        );
+        let my = parse_args("IN pid int, OUT novo int");
+        assert_eq!(
+            call_template(Kind::MySql, "loja", "repor", &my, true),
+            "CALL `loja`.`repor`(:pid, @novo);\nSELECT @novo;"
+        );
+        assert_eq!(
+            call_template(Kind::MySql, "loja", "f", &[], false),
+            "SELECT `loja`.`f`() AS resultado;"
+        );
+        assert_eq!(
+            param_names(&call_template(Kind::Postgres, "public", "p", &a, true)),
+            ["a", "p3", "p4"]
+        );
     }
 
     #[test]

@@ -11,8 +11,92 @@ const AUTO_EXPAND_BELOW: usize = 200;
 impl App {
     pub fn side_panel(&mut self, ui: &mut egui::Ui) {
         self.connection_list(ui);
+        self.location_row(ui);
         ui.separator();
         self.table_tree(ui);
+    }
+
+    /// Where unqualified names in the editor go: the database (MySQL `USE`, or another
+    /// Postgres database through a reconnect) and, on Postgres, the schema.
+    fn location_row(&mut self, ui: &mut egui::Ui) {
+        let Some(s) = self
+            .session
+            .as_ref()
+            .filter(|s| s.ready && !s.current_db.is_empty())
+        else {
+            return;
+        };
+        let tk = theme::tokens();
+        let pg = s.cfg.kind == Kind::Postgres;
+        let mut schemas: Vec<String> = s.tables.iter().map(|t| t.schema.clone()).collect();
+        schemas.dedup();
+        if !schemas.contains(&s.current_schema) && !s.current_schema.is_empty() {
+            schemas.insert(0, s.current_schema.clone());
+        }
+        let (dbs, db, schema) = (
+            s.databases.clone(),
+            s.current_db.clone(),
+            s.current_schema.clone(),
+        );
+        let mut pick_db: Option<String> = None;
+        let mut pick_schema: Option<String> = None;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let combo =
+                |ui: &mut egui::Ui, id: &str, current: &str, items: &[String], width: f32, tip: &str| {
+                    let mut chosen = None;
+                    egui::ComboBox::from_id_salt(id)
+                        .selected_text(egui::RichText::new(current).monospace().size(12.0))
+                        .width(width)
+                        .show_ui(ui, |ui| {
+                            for it in items {
+                                if ui
+                                    .selectable_label(it == current, egui::RichText::new(it).monospace())
+                                    .clicked()
+                                    && it != current
+                                {
+                                    chosen = Some(it.clone());
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(tip);
+                    chosen
+                };
+            ui.label(theme::icon(icon::DATABASE).size(12.0).color(tk.subtle));
+            let half = (ui.available_width() - 28.0) / 2.0;
+            let db_tip = if pg {
+                "Banco: trocar reconecta no mesmo servidor (as abas desta conexão fecham)"
+            } else {
+                "Banco onde os nomes sem prefixo são procurados (USE)"
+            };
+            pick_db = combo(
+                ui,
+                "loc_db",
+                &db,
+                &dbs,
+                if pg { half } else { ui.available_width() - 8.0 },
+                db_tip,
+            );
+            if pg {
+                ui.label(egui::RichText::new(".").color(tk.subtle));
+                pick_schema = combo(
+                    ui,
+                    "loc_schema",
+                    &schema,
+                    &schemas,
+                    ui.available_width() - 8.0,
+                    "Schema onde os nomes sem prefixo são procurados primeiro (search_path)",
+                );
+            }
+        });
+        if let Some(db) = pick_db {
+            self.switch_location(Some(&db), None);
+        }
+        if let Some(sc) = pick_schema {
+            self.switch_location(None, Some(&sc));
+        }
     }
 
     fn connection_list(&mut self, ui: &mut egui::Ui) {
@@ -223,7 +307,8 @@ impl App {
             | TabKind::Design(_)
             | TabKind::Search(_)
             | TabKind::Diagram(_)
-            | TabKind::History(_) => None,
+            | TabKind::History(_)
+            | TabKind::Script(_) => None,
         });
         let needle = self.filter.to_lowercase();
         let by_size = self.sort_by_size;
@@ -232,6 +317,8 @@ impl App {
         let mut to_sql: Option<String> = None;
         let mut to_template: Option<(String, String, crate::sql::Template)> = None;
         let mut to_object: Option<DbObject> = None;
+        let mut to_run: Option<DbObject> = None;
+        let mut to_action: Option<crate::app::TableActionPrompt> = None;
         let mut to_structure: Option<(String, String)> = None;
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
@@ -333,6 +420,31 @@ impl App {
                                             }
                                         }
                                     });
+                                    if !t.is_view && !s.cfg.read_only {
+                                        ui.separator();
+                                        for (action, label) in [
+                                            (crate::sql::TableAction::Rename, "Renomear…"),
+                                            (crate::sql::TableAction::Duplicate(false), "Duplicar…"),
+                                            (crate::sql::TableAction::Truncate, "Esvaziar (TRUNCATE)…"),
+                                            (crate::sql::TableAction::Drop, "Excluir tabela…"),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                to_action = Some(crate::app::TableActionPrompt {
+                                                    schema: t.schema.clone(),
+                                                    table: t.name.clone(),
+                                                    action,
+                                                    input: match action {
+                                                        crate::sql::TableAction::Duplicate(_) => {
+                                                            format!("{}_copia", t.name)
+                                                        }
+                                                        crate::sql::TableAction::Rename => t.name.clone(),
+                                                        _ => String::new(),
+                                                    },
+                                                });
+                                                ui.close();
+                                            }
+                                        }
+                                    }
                                     if t.is_view && ui.button("Ver código da view").clicked() {
                                         to_object = s
                                             .objects
@@ -400,11 +512,31 @@ impl App {
                                                 }
                                                 _ => o.name.clone(),
                                             };
-                                            if r.on_hover_text(format!("{tip}\nclique abre o código"))
-                                                .clicked()
-                                            {
+                                            let r = r.on_hover_text(format!("{tip}\nclique abre o código"));
+                                            if r.clicked() {
                                                 to_object = Some(o.clone());
                                             }
+                                            r.context_menu(|ui| {
+                                                if matches!(o.kind, ObjKind::Function | ObjKind::Procedure)
+                                                    && ui
+                                                        .button("Executar…")
+                                                        .on_hover_text(
+                                                            "Pede os argumentos e mostra o resultado",
+                                                        )
+                                                        .clicked()
+                                                {
+                                                    to_run = Some(o.clone());
+                                                    ui.close();
+                                                }
+                                                if ui.button("Ver código").clicked() {
+                                                    to_object = Some(o.clone());
+                                                    ui.close();
+                                                }
+                                                if ui.button("Copiar nome").clicked() {
+                                                    ui.ctx().copy_text(o.name.clone());
+                                                    ui.close();
+                                                }
+                                            });
                                         }
                                     });
                             }
@@ -457,6 +589,12 @@ impl App {
         }
         if let Some(o) = to_object {
             self.open_object(o);
+        }
+        if let Some(o) = to_run {
+            self.run_object(&o);
+        }
+        if to_action.is_some() {
+            self.table_action = to_action;
         }
     }
 }

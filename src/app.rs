@@ -67,6 +67,10 @@ pub struct Session {
     pub fks: Vec<FkEdge>,
     /// Functions, procedures, triggers, views, sequences.
     pub objects: Vec<DbObject>,
+    /// The server's databases, and where unqualified names go now.
+    pub databases: Vec<String>,
+    pub current_db: String,
+    pub current_schema: String,
     /// Manual-commit mode and the open transaction, as last reported by the worker.
     pub txn: TxState,
 }
@@ -311,6 +315,22 @@ pub enum TabKind {
     Diagram(Box<DiagramState>),
     /// Every query run, searchable.
     History(Box<HistoryState>),
+    /// A `.sql` file run without opening it in an editor.
+    Script(Box<ScriptState>),
+}
+
+pub struct ScriptState {
+    pub path: PathBuf,
+    pub size: u64,
+    /// All of it or nothing (one transaction).
+    pub transaction: bool,
+    pub running: bool,
+    pub progress: crate::worker::ScriptProgress,
+    /// Set once it ends: `None` when every statement ran.
+    pub outcome: Option<Option<crate::worker::ScriptError>>,
+    pub started: Option<Instant>,
+    pub took: Option<std::time::Duration>,
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -761,6 +781,7 @@ pub struct App {
     pub closed: Vec<SavedTab>,
     pub path_prompt: Option<PathPrompt>,
     pub settings: crate::settings::Settings,
+    pub table_action: Option<TableActionPrompt>,
     /// The window title announces a finished job (cleared when the window is focused).
     title_changed: bool,
     /// Close the window once the transaction has been ended.
@@ -801,6 +822,7 @@ impl App {
             closed: Vec::new(),
             path_prompt: None,
             settings: crate::settings::load(),
+            table_action: None,
             title_changed: false,
             quit_after_tx: false,
             frames: 0,
@@ -944,6 +966,7 @@ impl App {
                     self.path_prompt = Some(PathPrompt {
                         save_tab: Some(t.id),
                         path: suggested,
+                        run: false,
                     });
                 }
             }
@@ -960,6 +983,7 @@ impl App {
             self.path_prompt = Some(PathPrompt {
                 save_tab: None,
                 path: String::new(),
+                run: false,
             });
         }
     }
@@ -1219,6 +1243,29 @@ impl App {
         let Some(cfg) = self.find_saved(id).cloned() else {
             return;
         };
+        self.connect_cfg(cfg);
+    }
+
+    /// MySQL: `USE` it. Postgres schemas: first in the search path. Another Postgres database
+    /// needs a new connection (same server and credentials); its tabs close like a switch of
+    /// connection.
+    pub fn switch_location(&mut self, database: Option<&str>, schema: Option<&str>) {
+        let Some(s) = &self.session else { return };
+        match (s.cfg.kind, database, schema) {
+            (Kind::MySql, Some(db), _) => s.send(Job::UseSchema(db.to_string())),
+            (Kind::Postgres, _, Some(sc)) => s.send(Job::UseSchema(sc.to_string())),
+            (Kind::Postgres, Some(db), None) if db != s.current_db => {
+                let cfg = ConnConfig {
+                    database: db.to_string(),
+                    ..s.cfg.clone()
+                };
+                self.connect_cfg(cfg);
+            }
+            _ => {}
+        }
+    }
+
+    fn connect_cfg(&mut self, cfg: ConnConfig) {
         // Refused with unsaved changes or an open transaction: stay on the current connection.
         if !self.disconnect() {
             return;
@@ -1237,6 +1284,9 @@ impl App {
             schema_cols: vec![],
             fks: vec![],
             objects: vec![],
+            databases: vec![],
+            current_db: String::new(),
+            current_schema: String::new(),
             txn: TxState {
                 manual: cfg_manual,
                 ..Default::default()
@@ -1413,6 +1463,41 @@ impl App {
                 Reply::AllColumns(Err(_)) => {}
                 Reply::AllFks(Ok(f)) => s.fks = f,
                 Reply::Objects(Ok(o)) => s.objects = o,
+                Reply::ScriptProgress { tab, progress } => {
+                    if let Some(Tab {
+                        kind: TabKind::Script(st),
+                        ..
+                    }) = self.tabs.iter_mut().find(|t| t.id == tab)
+                    {
+                        st.progress = progress;
+                    }
+                }
+                Reply::ScriptDone { tab, progress, error } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
+                    if let TabKind::Script(st) = &mut t.kind {
+                        st.running = false;
+                        st.progress = progress;
+                        st.took = st.started.map(|at| at.elapsed());
+                        st.outcome = Some(error);
+                    }
+                }
+                Reply::Admin { done, res } => match res {
+                    Ok(()) => self.notice = Notice::info(done),
+                    Err(e) => self.notice = Notice::error(format!("Não foi possível: {e}")),
+                },
+                Reply::Location(Ok((dbs, db, schema))) => {
+                    s.databases = dbs;
+                    s.current_db = db;
+                    s.current_schema = schema;
+                }
+                Reply::Location(Err(e)) => {
+                    self.notice = Notice::error(format!("Não foi possível trocar: {e}"))
+                }
                 // The sidebar just shows tables then.
                 Reply::Objects(Err(_)) => {}
                 Reply::Source { tab, res } => {
@@ -1850,6 +1935,63 @@ impl App {
         s.send(Job::Source { tab: tab.id, object });
     }
 
+    /// Runs the confirmed table action. Tabs showing a renamed or dropped table close (their
+    /// queries would fail); an emptied one reloads.
+    pub fn run_table_action(&mut self, p: TableActionPrompt) {
+        let Some(s) = &self.session else { return };
+        let sql = sql::table_action(s.cfg.kind, &p.schema, &p.table, p.action, &p.input);
+        let done = match p.action {
+            sql::TableAction::Rename => format!("{} renomeada para {}", p.table, p.input.trim()),
+            sql::TableAction::Duplicate(_) => format!("{} duplicada em {}", p.table, p.input.trim()),
+            sql::TableAction::Truncate => format!("{} esvaziada", p.table),
+            sql::TableAction::Drop => format!("{} excluída", p.table),
+        };
+        s.send(Job::Admin { sql, done });
+        let same = |t: &Tab| match &t.kind {
+            TabKind::Table(ts) => ts.schema == p.schema && ts.table == p.table,
+            TabKind::Structure(st) => st.schema == p.schema && st.table == p.table,
+            _ => false,
+        };
+        match p.action {
+            sql::TableAction::Rename | sql::TableAction::Drop => {
+                self.tabs.retain(|t| !same(t));
+                self.active = self.active.min(self.tabs.len().saturating_sub(1));
+            }
+            sql::TableAction::Truncate => {
+                let Some(s) = &self.session else { return };
+                for t in self.tabs.iter_mut().filter(|t| same(t)) {
+                    reload(t, s);
+                }
+            }
+            sql::TableAction::Duplicate(_) => {}
+        }
+    }
+
+    /// "Executar…" on a function or procedure: a new editor tab with the call, asking for the
+    /// arguments first (when there are any).
+    pub fn run_object(&mut self, object: &DbObject) {
+        let Some(s) = &self.session else { return };
+        let args = sql::parse_args(&object.args);
+        let procedure = object.kind == crate::db::ObjKind::Procedure;
+        let call = sql::call_template(s.cfg.kind, &object.schema, &object.name, &args, procedure);
+        self.open_sql(call.clone());
+        let Some(s) = &self.session else { return };
+        let Some(tab) = self.tabs.last_mut() else { return };
+        tab.title = format!("{} ()", object.name);
+        tab.renamed = true;
+        let names = sql::param_names(&call);
+        if names.is_empty() {
+            run_sql(tab, s, call);
+        } else {
+            tab.params = Some(ParamPrompt {
+                sql: call,
+                names,
+                mode: RunMode::Run,
+                focused: false,
+            });
+        }
+    }
+
     /// "Gerar SQL": a statement for a table in a new editor tab.
     pub fn open_template(&mut self, schema: &str, table: &str, what: sql::Template) {
         let Some(s) = &self.session else { return };
@@ -1861,6 +2003,41 @@ impl App {
             .collect();
         let text = sql::template(s.cfg.kind, schema, table, &cols, what);
         self.open_sql(text);
+    }
+
+    /// A `.sql` file in a "executar arquivo" tab (not run yet: the tab has the button).
+    pub fn open_script(&mut self, path: PathBuf) {
+        let Some(s) = &self.session else { return };
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let st = ScriptState {
+            path: path.clone(),
+            size,
+            // Postgres undoes DDL too; MySQL commits on each DDL, so a transaction can't
+            // promise "all or nothing" there.
+            transaction: s.cfg.kind == Kind::Postgres,
+            running: false,
+            progress: Default::default(),
+            outcome: None,
+            started: None,
+            took: None,
+            cancel: Arc::default(),
+        };
+        self.push_tab(crate::files::title(&path), TabKind::Script(Box::new(st)));
+    }
+
+    /// Ctrl+P "Executar arquivo .sql…".
+    pub fn pick_script(&mut self) {
+        if crate::files::NATIVE_DIALOGS {
+            if let Some(path) = crate::files::pick_open() {
+                self.open_script(path);
+            }
+        } else {
+            self.path_prompt = Some(PathPrompt {
+                save_tab: None,
+                path: String::new(),
+                run: true,
+            });
+        }
     }
 
     /// Opens (or focuses) the full query history.
@@ -2186,6 +2363,40 @@ pub fn refresh_activity(tab: &mut Tab, s: &Session) {
     tab.send_rows_job(s, Job::Activity { tab: id, view });
 }
 
+/// Runs the tab's script file.
+pub fn start_script(tab: &mut Tab, s: &Session) {
+    let TabKind::Script(st) = &mut tab.kind else {
+        return;
+    };
+    if st.running {
+        return;
+    }
+    st.cancel = Arc::default();
+    st.running = true;
+    st.outcome = None;
+    st.progress = Default::default();
+    st.started = Some(Instant::now());
+    st.took = None;
+    let job = Job::RunScript {
+        tab: tab.id,
+        path: st.path.clone(),
+        transaction: st.transaction,
+        cancel: st.cancel.clone(),
+    };
+    tab.begin_job();
+    s.send(job);
+}
+
+/// Stops the script: after the current statement, or right away by cancelling it.
+pub fn cancel_script(tab: &mut Tab, s: &Session) {
+    if let TabKind::Script(st) = &mut tab.kind
+        && st.running
+    {
+        st.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        s.cancel();
+    }
+}
+
 /// Starts looking for the tab's term in every table.
 pub fn start_search(tab: &mut Tab, s: &Session) {
     let TabKind::Search(st) = &mut tab.kind else {
@@ -2274,11 +2485,19 @@ fn resolve_table(s: &Session, schema: Option<&str>, table: &str) -> Option<(Stri
             // MySQL: the connection's database wins among same-named tables.
             _ => found
                 .iter()
-                .find(|t| schema.is_none() && t.schema == s.cfg.database)
+                .find(|t| schema.is_none() && t.schema == s.current_db)
                 .map(|t| (t.schema.clone(), t.name.clone())),
         }
     };
     pick(true).or_else(|| pick(false))
+}
+
+/// The dialog of a table action: the new name, or the table's name typed to confirm.
+pub struct TableActionPrompt {
+    pub schema: String,
+    pub table: String,
+    pub action: sql::TableAction,
+    pub input: String,
 }
 
 /// Where there are no native file dialogs: the path, typed.
@@ -2286,6 +2505,8 @@ pub struct PathPrompt {
     /// `Some(tab id)` to save that tab; `None` to open a file.
     pub save_tab: Option<u64>,
     pub path: String,
+    /// Open it in an "executar arquivo" tab instead of the editor.
+    pub run: bool,
 }
 
 /// An editor tab whose text differs from its file.
@@ -2307,7 +2528,8 @@ fn saved_tab(t: &Tab) -> Option<SavedTab> {
         | TabKind::Design(_)
         | TabKind::Search(_)
         | TabKind::Diagram(_)
-        | TabKind::History(_) => None,
+        | TabKind::History(_)
+        | TabKind::Script(_) => None,
         TabKind::Sql { text } => Some(SavedTab::Sql {
             text: text.clone(),
             title: (t.renamed && t.file.is_none()).then(|| t.title.clone()),
@@ -3035,6 +3257,9 @@ pub mod tests {
             schema_cols: vec![],
             fks: vec![],
             objects: vec![],
+            databases: vec![],
+            current_db: String::new(),
+            current_schema: String::new(),
             txn: TxState::default(),
         };
         (s, jobs, replies)

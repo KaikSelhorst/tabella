@@ -19,6 +19,7 @@ enum Cmd {
     /// +1 / -1 steps; 0 back to 100%.
     Zoom(i32),
     History,
+    RunFile,
     Diagram,
     Search,
     NewTable,
@@ -226,6 +227,12 @@ impl App {
             });
             if !self.session.as_ref().is_some_and(|s| s.cfg.read_only) {
                 items.push(Item {
+                    icon: icon::PLAY,
+                    label: "Executar arquivo .sql…".into(),
+                    detail: "dump ou migração grande, comando a comando, sem abrir no editor".into(),
+                    cmd: Cmd::RunFile,
+                });
+                items.push(Item {
                     icon: icon::PLUS,
                     label: "Nova tabela".into(),
                     detail: "colunas, chave primária e índices por formulário".into(),
@@ -413,6 +420,7 @@ impl App {
                 Cmd::Theme => self.toggle_theme(ctx),
                 Cmd::Zoom(steps) => self.zoom_by(ctx, steps),
                 Cmd::History => self.open_history(),
+                Cmd::RunFile => self.pick_script(),
                 Cmd::Diagram => self.open_diagram(None),
                 Cmd::Search => self.open_search(),
                 Cmd::NewTable => self.open_new_table(None),

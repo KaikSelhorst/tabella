@@ -107,6 +107,7 @@ impl eframe::App for App {
         self.favorite_prompt(&ctx);
         self.help_ui(&ctx);
         self.path_prompt_ui(&ctx);
+        self.table_action_ui(&ctx);
         self.track_zoom(&ctx);
     }
 }
@@ -164,6 +165,109 @@ impl App {
         }
     }
 
+    /// Rename / duplicate / empty / drop a table. Emptying and dropping ask for the table's
+    /// name typed in full before the (red) button works.
+    fn table_action_ui(&mut self, ctx: &egui::Context) {
+        use crate::sql::TableAction;
+        let Some(p) = &mut self.table_action else { return };
+        let Some(s) = &self.session else {
+            self.table_action = None;
+            return;
+        };
+        let t = theme::tokens();
+        let rows = s
+            .tables
+            .iter()
+            .find(|x| x.schema == p.schema && x.name == p.table)
+            .and_then(|x| x.estimate)
+            .map(|n| format!("~{} linhas", palette::format_count(n)))
+            .unwrap_or_else(|| "linhas".into());
+        let destructive = matches!(p.action, TableAction::Truncate | TableAction::Drop);
+        let (title, verb) = match p.action {
+            TableAction::Rename => ("Renomear tabela", "Renomear"),
+            TableAction::Duplicate(_) => ("Duplicar tabela", "Duplicar"),
+            TableAction::Truncate => ("Esvaziar tabela", "Esvaziar"),
+            TableAction::Drop => ("Excluir tabela", "Excluir"),
+        };
+        let ready = match p.action {
+            TableAction::Rename | TableAction::Duplicate(_) => {
+                !p.input.trim().is_empty() && p.input.trim() != p.table
+            }
+            TableAction::Truncate | TableAction::Drop => p.input.trim() == p.table,
+        };
+        let sql = crate::sql::table_action(s.cfg.kind, &p.schema, &p.table, p.action, &p.input);
+        let (mut go, mut cancel) = (false, false);
+        let modal = egui::Modal::new(egui::Id::new("table_action"))
+            .frame(theme::modal_frame(16))
+            .show(ctx, |ui| {
+                ui.set_width(460.0);
+                ui.horizontal(|ui| {
+                    let (glyph, color) = if destructive { (icon::WARNING, t.destructive) } else { (icon::TABLE, t.lime) };
+                    ui.label(theme::icon(glyph).size(16.0).color(color));
+                    ui.label(egui::RichText::new(title).size(15.0).color(t.foreground));
+                    ui.label(egui::RichText::new(format!("{}.{}", p.schema, p.table)).monospace().color(t.muted_foreground));
+                });
+                ui.add_space(8.0);
+                let hint = match p.action {
+                    TableAction::Rename => "Novo nome:".to_string(),
+                    TableAction::Duplicate(_) => "Nome da cópia (mesmas colunas, índices e padrões):".to_string(),
+                    TableAction::Truncate => format!(
+                        "Apaga todas as {rows} de {}. A estrutura fica. Não dá para desfazer (a não ser em commit manual).",
+                        p.table
+                    ),
+                    TableAction::Drop => format!(
+                        "Apaga {} inteira: estrutura, índices e todas as {rows}. Não dá para desfazer (a não ser em commit manual).",
+                        p.table
+                    ),
+                };
+                let hint_color = if destructive { t.destructive } else { t.muted_foreground };
+                ui.add(egui::Label::new(egui::RichText::new(hint).color(hint_color)).wrap());
+                if destructive {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(format!("Digite {} para confirmar:", p.table)).size(12.0).color(t.subtle));
+                }
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut p.input)
+                        .font(egui::FontId::monospace(12.5))
+                        .desired_width(f32::INFINITY),
+                );
+                r.request_focus();
+                if let TableAction::Duplicate(with_data) = &mut p.action {
+                    ui.checkbox(with_data, format!("copiar as linhas também ({rows})"));
+                }
+                ui.add_space(8.0);
+                egui::Frame::new()
+                    .fill(t.sidebar)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let job = syntax::highlight(&sql, egui::FontId::monospace(12.0));
+                        ui.add(egui::Label::new(job).wrap());
+                    });
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let button = if destructive {
+                        egui::Button::new(egui::RichText::new(verb).color(t.foreground)).fill(t.destructive)
+                    } else {
+                        theme::primary_button(None, verb)
+                    };
+                    if ui.add_enabled(ready, button).clicked() {
+                        go = true;
+                    }
+                    if ui.add(theme::outline_button("Cancelar")).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if go {
+            if let Some(p) = self.table_action.take() {
+                self.run_table_action(p);
+            }
+        } else if cancel || modal.should_close() {
+            self.table_action = None;
+        }
+    }
+
     /// Where there's no native file dialog: type the path.
     fn path_prompt_ui(&mut self, ctx: &egui::Context) {
         let Some(p) = &mut self.path_prompt else { return };
@@ -218,6 +322,7 @@ impl App {
                 .and_then(|id| self.tabs.iter().position(|t| t.id == id))
             {
                 Some(i) => self.save_file_as(i, path),
+                None if p.run => self.open_script(path),
                 None => self.open_file(path),
             }
         } else if cancel || modal.should_close() {
@@ -407,6 +512,9 @@ mod screenshots {
             .map(|c| ("clientes".to_string(), c.to_string()))
             .chain([("pedidos".to_string(), "cliente_id".to_string())])
             .collect();
+        session.databases = vec!["dev".into(), "postgres".into()];
+        session.current_db = "postgres".into();
+        session.current_schema = "public".into();
         app.session = Some(session);
         let now = crate::history::now();
         let entry = |sql: &str, ago: u64| crate::history::Entry {
@@ -1616,6 +1724,51 @@ mod screenshots {
             .save(format!("{dir}/master-unlock.png"))
             .unwrap();
         harness.state_mut().master = None;
+
+        // Table action (drop) with its confirmation, then a script file that stopped on an error.
+        harness.state_mut().table_action = Some(crate::app::TableActionPrompt {
+            schema: "public".into(),
+            table: "clientes".into(),
+            action: crate::sql::TableAction::Drop,
+            input: "clien".into(),
+        });
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/table-action.png"))
+            .unwrap();
+        harness.state_mut().table_action = None;
+        {
+            let file = std::env::temp_dir().join("migracao_2026_10.sql");
+            std::fs::write(&file, "x".repeat(48_000)).unwrap();
+            harness.state_mut().open_script(file);
+            let app = harness.state_mut();
+            let tab = app.tabs.last_mut().unwrap();
+            if let TabKind::Script(st) = &mut tab.kind {
+                st.progress = crate::worker::ScriptProgress {
+                    statements: 212,
+                    copied: 0,
+                    skipped: 1,
+                    bytes: 31_000,
+                    line: 418,
+                };
+                st.took = Some(std::time::Duration::from_millis(2_340));
+                st.outcome = Some(Some(crate::worker::ScriptError {
+                    message: "db error: ERROR: column \"telefone\" of relation \"clientes\" already exists"
+                        .into(),
+                    line: 418,
+                    statement: "ALTER TABLE clientes ADD COLUMN telefone text".into(),
+                    cancelled: false,
+                }));
+            }
+        }
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/script.png"))
+            .unwrap();
 
         harness.state_mut().tabs.clear();
         harness.run();

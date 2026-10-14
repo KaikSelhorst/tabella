@@ -29,6 +29,10 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Ctrl+O",
                 "Abrir arquivo .sql (ou arraste o arquivo para a janela)",
             ),
+            (
+                "Ctrl+P → Executar arquivo .sql",
+                "Roda um dump/migração grande comando a comando, com progresso",
+            ),
             ("Ctrl+Tab / Ctrl+Shift+Tab", "Próxima / aba anterior"),
             ("F1", "Esta tela"),
             (

@@ -93,6 +93,15 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Edição em massa: definir valor ou NULL em todas as células selecionadas, preencher para baixo
   (`Ctrl+D`) e excluir as linhas selecionadas (`Delete`)
 - Exportar para Excel (.xlsx, com números e booleanos como tais) e copiar como tabela Markdown
+- Trocar de banco/schema sem editar a conexão (seletores abaixo da conexão na sidebar); o
+  editor mostra onde os nomes sem schema vão parar
+- Executar função/procedure pelo clique direito: os argumentos viram `:parâmetros` pedidos
+  num formulário
+- Ações de tabela no clique direito: renomear, duplicar (só estrutura ou com dados), esvaziar
+  (`TRUNCATE`) e excluir, estas duas só depois de digitar o nome da tabela
+- Executar arquivo `.sql` grande (`Ctrl+P` ou menu de arquivo do editor) sem abrir no editor:
+  lê comando a comando (entende `DELIMITER`, `$$` e `COPY … FROM stdin` do pg_dump), mostra o
+  progresso, para no primeiro erro dizendo a linha, pode ser cancelado e roda numa transação
 
 ## Segurança
 

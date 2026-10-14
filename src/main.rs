@@ -13,6 +13,7 @@ mod filters;
 mod history;
 mod import;
 mod plan;
+mod script;
 mod search;
 mod secrets;
 mod session;

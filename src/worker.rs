@@ -81,6 +81,22 @@ pub enum Job {
     Fks {
         tab: u64,
     },
+    /// Where unqualified names go (USE / search_path); answers with `Reply::Location`.
+    UseSchema(String),
+    /// A `.sql` file run statement by statement, reporting progress; stops at the first error
+    /// (or when `cancel` is set). With `transaction`, all of it or nothing.
+    RunScript {
+        tab: u64,
+        path: PathBuf,
+        transaction: bool,
+        cancel: Arc<AtomicBool>,
+    },
+    /// A table action (rename, duplicate, truncate, drop) confirmed in its dialog.
+    Admin {
+        sql: String,
+        /// What to say when it's done, e.g. "clientes renomeada".
+        done: String,
+    },
     /// The code of a function, trigger, view…
     Source {
         tab: u64,
@@ -121,6 +137,27 @@ pub enum Job {
     EndTx {
         commit: bool,
     },
+}
+
+/// How far a script file got.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScriptProgress {
+    pub statements: u64,
+    /// Rows loaded by COPY blocks.
+    pub copied: u64,
+    /// psql meta-commands left out.
+    pub skipped: u64,
+    pub bytes: u64,
+    pub line: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptError {
+    pub message: String,
+    /// Line where the failing statement starts, and its beginning.
+    pub line: u64,
+    pub statement: String,
+    pub cancelled: bool,
 }
 
 /// Transaction state of the connection, reported with `Reply::Tx` whenever it changes.
@@ -189,6 +226,22 @@ pub enum Reply {
     AllFks(DbResult<Vec<FkEdge>>),
     /// Functions, procedures, triggers, views and sequences, for the sidebar.
     Objects(DbResult<Vec<DbObject>>),
+    /// `(databases, current database, current schema)`.
+    Location(DbResult<(Vec<String>, String, String)>),
+    Admin {
+        done: String,
+        res: DbResult<()>,
+    },
+    ScriptProgress {
+        tab: u64,
+        progress: ScriptProgress,
+    },
+    ScriptDone {
+        tab: u64,
+        progress: ScriptProgress,
+        /// `None` when every statement ran.
+        error: Option<ScriptError>,
+    },
     /// Definition of an object, for the editor tab opened to show it.
     Source {
         tab: u64,
@@ -251,6 +304,164 @@ pub enum Reply {
     },
 }
 
+/// Runs a script file. Progress is reported at most every 150 ms.
+fn run_script(
+    conn: &mut Conn,
+    tx: &mut TxState,
+    pg: bool,
+    path: &std::path::Path,
+    transaction: bool,
+    cancel: &AtomicBool,
+    report: impl Fn(ScriptProgress),
+) -> (ScriptProgress, Option<ScriptError>) {
+    use crate::script::{Item, ScriptReader};
+    let mut p = ScriptProgress::default();
+    let fail = |message: String, line: u64, statement: &str, cancelled: bool| ScriptError {
+        message,
+        line,
+        statement: statement.chars().take(300).collect(),
+        cancelled,
+    };
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            return (
+                p,
+                Some(fail(format!("não foi possível abrir: {e}"), 0, "", false)),
+            );
+        }
+    };
+    let kind = if pg {
+        crate::db::Kind::Postgres
+    } else {
+        crate::db::Kind::MySql
+    };
+    let mut reader = ScriptReader::new(std::io::BufReader::with_capacity(1 << 20, file), kind);
+    // Inside a transaction the user opened, a savepoint makes the file all-or-nothing.
+    let nested = tx.open;
+    let (begin, mut commit, mut rollback) = if nested {
+        (
+            "SAVEPOINT dblite_script",
+            "RELEASE SAVEPOINT dblite_script",
+            "ROLLBACK TO SAVEPOINT dblite_script",
+        )
+    } else if pg {
+        ("BEGIN", "COMMIT", "ROLLBACK")
+    } else {
+        ("START TRANSACTION", "COMMIT", "ROLLBACK")
+    };
+    if transaction && let Err(e) = conn.query(begin) {
+        return (p, Some(fail(e.to_string(), 0, begin, false)));
+    }
+    let mut last_report = std::time::Instant::now();
+    let error = loop {
+        if cancel.load(Ordering::Relaxed) {
+            break Some(fail("cancelado".into(), p.line, "", true));
+        }
+        let Some(item) = reader.next() else { break None };
+        p.bytes = reader.bytes;
+        p.line = reader.line;
+        let item = match item {
+            Ok(i) => i,
+            Err(e) => break Some(fail(format!("erro lendo o arquivo: {e}"), p.line, "", false)),
+        };
+        let outcome = match &item {
+            Item::Skipped { .. } => {
+                p.skipped += 1;
+                Ok(())
+            }
+            Item::Copy { sql, data, line } => conn
+                .copy_in(sql, data)
+                .map(|n| p.copied += n)
+                .map_err(|e| fail(e.to_string(), *line, sql, cancel.load(Ordering::Relaxed))),
+            Item::Stmt { sql, line } => {
+                let res = if transaction {
+                    conn.query(sql).map(|_| ()).and_then(|()| {
+                        // MySQL ends the transaction on DDL (committing it, and the user's one
+                        // too): open another so the rest of the file is still undoable.
+                        if pg || !sql::mysql_implicit_commit(sql) {
+                            return Ok(());
+                        }
+                        *tx = TxState {
+                            manual: tx.manual,
+                            ..Default::default()
+                        };
+                        (commit, rollback) = ("COMMIT", "ROLLBACK");
+                        conn.query("START TRANSACTION").map(|_| ())
+                    })
+                } else {
+                    run_user_sql(conn, tx, pg, sql).map(|_| ())
+                };
+                res.map(|()| p.statements += 1).map_err(|e| {
+                    let cancelled = cancel.load(Ordering::Relaxed);
+                    fail(e.to_string(), *line, sql, cancelled)
+                })
+            }
+        };
+        if let Err(e) = outcome {
+            break Some(e);
+        }
+        if last_report.elapsed() >= std::time::Duration::from_millis(150) {
+            report(p);
+            last_report = std::time::Instant::now();
+        }
+    };
+    if transaction {
+        let end = if error.is_some() { rollback } else { commit };
+        if let Err(e) = conn.query(end)
+            && error.is_none()
+        {
+            return (p, Some(fail(e.to_string(), p.line, end, false)));
+        }
+    }
+    (p, error)
+}
+
+/// SQL the user asked for (editor, table actions, script files), keeping the manual-commit
+/// state right: a write opens the transaction, BEGIN/COMMIT typed by hand are followed, MySQL's
+/// DDL commits by itself, and a Postgres error leaves the transaction failed.
+fn run_user_sql(conn: &mut Conn, tx: &mut TxState, pg: bool, sql: &str) -> DbResult<QueryResult> {
+    let control = sql::tx_control(sql);
+    let writes = control.is_none() && sql::script_risk(sql).writes;
+    let res = if writes && tx.manual && !tx.open {
+        conn.begin().and_then(|()| {
+            tx.open = true;
+            conn.query(sql)
+        })
+    } else {
+        conn.query(sql)
+    };
+    let implicit_commit = !pg && res.is_ok() && sql::mysql_implicit_commit(sql);
+    match control {
+        // MySQL committed everything before running DDL.
+        None if implicit_commit => {
+            *tx = TxState {
+                manual: tx.manual,
+                ..Default::default()
+            }
+        }
+        // The user ended or started it by hand.
+        Some(c) if res.is_ok() => {
+            *tx = TxState {
+                manual: tx.manual,
+                open: c == sql::TxControl::Begin,
+                ..Default::default()
+            }
+        }
+        _ if tx.open => {
+            if res.is_ok() {
+                if writes {
+                    tx.writes += sql::statement_ranges(sql, false).len() as u32;
+                }
+            } else if pg {
+                tx.failed = true;
+            }
+        }
+        _ => {}
+    }
+    res
+}
+
 fn send_tx(send: &impl Fn(Reply), before: TxState, now: TxState) {
     if before != now {
         send(Reply::Tx(now));
@@ -287,6 +498,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
         send(Reply::AllColumns(conn.all_columns()));
         send(Reply::AllFks(conn.all_fks()));
         send(Reply::Objects(conn.objects()));
+        send(Reply::Location(conn.location()));
         let mut tx = TxState {
             manual: cfg.manual_commit,
             ..Default::default()
@@ -313,47 +525,11 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                 }
             };
             let reply = match job {
-                Job::Query { tab, sql } => {
-                    let control = sql::tx_control(&sql);
-                    let writes = control.is_none() && sql::script_risk(&sql).writes;
-                    let res = if writes {
-                        open_for_write(&mut conn, &mut tx).and_then(|()| conn.query(&sql))
-                    } else {
-                        conn.query(&sql)
-                    };
-                    let implicit_commit = !pg && res.is_ok() && sql::mysql_implicit_commit(&sql);
-                    match control {
-                        // MySQL committed everything before running DDL.
-                        None if implicit_commit => {
-                            tx = TxState {
-                                manual: tx.manual,
-                                ..Default::default()
-                            }
-                        }
-                        // The user ended or started it by hand.
-                        Some(c) if res.is_ok() => {
-                            tx = TxState {
-                                manual: tx.manual,
-                                open: c == sql::TxControl::Begin,
-                                ..Default::default()
-                            }
-                        }
-                        _ => note(
-                            &mut tx,
-                            res.is_ok(),
-                            if writes {
-                                sql::statement_ranges(&sql, false).len() as u32
-                            } else {
-                                0
-                            },
-                        ),
-                    }
-                    Reply::Rows {
-                        tab,
-                        res: Box::new(res),
-                        notice: None,
-                    }
-                }
+                Job::Query { tab, sql } => Reply::Rows {
+                    tab,
+                    res: Box::new(run_user_sql(&mut conn, &mut tx, pg, &sql)),
+                    notice: None,
+                },
                 Job::Preview { tab, sql } => Reply::Preview {
                     tab,
                     res: conn.preview(&sql, tx.open),
@@ -468,6 +644,34 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     tab,
                     res: conn.object_source(&object),
                 },
+                Job::RunScript {
+                    tab,
+                    path,
+                    transaction,
+                    cancel,
+                } => {
+                    let (progress, error) =
+                        run_script(&mut conn, &mut tx, pg, &path, transaction, &cancel, |p| {
+                            send(Reply::ScriptProgress { tab, progress: p })
+                        });
+                    // Scripts usually create or change tables.
+                    send(Reply::Tables(conn.tables()));
+                    send(Reply::AllColumns(conn.all_columns()));
+                    send(Reply::Objects(conn.objects()));
+                    Reply::ScriptDone { tab, progress, error }
+                }
+                Job::Admin { sql, done } => {
+                    let res = run_user_sql(&mut conn, &mut tx, pg, &sql).map(|_| ());
+                    // The sidebar shows the change (a new, renamed or dropped table).
+                    if res.is_ok() {
+                        send(Reply::Tables(conn.tables()));
+                        send(Reply::AllColumns(conn.all_columns()));
+                    }
+                    Reply::Admin { done, res }
+                }
+                Job::UseSchema(name) => {
+                    Reply::Location(conn.use_schema(&name).and_then(|()| conn.location()))
+                }
                 Job::Fks { tab } => Reply::Fks {
                     tab,
                     res: conn.all_fks(),
@@ -780,6 +984,108 @@ mod tests {
     #[ignore]
     fn manual_commit_mysql() {
         manual_commit(Kind::MySql, 53306, "test");
+    }
+
+    /// A file with a routine body, a COPY block / DELIMITER, then a failing statement: in a
+    /// transaction nothing stays; without one, what ran before the error does.
+    fn script_file(kind: Kind, port: u16, db: &str) {
+        let mut cfg = ConnConfig::new(kind);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = port;
+        cfg.password = "pw".into();
+        cfg.database = db.into();
+        let mut c = Conn::connect(&cfg, None).expect("connect");
+        let pg = kind == Kind::Postgres;
+        let body = if pg {
+            "\\set ON_ERROR_STOP on\nCREATE TABLE dbl_script (id int PRIMARY KEY, v text);\n\
+             COPY dbl_script (id, v) FROM stdin;\n1\tum\n2\tdois; ainda\n\\.\n\
+             CREATE FUNCTION dbl_script_f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql;\n\
+             DROP FUNCTION dbl_script_f();\n"
+        } else {
+            "CREATE TABLE dbl_script (id int PRIMARY KEY, v text);\n\
+             INSERT INTO dbl_script VALUES (1, 'um'), (2, 'dois; ainda');\n\
+             DELIMITER //\nCREATE PROCEDURE dbl_script_p() BEGIN SELECT 1; SELECT 2; END //\nDELIMITER ;\n\
+             DROP PROCEDURE dbl_script_p;\n"
+        };
+        let path = std::env::temp_dir().join(format!("dblite-script-{kind:?}-{}.sql", std::process::id()));
+        let count = |c: &mut Conn| {
+            c.query("SELECT count(*) FROM dbl_script")
+                .ok()
+                .and_then(|r| r.rows[0][0].clone())
+        };
+        let run = |c: &mut Conn, text: &str, transaction: bool| {
+            std::fs::write(&path, text).unwrap();
+            let mut tx = TxState::default();
+            run_script(
+                c,
+                &mut tx,
+                pg,
+                &path,
+                transaction,
+                &AtomicBool::new(false),
+                |_| {},
+            )
+        };
+        c.query("DROP TABLE IF EXISTS dbl_script").unwrap();
+
+        let (p, err) = run(&mut c, body, true);
+        assert_eq!(err, None);
+        assert_eq!(p.bytes, body.len() as u64);
+        assert_eq!(count(&mut c).as_deref(), Some("2"));
+        if pg {
+            assert_eq!((p.statements, p.copied, p.skipped), (3, 2, 1));
+        } else {
+            assert_eq!(p.statements, 4);
+        }
+        c.query("DROP TABLE dbl_script").unwrap();
+
+        // Fails on line 3 of the tail: rolled back as a whole (Postgres undoes the CREATE too).
+        let broken = format!("{body}INSERT INTO dbl_script VALUES (3, 'tres');\nSELECT * FROM nao_existe;\n");
+        let (_, err) = run(&mut c, &broken, true);
+        let err = err.expect("error");
+        assert!(err.statement.contains("nao_existe") && !err.cancelled, "{err:?}");
+        assert_eq!(err.line, broken.lines().count() as u64);
+        if pg {
+            assert_eq!(count(&mut c), None, "the table went away with the rollback");
+        } else {
+            // MySQL commits on DDL (the CREATE PROCEDURE keeps rows 1 and 2), but the INSERT
+            // after the last one is undone.
+            assert_eq!(count(&mut c).as_deref(), Some("2"));
+            c.query("DROP TABLE dbl_script").unwrap();
+        }
+
+        // Without a transaction what ran before the error stays.
+        let (p, err) = run(&mut c, &broken, false);
+        assert!(err.is_some());
+        assert_eq!(count(&mut c).as_deref(), Some("3"));
+        assert!(p.statements >= 3);
+        c.query("DROP TABLE dbl_script").unwrap();
+
+        // Cancelled before it starts: nothing runs.
+        std::fs::write(&path, body).unwrap();
+        let (p, err) = run_script(
+            &mut c,
+            &mut TxState::default(),
+            pg,
+            &path,
+            true,
+            &AtomicBool::new(true),
+            |_| {},
+        );
+        assert!(err.is_some_and(|e| e.cancelled) && p.statements == 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    #[ignore]
+    fn script_file_postgres() {
+        script_file(Kind::Postgres, 55432, "postgres");
+    }
+
+    #[test]
+    #[ignore]
+    fn script_file_mysql() {
+        script_file(Kind::MySql, 53306, "test");
     }
 
     #[test]
