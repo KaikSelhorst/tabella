@@ -348,6 +348,33 @@ pub enum TabKind {
     History(Box<HistoryState>),
     /// A `.sql` file run without opening it in an editor.
     Script(Box<ScriptState>),
+    /// "Exportar .sql": tables (and a schema's objects) written as a script.
+    Dump(Box<DumpState>),
+}
+
+/// What "Exportar .sql" covers.
+pub enum DumpScope {
+    Table(String, String),
+    Schema(String),
+    /// Every schema of the database in use (MySQL: that database).
+    Database,
+}
+
+pub struct DumpState {
+    /// For the title: "tabela public.clientes", "schema public", "banco loja".
+    pub what: String,
+    pub tables: Vec<(String, String)>,
+    pub objects_of: Vec<String>,
+    pub structure: bool,
+    pub data: bool,
+    pub drop: bool,
+    pub running: bool,
+    pub progress: crate::dump::DumpProgress,
+    /// The file written, or why not.
+    pub outcome: Option<Result<PathBuf, String>>,
+    pub started: Option<Instant>,
+    pub took: Option<std::time::Duration>,
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// What an editor tab has besides the grid every tab shares.
@@ -1687,6 +1714,57 @@ impl App {
         self.push_tab(crate::files::title(&path), TabKind::Script(Box::new(st)));
     }
 
+    /// "Exportar .sql" of a table, a schema or the whole database, in a tab with its options.
+    pub fn open_dump(&mut self, scope: DumpScope) {
+        let Some(s) = &self.session else { return };
+        let all = |schema: Option<&str>| -> Vec<(String, String)> {
+            s.tables
+                .iter()
+                .filter(|t| !t.is_view && schema.is_none_or(|sc| t.schema == sc))
+                .map(|t| (t.schema.clone(), t.name.clone()))
+                .collect()
+        };
+        let (what, tables, objects_of) = match scope {
+            DumpScope::Table(schema, table) => (
+                format!("tabela {schema}.{table}"),
+                vec![(schema, table)],
+                Vec::new(),
+            ),
+            DumpScope::Schema(schema) => (format!("schema {schema}"), all(Some(&schema)), vec![schema]),
+            // MySQL lists every database in the sidebar; "the database" is the one in use.
+            DumpScope::Database if s.cfg.kind == Kind::MySql => (
+                format!("banco {}", s.current_db),
+                all(Some(&s.current_db)),
+                vec![s.current_db.clone()],
+            ),
+            DumpScope::Database => {
+                let tables = all(None);
+                let mut schemas: Vec<String> = tables.iter().map(|(sc, _)| sc.clone()).collect();
+                schemas.dedup();
+                (format!("banco {}", s.current_db), tables, schemas)
+            }
+        };
+        let title = format!(
+            "Exportar {}",
+            what.split_once(' ').map_or(what.as_str(), |(_, w)| w)
+        );
+        let st = DumpState {
+            what,
+            tables,
+            objects_of,
+            structure: true,
+            data: true,
+            drop: false,
+            running: false,
+            progress: Default::default(),
+            outcome: None,
+            started: None,
+            took: None,
+            cancel: Arc::default(),
+        };
+        self.push_tab(title, TabKind::Dump(Box::new(st)));
+    }
+
     /// Ctrl+P "Executar arquivo .sql…".
     pub fn pick_script(&mut self) {
         if crate::files::NATIVE_DIALOGS {
@@ -2025,6 +2103,45 @@ pub fn refresh_activity(tab: &mut Tab, s: &Session) {
     tab.send_rows_job(s, Job::Activity { tab: id, view });
 }
 
+/// Starts "Exportar .sql": a new file in Downloads named after what is exported.
+pub fn start_dump(tab: &mut Tab, s: &Session) {
+    let TabKind::Dump(st) = &mut tab.kind else { return };
+    if st.running || (!st.structure && !st.data) {
+        return;
+    }
+    let base = st.what.split_once(' ').map_or(st.what.as_str(), |(_, w)| w);
+    let spec = crate::dump::DumpSpec {
+        path: export::target_path(base, Format::Sql),
+        tables: st.tables.clone(),
+        objects_of: st.objects_of.clone(),
+        structure: st.structure,
+        data: st.data,
+        drop: st.drop,
+    };
+    st.cancel = Arc::default();
+    st.running = true;
+    st.outcome = None;
+    st.progress = Default::default();
+    st.started = Some(Instant::now());
+    st.took = None;
+    let job = Job::Dump {
+        tab: tab.id,
+        spec,
+        cancel: st.cancel.clone(),
+    };
+    tab.begin_job();
+    s.send(job);
+}
+
+pub fn cancel_dump(tab: &mut Tab, s: &Session) {
+    if let TabKind::Dump(st) = &mut tab.kind
+        && st.running
+    {
+        st.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        s.cancel();
+    }
+}
+
 /// Runs the tab's script file.
 pub fn start_script(tab: &mut Tab, s: &Session) {
     let TabKind::Script(st) = &mut tab.kind else {
@@ -2189,7 +2306,8 @@ fn saved_tab(t: &Tab) -> Option<SavedTab> {
         | TabKind::Search(_)
         | TabKind::Diagram(_)
         | TabKind::History(_)
-        | TabKind::Script(_) => None,
+        | TabKind::Script(_)
+        | TabKind::Dump(_) => None,
         TabKind::Sql(ed) => Some(SavedTab::Sql {
             text: ed.text.clone(),
             title: (t.renamed && ed.file.is_none()).then(|| t.title.clone()),

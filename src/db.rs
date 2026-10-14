@@ -421,6 +421,16 @@ pub struct TableStructure {
     pub foreign_keys: Vec<(String, String)>,
     /// `CREATE TABLE ...` (plus separate indexes on Postgres), ready to copy.
     pub ddl: String,
+    /// For "Exportar .sql": `ddl` without the foreign keys, which come as `ALTER TABLE`s to run
+    /// once every table has its data.
+    pub ddl_without_fks: String,
+    pub fk_statements: Vec<String>,
+    /// Computed columns: they get no value in an INSERT.
+    pub generated: Vec<String>,
+    /// Postgres: `(column, sequence)` for defaults calling `nextval('…')` (serial), to create
+    /// before the table; and every column a sequence numbers (serial, identity).
+    pub sequences: Vec<(String, String)>,
+    pub serial_columns: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1342,12 +1352,22 @@ impl Conn {
                 "SELECT a.attname, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
              pg_get_expr(d.adbin, d.adrelid), \
              EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = a.attrelid AND i.indisprimary \
-                     AND a.attnum = ANY (i.indkey)) \
+                     AND a.attnum = ANY (i.indkey)), \
+             a.attidentity::text, a.attgenerated::text \
              FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
              WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attrelid = ",
             )
             .sql(" ORDER BY a.attnum"),
         )?;
+        // identity ('a' always, 'd' by default) and generated ('s' stored), per column.
+        let flags: Vec<(String, String)> = cols
+            .rows
+            .iter()
+            .map(|r| {
+                let f = |i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+                (f(5), f(6))
+            })
+            .collect();
         let columns: Vec<StructColumn> = cols
             .rows
             .into_iter()
@@ -1370,36 +1390,74 @@ impl Conn {
         )?;
         let cell = |r: &Vec<Option<String>>, i: usize| r.get(i).cloned().flatten().unwrap_or_default();
 
-        let mut lines: Vec<String> = columns
+        let qualified = k.qualified(schema, table);
+        let (mut generated, mut sequences, mut serial_columns) = (Vec::new(), Vec::new(), Vec::new());
+        let lines: Vec<String> = columns
             .iter()
-            .map(|c| {
+            .zip(&flags)
+            .map(|(c, (identity, gen_kind))| {
                 let mut l = format!("    {} {}", k.quote_ident(&c.name), c.data_type);
                 if !c.nullable {
                     l += " NOT NULL";
                 }
-                if let Some(d) = &c.default {
-                    l += &format!(" DEFAULT {d}");
+                match (identity.as_str(), gen_kind.as_str(), &c.default) {
+                    (_, "s", Some(expr)) => {
+                        l += &format!(" GENERATED ALWAYS AS ({expr}) STORED");
+                        generated.push(c.name.clone());
+                    }
+                    ("a" | "d", _, _) => {
+                        let how = if identity == "a" { "ALWAYS" } else { "BY DEFAULT" };
+                        l += &format!(" GENERATED {how} AS IDENTITY");
+                        serial_columns.push(c.name.clone());
+                    }
+                    (_, _, Some(d)) => {
+                        l += &format!(" DEFAULT {d}");
+                        // nextval('clientes_id_seq'::regclass): the name as SQL writes it.
+                        if let Some(seq) = d
+                            .strip_prefix("nextval('")
+                            .and_then(|r| r.split_once("'::regclass)"))
+                            .map(|(name, _)| name.replace("''", "'"))
+                        {
+                            sequences.push((c.name.clone(), seq));
+                            serial_columns.push(c.name.clone());
+                        }
+                    }
+                    _ => {}
                 }
                 l
             })
             .collect();
-        for r in &cons.rows {
-            lines.push(format!(
-                "    CONSTRAINT {} {}",
-                k.quote_ident(&cell(r, 0)),
-                cell(r, 2)
-            ));
-        }
-        let mut ddl = format!(
-            "CREATE TABLE {} (\n{}\n);",
-            k.qualified(schema, table),
-            lines.join(",\n")
-        );
-        // Indexes backing a constraint are created by it; the rest need their own statement.
-        for r in idx.rows.iter().filter(|r| r[2].as_deref() != Some("t")) {
-            ddl += &format!("\n{};", cell(r, 1));
-        }
+        let constraint =
+            |r: &Vec<Option<String>>| format!("CONSTRAINT {} {}", k.quote_ident(&cell(r, 0)), cell(r, 2));
+        let is_fk = |r: &&Vec<Option<String>>| r[1].as_deref() == Some("f");
+        let create = |with_fks: bool| {
+            let mut all = lines.clone();
+            all.extend(
+                cons.rows
+                    .iter()
+                    .filter(|r| with_fks || !is_fk(r))
+                    .map(|r| format!("    {}", constraint(r))),
+            );
+            let mut ddl = format!("CREATE TABLE {qualified} (\n{}\n);", all.join(",\n"));
+            // Indexes backing a constraint are created by it; the rest need their own statement.
+            for r in idx.rows.iter().filter(|r| r[2].as_deref() != Some("t")) {
+                ddl += &format!("\n{};", cell(r, 1));
+            }
+            ddl
+        };
+        let (ddl, ddl_without_fks) = (create(true), create(false));
+        let fk_statements = cons
+            .rows
+            .iter()
+            .filter(is_fk)
+            .map(|r| format!("ALTER TABLE {qualified} ADD {};", constraint(r)))
+            .collect();
         Ok(TableStructure {
+            ddl_without_fks,
+            fk_statements,
+            generated,
+            sequences,
+            serial_columns,
             columns,
             indexes: idx.rows.iter().map(|r| (cell(r, 0), cell(r, 1))).collect(),
             foreign_keys: cons
@@ -1423,6 +1481,12 @@ impl Conn {
             "SELECT column_name, column_type, is_nullable = 'YES', column_default, column_key = 'PRI', extra \
              FROM information_schema.columns WHERE table_schema = ",
         ).sql(" ORDER BY ordinal_position"))?;
+        let generated = cols
+            .rows
+            .iter()
+            .filter(|r| r[5].as_deref().is_some_and(|e| e.contains("GENERATED")))
+            .filter_map(|r| r[0].clone())
+            .collect();
         let columns = cols
             .rows
             .into_iter()
@@ -1457,7 +1521,15 @@ impl Conn {
             Kind::MySql.qualified(schema, table)
         ))?;
         let cell = |r: &Vec<Option<String>>, i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+        let ddl = create
+            .rows
+            .first()
+            .map(|r| format!("{};", cell(r, 1)))
+            .unwrap_or_default();
         Ok(TableStructure {
+            // A dump turns FOREIGN_KEY_CHECKS off, so they can stay in the CREATE.
+            ddl_without_fks: ddl.clone(),
+            generated,
             columns,
             indexes: idx
                 .rows
@@ -1465,11 +1537,8 @@ impl Conn {
                 .map(|r| (cell(r, 0), format!("{}({})", cell(r, 1), cell(r, 2))))
                 .collect(),
             foreign_keys: fks.rows.iter().map(|r| (cell(r, 0), cell(r, 1))).collect(),
-            ddl: create
-                .rows
-                .first()
-                .map(|r| format!("{};", cell(r, 1)))
-                .unwrap_or_default(),
+            ddl,
+            ..Default::default()
         })
     }
 }

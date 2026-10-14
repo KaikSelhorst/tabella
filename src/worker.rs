@@ -137,6 +137,12 @@ pub enum Job {
         tab: u64,
         sql: String,
     },
+    /// "Exportar .sql".
+    Dump {
+        tab: u64,
+        spec: crate::dump::DumpSpec,
+        cancel: Arc<AtomicBool>,
+    },
     /// "Commit manual": writes open a transaction that only ends with `EndTx`.
     SetManual(bool),
     EndTx {
@@ -283,6 +289,15 @@ pub enum Reply {
         tab: u64,
         res: DbResult<QueryResult>,
     },
+    DumpProgress {
+        tab: u64,
+        progress: crate::dump::DumpProgress,
+    },
+    DumpDone {
+        tab: u64,
+        progress: crate::dump::DumpProgress,
+        res: Result<PathBuf, String>,
+    },
     Preview {
         tab: u64,
         res: DbResult<PreviewData>,
@@ -329,13 +344,15 @@ impl Reply {
             | Reply::Exported { tab, .. }
             | Reply::ColumnStats { tab, .. }
             | Reply::Distinct { tab, .. }
+            | Reply::DumpDone { tab, .. }
             | Reply::Preview { tab, .. }
             | Reply::ServerInfo { tab, .. }
             | Reply::SearchDone { tab, .. }
             | Reply::Fks { tab, .. } => Some((*tab, true)),
             Reply::Count { tab, .. }
             | Reply::ScriptProgress { tab, .. }
-            | Reply::SearchProgress { tab, .. } => Some((*tab, false)),
+            | Reply::SearchProgress { tab, .. }
+            | Reply::DumpProgress { tab, .. } => Some((*tab, false)),
             Reply::Connected(_)
             | Reply::Tables(_)
             | Reply::AllColumns(_)
@@ -350,7 +367,7 @@ impl Reply {
 }
 
 /// Runs a script file. Progress is reported at most every 150 ms.
-fn run_script(
+pub(crate) fn run_script(
     conn: &mut Conn,
     tx: &mut TxState,
     pg: bool,
@@ -579,6 +596,33 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     tab,
                     res: conn.preview(&sql, tx.open),
                 },
+                Job::Dump { tab, spec, cancel } => {
+                    let last = std::cell::Cell::new(std::time::Instant::now());
+                    let res = crate::dump::dump(&mut conn, &spec, &cancel, |progress| {
+                        // A few times a second is plenty for a progress bar.
+                        if last.get().elapsed() >= std::time::Duration::from_millis(150) {
+                            last.set(std::time::Instant::now());
+                            send(Reply::DumpProgress { tab, progress });
+                        }
+                    });
+                    let cancelled = cancel.load(Ordering::Relaxed);
+                    match res {
+                        Ok(progress) => Reply::DumpDone {
+                            tab,
+                            progress,
+                            res: Ok(spec.path),
+                        },
+                        Err(e) => Reply::DumpDone {
+                            tab,
+                            progress: Default::default(),
+                            res: Err(if cancelled {
+                                "cancelado".into()
+                            } else {
+                                e.to_string()
+                            }),
+                        },
+                    }
+                }
                 Job::Distinct { tab, sql } => Reply::Distinct {
                     tab,
                     res: conn.query(&sql),

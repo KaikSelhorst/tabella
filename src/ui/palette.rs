@@ -20,6 +20,7 @@ enum Cmd {
     Zoom(i32),
     History,
     RunFile,
+    Dump,
     Diagram,
     Search,
     NewTable,
@@ -240,6 +241,12 @@ impl App {
                 });
             }
             items.push(Item {
+                icon: icon::DOWNLOAD_SIMPLE,
+                label: "Exportar banco como .sql…".into(),
+                detail: "estrutura e dados de todas as tabelas, views, funções e triggers".into(),
+                cmd: Cmd::Dump,
+            });
+            items.push(Item {
                 icon: icon::PULSE,
                 label: "Atividade no servidor".into(),
                 detail: "sessões e consultas em andamento".into(),
@@ -421,6 +428,7 @@ impl App {
                 Cmd::Zoom(steps) => self.zoom_by(ctx, steps),
                 Cmd::History => self.open_history(),
                 Cmd::RunFile => self.pick_script(),
+                Cmd::Dump => self.open_dump(crate::app::DumpScope::Database),
                 Cmd::Diagram => self.open_diagram(None),
                 Cmd::Search => self.open_search(),
                 Cmd::NewTable => self.open_new_table(None),

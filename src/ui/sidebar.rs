@@ -308,7 +308,8 @@ impl App {
             | TabKind::Search(_)
             | TabKind::Diagram(_)
             | TabKind::History(_)
-            | TabKind::Script(_) => None,
+            | TabKind::Script(_)
+            | TabKind::Dump(_) => None,
         });
         let needle = self.filter.to_lowercase();
         let by_size = self.sort_by_size;
@@ -319,6 +320,7 @@ impl App {
         let mut to_object: Option<DbObject> = None;
         let mut to_run: Option<DbObject> = None;
         let mut to_action: Option<crate::app::TableActionPrompt> = None;
+        let mut to_dump: Option<crate::app::DumpScope> = None;
         let mut to_structure: Option<(String, String)> = None;
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
@@ -437,6 +439,13 @@ impl App {
                                             }
                                         }
                                     });
+                                    if !t.is_view && ui.button("Exportar como .sql…").clicked() {
+                                        to_dump = Some(crate::app::DumpScope::Table(
+                                            t.schema.clone(),
+                                            t.name.clone(),
+                                        ));
+                                        ui.close();
+                                    }
                                     if !t.is_view && !s.cfg.read_only {
                                         ui.separator();
                                         for (action, label) in [
@@ -574,6 +583,10 @@ impl App {
                             schema_action = Some((schema.clone(), false));
                             ui.close();
                         }
+                        if ui.button("Exportar schema como .sql…").clicked() {
+                            to_dump = Some(crate::app::DumpScope::Schema(schema.clone()));
+                            ui.close();
+                        }
                     });
                 }
             });
@@ -616,6 +629,9 @@ impl App {
         }
         if let Some(o) = to_run {
             self.run_object(&o);
+        }
+        if let Some(scope) = to_dump {
+            self.open_dump(scope);
         }
         if to_action.is_some() {
             self.table_action = to_action;

@@ -220,7 +220,7 @@ pub fn target_path(base: &str, format: Format) -> PathBuf {
 }
 
 /// `YYYYMMDD-HHMMSS` in UTC, without pulling in a date library.
-fn timestamp() -> String {
+pub fn timestamp() -> String {
     let secs = crate::history::now() as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Civil-from-days (Howard Hinnant's algorithm).

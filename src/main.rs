@@ -5,6 +5,7 @@ mod config;
 mod db;
 mod design;
 mod diagram;
+mod dump;
 mod error;
 mod export;
 mod favorites;

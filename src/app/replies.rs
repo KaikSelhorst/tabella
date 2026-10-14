@@ -178,6 +178,21 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                 p.data = Some(res.map_err(|e| e.to_string()));
             }
         }
+        Reply::DumpProgress { progress, .. } => {
+            if let TabKind::Dump(st) = &mut t.kind {
+                st.progress = progress;
+            }
+        }
+        Reply::DumpDone { progress, res, .. } => {
+            if let TabKind::Dump(st) = &mut t.kind {
+                st.running = false;
+                if res.is_ok() {
+                    st.progress = progress;
+                }
+                st.took = st.started.map(|at| at.elapsed());
+                st.outcome = Some(res);
+            }
+        }
         Reply::Distinct { res, .. } => {
             if let TabKind::Table(ts) = &mut t.kind
                 && let Some(vf) = &mut ts.value_filter

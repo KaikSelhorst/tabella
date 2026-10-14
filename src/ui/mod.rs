@@ -672,6 +672,7 @@ mod screenshots {
                 ],
                 foreign_keys: vec![],
                 ddl: "CREATE TABLE \"public\".\"clientes\" (\n    \"id\" integer NOT NULL DEFAULT nextval('clientes_id_seq'::regclass),\n    \"nome\" text,\n    \"email\" text,\n    \"ativo\" boolean DEFAULT true,\n    \"saldo\" numeric(12,2),\n    \"criado_em\" timestamp without time zone DEFAULT now(),\n    CONSTRAINT \"clientes_pkey\" PRIMARY KEY (id)\n);\nCREATE INDEX clientes_email_idx ON public.clientes USING btree (email);".into(),
+                ..Default::default()
             };
             let st = crate::app::StructState {
                 schema: "public".into(),
@@ -1732,6 +1733,33 @@ mod screenshots {
             .save(format!("{dir}/master-unlock.png"))
             .unwrap();
         harness.state_mut().master = None;
+
+        // "Exportar .sql" of a schema, finished.
+        {
+            harness
+                .state_mut()
+                .open_dump(crate::app::DumpScope::Schema("public".into()));
+            let app = harness.state_mut();
+            if let Some(Tab {
+                kind: TabKind::Dump(st),
+                ..
+            }) = app.tabs.last_mut()
+            {
+                st.progress = crate::dump::DumpProgress {
+                    tables: 3,
+                    total: 3,
+                    rows: 31_412,
+                    bytes: 4_812_000,
+                };
+                st.took = Some(std::time::Duration::from_millis(1_870));
+                st.outcome = Some(Ok("C:\\Users\\voce\\Downloads\\public_20261014-170501.sql".into()));
+            }
+            harness.run();
+            harness.render().unwrap().save(format!("{dir}/dump.png")).unwrap();
+            let app = harness.state_mut();
+            app.tabs.pop();
+            app.active = 0;
+        }
 
         // "Filtrar valores" on a table column, with a funnel on a column already filtered.
         {

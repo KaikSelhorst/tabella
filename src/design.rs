@@ -405,6 +405,7 @@ mod tests {
             indexes: vec![("t_nome_idx".into(), "CREATE INDEX t_nome_idx ON t (nome)".into())],
             foreign_keys: vec![],
             ddl: String::new(),
+            ..Default::default()
         };
         Design::from_structure(kind, "s", "t", &s)
     }

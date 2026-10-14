@@ -23,6 +23,7 @@ use crate::sql::{self, page_size};
 use crate::values;
 
 mod activity;
+mod dump;
 mod editor;
 mod query_history;
 mod results;
@@ -31,6 +32,7 @@ mod search;
 mod table;
 
 use activity::*;
+use dump::*;
 use editor::*;
 use query_history::*;
 use results::*;
@@ -108,6 +110,7 @@ impl App {
                             TabKind::History(_) => icon::CLOCK_COUNTER_CLOCKWISE,
                             TabKind::Diagram(_) => icon::GRAPH,
                             TabKind::Script(_) => icon::PLAY,
+                            TabKind::Dump(_) => icon::DOWNLOAD_SIMPLE,
                         };
                         let shown = if app::file_dirty(tab) {
                             format!("{} •", tab.title)
@@ -218,6 +221,7 @@ impl App {
             TabKind::Search(_) => search_tab(ui, tab, &mut cx),
             TabKind::History(_) => history_tab(ui, tab, &mut cx),
             TabKind::Script(_) => script_tab(ui, tab, &mut cx),
+            TabKind::Dump(_) => dump_tab(ui, tab, &mut cx),
             TabKind::Diagram(_) => {
                 let busy = tab.busy();
                 let schemas: Vec<String> = {
