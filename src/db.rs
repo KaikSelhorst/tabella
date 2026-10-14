@@ -546,6 +546,7 @@ impl Conn {
                  LEFT JOIN pg_catalog.pg_namespace n ON n.nspname = t.table_schema \
                  LEFT JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name \
                  WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema') \
+                 AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = c.oid AND d.deptype = 'e') \
                  ORDER BY 1, 2"
             }
             Conn::My(_) => {
@@ -735,8 +736,10 @@ impl Conn {
                      FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
                      WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
                      UNION ALL \
-                     SELECT schemaname, viewname, 'v', '', '', '' FROM pg_views \
+                     SELECT schemaname, viewname, 'v', '', '', '' FROM pg_views v \
                      WHERE schemaname NOT IN ('pg_catalog', 'information_schema') \
+                     AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.deptype = 'e' \
+                       AND d.objid = (quote_ident(v.schemaname) || '.' || quote_ident(v.viewname))::regclass) \
                      UNION ALL \
                      SELECT schemaname, sequencename, 's', '', '', '' FROM pg_sequences \
                      ORDER BY 1, 3, 2";

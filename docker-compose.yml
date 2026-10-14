@@ -73,7 +73,9 @@ services:
     environment: { POSTGRES_PASSWORD: postgres }
     ports: ["5432:5432"]
     command: ["-c", "shared_preload_libraries=pg_stat_statements"]
-    volumes: ["./dev/postgres.sql:/docker-entrypoint-initdb.d/seed.sql:ro"]
+    volumes:
+      - ./dev/postgres.sql:/docker-entrypoint-initdb.d/1-seed.sql:ro
+      - ./dev/postgres-objects.sql:/docker-entrypoint-initdb.d/2-objects.sql:ro
     # Over TCP: during the ~3 min seed the server only listens on its socket, so this
     # reports healthy once the data is really there.
     healthcheck:
@@ -86,7 +88,9 @@ services:
     image: mysql:8
     environment: { MYSQL_ROOT_PASSWORD: mysql, MYSQL_DATABASE: loja }
     ports: ["3307:3306"]
-    volumes: ["./dev/mysql.sql:/docker-entrypoint-initdb.d/seed.sql:ro"]
+    volumes:
+      - ./dev/mysql.sql:/docker-entrypoint-initdb.d/1-seed.sql:ro
+      - ./dev/mysql-objects.sql:/docker-entrypoint-initdb.d/2-objects.sql:ro
     healthcheck:
       <<: *mysql-health
       interval: 3s
