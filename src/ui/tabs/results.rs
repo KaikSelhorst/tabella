@@ -119,10 +119,10 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         return;
     };
     // Editor results can be charted (kept in egui memory per tab).
-    let is_sql = matches!(tab.kind, TabKind::Sql { .. });
+    let is_sql = matches!(tab.kind, TabKind::Sql(_));
     // Editor results from one table say whether they can be edited, and why not.
-    let edit_hint = match (&tab.kind, &tab.source) {
-        (TabKind::Sql { .. }, Some(src)) if !src.cols.is_empty() => {
+    let edit_hint = match tab.editor().and_then(|ed| ed.source.as_deref()) {
+        Some(src) if !src.cols.is_empty() => {
             let pk = src.pk_names();
             if s.cfg.read_only {
                 None
@@ -216,7 +216,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
     ui.data_mut(|d| d.insert_temp(chart_id, chart_spec));
 
     // Pending changes are shown in place: edited values, deleted rows struck through.
-    let overlay = app::editable_ref(&tab.kind, &tab.source).and_then(|ts| ts.overlay(res));
+    let overlay = app::editable_ref(&tab.kind).and_then(|ts| ts.overlay(res));
     let shown = overlay.as_ref().map_or(res, |o| &o.result);
     let view = tab.view();
     let pinned = tab.pinned_count();
@@ -224,24 +224,24 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
     let no_cols = Vec::new();
     let no_incoming = Vec::new();
     let table_tab = matches!(tab.kind, TabKind::Table(_));
-    let (cols, edit, order, bool_pick, row_offset, has_pk, incoming) =
-        match app::editable_mut(&mut tab.kind, &mut tab.source) {
-            Some(ts) => {
-                // Rows are addressed by their key: every key column must be in the result.
-                let pk = ts.pk_names();
-                let has_pk = !pk.is_empty() && pk.iter().all(|p| res.columns.contains(p));
-                (
-                    &ts.cols,
-                    ts.edit.as_mut(),
-                    ts.order.clone(),
-                    ts.bool_pick,
-                    if table_tab { ts.page * page_size() } else { 0 },
-                    has_pk,
-                    &ts.incoming,
-                )
-            }
-            None => (&no_cols, None, None, None, 0, false, &no_incoming),
-        };
+    let (cols, edit, order, bool_pick, row_offset, has_pk, incoming) = match app::editable_mut(&mut tab.kind)
+    {
+        Some(ts) => {
+            // Rows are addressed by their key: every key column must be in the result.
+            let pk = ts.pk_names();
+            let has_pk = !pk.is_empty() && pk.iter().all(|p| res.columns.contains(p));
+            (
+                &ts.cols,
+                ts.edit.as_mut(),
+                ts.order.clone(),
+                ts.bool_pick,
+                if table_tab { ts.page * page_size() } else { 0 },
+                has_pk,
+                &ts.incoming,
+            )
+        }
+        None => (&no_cols, None, None, None, 0, false, &no_incoming),
+    };
     let can_edit = has_pk && !s.cfg.read_only;
     let kinds = values::column_kinds(res, cols);
     let selected = tab

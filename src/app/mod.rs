@@ -303,9 +303,8 @@ impl TableState {
 }
 
 pub enum TabKind {
-    Sql {
-        text: String,
-    },
+    /// SQL editor.
+    Sql(Box<Editor>),
     Table(Box<TableState>),
     Structure(Box<StructState>),
     Activity(Box<ActivityState>),
@@ -319,6 +318,54 @@ pub enum TabKind {
     History(Box<HistoryState>),
     /// A `.sql` file run without opening it in an editor.
     Script(Box<ScriptState>),
+}
+
+/// What an editor tab has besides the grid every tab shares.
+pub struct Editor {
+    pub text: String,
+    /// EXPLAIN of an editor statement, shown in place of the result until closed.
+    pub plan: Option<Plan>,
+    /// Values asked for `:parameters` before running.
+    pub params: Option<ParamPrompt>,
+    /// Last value typed for each parameter name.
+    pub param_values: std::collections::HashMap<String, String>,
+    /// "Prévia" of an UPDATE/DELETE: rows it would touch.
+    pub preview: Option<PreviewState>,
+    /// The table a simple single-table SELECT read from, when its rows can be edited in place
+    /// (columns and keys arrive with `Reply::Columns`).
+    pub source: Option<Box<TableState>>,
+    /// The SELECT behind `source`, re-run after saving.
+    pub source_query: String,
+    /// The `.sql` file being edited, and its text as last read or written (the tab has unsaved
+    /// changes when the editor differs from it).
+    pub file: Option<PathBuf>,
+    pub saved_text: String,
+    /// Closing was refused once because of unsaved file changes; the next close goes through.
+    pub close_armed: bool,
+    /// "Repetir a cada": seconds between automatic re-runs of `last_query`.
+    pub repeat: Option<u64>,
+    pub last_query: String,
+    pub last_run: Option<Instant>,
+}
+
+impl Editor {
+    pub fn new(text: String) -> Self {
+        Editor {
+            text,
+            plan: None,
+            params: None,
+            param_values: Default::default(),
+            preview: None,
+            source: None,
+            source_query: String::new(),
+            file: None,
+            saved_text: String::new(),
+            close_armed: false,
+            repeat: None,
+            last_query: String::new(),
+            last_run: None,
+        }
+    }
 }
 
 pub struct ScriptState {
@@ -415,10 +462,10 @@ pub struct Tab {
     /// Other corner of a range selection (Shift+click, drag, Shift+arrows); `selected` is the
     /// corner that moves.
     pub anchor: Option<(usize, usize)>,
-    /// SQL sent from an editor tab, recorded in the history once its result arrives.
-    pub pending_sql: Option<String>,
     /// Row whose detail panel was closed with its X; the panel comes back on the next click.
     pub detail_hidden: Option<usize>,
+    /// SQL run from the tab (editor, design), recorded in the history once its result arrives.
+    pub pending_sql: Option<String>,
     /// SQL waiting for the user to confirm destructive statements.
     pub confirm_run: Option<String>,
     /// Last export of this tab: file and row count, shown until dismissed.
@@ -427,37 +474,15 @@ pub struct Tab {
     /// in `result`; its slot here is an empty placeholder.
     pub sets: Vec<QueryResult>,
     pub set_shown: usize,
-    /// EXPLAIN of an editor statement, shown in place of the result until closed.
-    pub plan: Option<Plan>,
-    /// Values asked for `:parameters` before running.
-    pub params: Option<ParamPrompt>,
     /// "Definir valor na seleção": the value being typed.
     pub fill_prompt: Option<String>,
-    /// Last value typed for each parameter name.
-    pub param_values: std::collections::HashMap<String, String>,
     pub col_stats: Option<StatsView>,
-    pub preview: Option<PreviewState>,
     /// Columns hidden from the grid, and columns pinned to its left edge (by name, so they
     /// survive reloads and paging).
     pub hidden_cols: Vec<String>,
     pub pinned_cols: Vec<String>,
-    /// Editor tabs: the table a simple single-table SELECT read from, when its rows can be
-    /// edited in place (columns and keys arrive with `Reply::Columns`).
-    pub source: Option<Box<TableState>>,
-    /// The SELECT behind `source`, re-run after saving.
-    pub source_query: String,
     /// The user gave the tab its own name.
     pub renamed: bool,
-    /// Editor tabs: the `.sql` file being edited, and its text as last read or written (the
-    /// tab has unsaved changes when the editor differs from it).
-    pub file: Option<PathBuf>,
-    pub saved_text: String,
-    /// Closing was refused once because of unsaved file changes; the next close goes through.
-    pub close_armed: bool,
-    /// "Repetir a cada": seconds between automatic re-runs of `last_query` (editor tabs).
-    pub repeat: Option<u64>,
-    pub last_query: String,
-    pub last_run: Option<Instant>,
 }
 
 /// "Estatísticas da coluna" dialog.
@@ -507,29 +532,17 @@ impl Tab {
             started: None,
             selected: None,
             anchor: None,
-            pending_sql: None,
             detail_hidden: None,
+            pending_sql: None,
             confirm_run: None,
             exported: None,
             sets: Vec::new(),
             set_shown: 0,
-            plan: None,
-            params: None,
             fill_prompt: None,
-            param_values: Default::default(),
             col_stats: None,
-            preview: None,
             hidden_cols: Vec::new(),
             pinned_cols: Vec::new(),
-            source: None,
-            source_query: String::new(),
             renamed: false,
-            file: None,
-            saved_text: String::new(),
-            close_armed: false,
-            repeat: None,
-            last_query: String::new(),
-            last_run: None,
         }
     }
 
@@ -607,6 +620,20 @@ impl Tab {
 
     pub fn busy(&self) -> bool {
         self.pending > 0
+    }
+
+    pub fn editor(&self) -> Option<&Editor> {
+        match &self.kind {
+            TabKind::Sql(ed) => Some(ed),
+            _ => None,
+        }
+    }
+
+    pub fn editor_mut(&mut self) -> Option<&mut Editor> {
+        match &mut self.kind {
+            TabKind::Sql(ed) => Some(ed),
+            _ => None,
+        }
     }
 
     /// Sends a job that answers with `Reply::Rows`; the tab stays busy until it does.
@@ -890,9 +917,11 @@ impl App {
                     // The editor keeps the text it had (unsaved edits included); the file on disk
                     // says what "saved" means.
                     if let Some(path) = file {
-                        tab.saved_text = crate::files::read_sql(&path).unwrap_or_default();
                         tab.title = crate::files::title(&path);
-                        tab.file = Some(path);
+                        if let Some(ed) = tab.editor_mut() {
+                            ed.saved_text = crate::files::read_sql(&path).unwrap_or_default();
+                            ed.file = Some(path);
+                        }
                     }
                 }
                 SavedTab::Structure { schema, table } => self.open_structure(&schema, &table),
@@ -921,7 +950,11 @@ impl App {
 
     /// Opens a `.sql` file in a new editor tab (or focuses the tab that has it).
     pub fn open_file(&mut self, path: PathBuf) {
-        if let Some(i) = self.tabs.iter().position(|t| t.file.as_ref() == Some(&path)) {
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| t.editor().is_some_and(|ed| ed.file.as_ref() == Some(&path)))
+        {
             self.active = i;
             return;
         }
@@ -930,8 +963,10 @@ impl App {
                 self.open_sql(text.clone());
                 if let Some(t) = self.tabs.last_mut() {
                     t.title = crate::files::title(&path);
-                    t.saved_text = text;
-                    t.file = Some(path);
+                    if let Some(ed) = t.editor_mut() {
+                        ed.saved_text = text;
+                        ed.file = Some(path);
+                    }
                 }
             }
             Err(e) => self.notice = Notice::error(e),
@@ -941,14 +976,14 @@ impl App {
     /// Writes an editor tab to `path` (its file from now on).
     pub fn save_file_as(&mut self, i: usize, path: PathBuf) {
         let Some(t) = self.tabs.get_mut(i) else { return };
-        let TabKind::Sql { text } = &t.kind else { return };
-        match crate::files::write_sql(&path, text) {
+        let TabKind::Sql(ed) = &mut t.kind else { return };
+        match crate::files::write_sql(&path, &ed.text) {
             Ok(written) => {
-                t.saved_text = text.clone();
+                ed.saved_text = ed.text.clone();
                 t.title = crate::files::title(&written);
                 self.notice = Notice::info(format!("Salvo em {}", written.display()));
-                t.file = Some(written);
-                t.close_armed = false;
+                ed.file = Some(written);
+                ed.close_armed = false;
             }
             Err(e) => self.notice = Notice::error(e),
         }
@@ -957,7 +992,7 @@ impl App {
     /// Ctrl+S on an editor tab: its file, or "salvar como" when it has none yet.
     pub fn save_file(&mut self, i: usize, ask: bool) {
         let Some(t) = self.tabs.get(i) else { return };
-        match (&t.file, ask) {
+        match (t.editor().and_then(|ed| ed.file.as_ref()), ask) {
             (Some(path), false) => {
                 let path = path.clone();
                 self.save_file_as(i, path);
@@ -1005,15 +1040,9 @@ impl App {
 
     /// A copy of an editor tab, next to it.
     pub fn duplicate_tab(&mut self, i: usize) {
-        let Some(Tab {
-            kind: TabKind::Sql { text },
-            title,
-            ..
-        }) = self.tabs.get(i)
-        else {
-            return;
-        };
-        let (text, title) = (text.clone(), format!("{title} (cópia)"));
+        let Some(t) = self.tabs.get(i) else { return };
+        let Some(ed) = t.editor() else { return };
+        let (text, title) = (ed.text.clone(), format!("{} (cópia)", t.title));
         self.open_sql(text);
         if let Some(t) = self.tabs.last_mut() {
             t.title = title;
@@ -1430,9 +1459,10 @@ impl App {
     pub fn close_tab(&mut self, i: usize) {
         if let Some(t) = self.tabs.get_mut(i)
             && file_dirty(t)
-            && !t.close_armed
+            && let Some(ed) = t.editor_mut()
+            && !ed.close_armed
         {
-            t.close_armed = true;
+            ed.close_armed = true;
             t.error = Some(format!(
                 "{} tem alterações não salvas: Ctrl+S salva; feche de novo para descartar.",
                 t.title
@@ -1465,10 +1495,10 @@ impl App {
         let n = self
             .tabs
             .iter()
-            .filter(|t| matches!(t.kind, TabKind::Sql { .. }))
+            .filter(|t| matches!(t.kind, TabKind::Sql(_)))
             .count()
             + 1;
-        self.push_tab(format!("SQL {n}"), TabKind::Sql { text });
+        self.push_tab(format!("SQL {n}"), TabKind::Sql(Box::new(Editor::new(text))));
     }
 
     /// Confirms or undoes the open transaction (manual-commit mode).
@@ -1576,8 +1606,8 @@ impl App {
         let names = sql::param_names(&call);
         if names.is_empty() {
             run_sql(tab, s, call);
-        } else {
-            tab.params = Some(ParamPrompt {
+        } else if let Some(ed) = tab.editor_mut() {
+            ed.params = Some(ParamPrompt {
                 sql: call,
                 names,
                 mode: RunMode::Run,
@@ -2105,10 +2135,8 @@ pub struct PathPrompt {
 
 /// An editor tab whose text differs from its file.
 pub fn file_dirty(t: &Tab) -> bool {
-    match (&t.kind, &t.file) {
-        (TabKind::Sql { text }, Some(_)) => *text != t.saved_text,
-        _ => false,
-    }
+    t.editor()
+        .is_some_and(|ed| ed.file.is_some() && ed.text != ed.saved_text)
 }
 
 /// Closed tabs remembered for "reabrir aba fechada".
@@ -2124,10 +2152,10 @@ fn saved_tab(t: &Tab) -> Option<SavedTab> {
         | TabKind::Diagram(_)
         | TabKind::History(_)
         | TabKind::Script(_) => None,
-        TabKind::Sql { text } => Some(SavedTab::Sql {
-            text: text.clone(),
-            title: (t.renamed && t.file.is_none()).then(|| t.title.clone()),
-            file: t.file.clone(),
+        TabKind::Sql(ed) => Some(SavedTab::Sql {
+            text: ed.text.clone(),
+            title: (t.renamed && ed.file.is_none()).then(|| t.title.clone()),
+            file: ed.file.clone(),
         }),
         TabKind::Table(ts) => Some(SavedTab::Table {
             schema: ts.schema.clone(),
@@ -2222,21 +2250,23 @@ pub fn exec(tab: &mut Tab, s: &Session, stmt: Stmt, expect_one: bool) {
 
 /// Starts a query from an SQL editor tab; its result is recorded in the history.
 pub fn run_sql(tab: &mut Tab, s: &Session, sql: String) {
-    if let Some(src) = &tab.source
-        && !src.changes.is_empty()
-    {
-        tab.error = Some(format!(
-            "Salve (Ctrl+S) ou descarte as {} alteração(ões) pendentes no resultado antes de executar outra consulta.",
-            src.changes.len()
-        ));
-        return;
+    if let Some(ed) = tab.editor_mut() {
+        if let Some(src) = &ed.source
+            && !src.changes.is_empty()
+        {
+            let n = src.changes.len();
+            tab.error = Some(format!(
+                "Salve (Ctrl+S) ou descarte as {n} alteração(ões) pendentes no resultado antes de executar outra consulta."
+            ));
+            return;
+        }
+        ed.source = None;
+        ed.plan = None;
+        ed.last_query = sql.clone();
+        ed.last_run = Some(Instant::now());
     }
-    tab.source = None;
-    tab.error = None;
-    tab.plan = None;
-    tab.last_query = sql.clone();
-    tab.last_run = Some(Instant::now());
     tab.pending_sql = Some(sql.clone());
+    tab.error = None;
     let id = tab.id;
     tab.send_rows_job(s, Job::Query { tab: id, sql });
 }
@@ -2341,11 +2371,12 @@ pub fn previewable(sql: &str) -> bool {
 
 /// Starts a preview of an UPDATE/DELETE.
 pub fn preview(tab: &mut Tab, s: &Session, sql: String) {
-    tab.error = None;
-    tab.preview = Some(PreviewState {
+    let Some(ed) = tab.editor_mut() else { return };
+    ed.preview = Some(PreviewState {
         sql: sql.clone(),
         data: None,
     });
+    tab.error = None;
     tab.begin_job();
     s.send(Job::Preview { tab: tab.id, sql });
 }
@@ -2353,12 +2384,16 @@ pub fn preview(tab: &mut Tab, s: &Session, sql: String) {
 /// "Repetir a cada": runs the tab's last query again, quietly (no history entry, the
 /// editable source and the selection stay).
 pub fn rerun(tab: &mut Tab, s: &Session) {
-    if tab.last_query.trim().is_empty() || has_unsaved(tab) {
+    if has_unsaved(tab) {
         return;
     }
-    tab.last_run = Some(Instant::now());
+    let Some(ed) = tab.editor_mut() else { return };
+    if ed.last_query.trim().is_empty() {
+        return;
+    }
+    ed.last_run = Some(Instant::now());
+    let sql = ed.last_query.clone();
     let id = tab.id;
-    let sql = tab.last_query.clone();
     tab.send_rows_job(s, Job::Query { tab: id, sql });
 }
 
@@ -2392,7 +2427,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
     let k = s.cfg.kind;
     let Some(res) = &tab.result else { return None };
     let no_cols = Vec::new();
-    let cols = editable_ref(&tab.kind, &tab.source).map_or(&no_cols, |ts| &ts.cols);
+    let cols = editable_ref(&tab.kind).map_or(&no_cols, |ts| &ts.cols);
     let kinds = values::column_kinds(res, cols);
 
     // Things that work on any result, editable or not.
@@ -2407,10 +2442,10 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             return None;
         }
         GridEvent::Copy(row, how) => {
-            let table = match (&tab.kind, &tab.source) {
-                (TabKind::Table(ts), _) => k.qualified(&ts.schema, &ts.table),
+            let table = match &tab.kind {
+                TabKind::Table(ts) => k.qualified(&ts.schema, &ts.table),
                 // An editable editor result knows its table too.
-                (_, Some(src)) => k.qualified(&src.schema, &src.table),
+                TabKind::Sql(ed) if let Some(src) = &ed.source => k.qualified(&src.schema, &src.table),
                 _ => "tabela".to_string(),
             };
             return Some(Effect::Copy(match how {
@@ -2506,14 +2541,14 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             if res.rows.is_empty() {
                 return None;
             }
-            let overlay = editable_ref(&tab.kind, &tab.source).and_then(|ts| ts.overlay(res));
+            let overlay = editable_ref(&tab.kind).and_then(|ts| ts.overlay(res));
             let shown = overlay.as_ref().map_or(res, |o| &o.result);
             return Some(Effect::Copy(values::to_markdown(shown, &range, &kinds)));
         }
         GridEvent::CopyCells { headers } => {
             let range = tab.selection()?;
             // Copy what the grid shows, pending edits included.
-            let overlay = editable_ref(&tab.kind, &tab.source).and_then(|ts| ts.overlay(res));
+            let overlay = editable_ref(&tab.kind).and_then(|ts| ts.overlay(res));
             let shown = overlay.as_ref().map_or(res, |o| &o.result);
             return Some(Effect::Copy(values::to_tsv(shown, &range, *headers)));
         }
@@ -2558,7 +2593,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
     let selection = tab.selection();
     let view = tab.view();
     let is_table = matches!(tab.kind, TabKind::Table(_));
-    let ts = editable_mut(&mut tab.kind, &mut tab.source)?;
+    let ts = editable_mut(&mut tab.kind)?;
     if !editable {
         return None;
     }
@@ -2763,34 +2798,33 @@ fn set_cell(
 
 /// The table state behind a tab's grid edits: a table tab's own, or the source table of an
 /// editable editor result (once its columns are known).
-pub fn editable_mut<'a>(
-    kind: &'a mut TabKind,
-    source: &'a mut Option<Box<TableState>>,
-) -> Option<&'a mut TableState> {
+/// The table whose rows the grid edits: a table tab's, or the one an editor's SELECT read from
+/// (once its columns arrived).
+pub fn editable_mut(kind: &mut TabKind) -> Option<&mut TableState> {
     match kind {
         TabKind::Table(ts) => Some(ts),
-        TabKind::Sql { .. } => source.as_deref_mut().filter(|s| !s.cols.is_empty()),
+        TabKind::Sql(ed) => ed.source.as_deref_mut().filter(|s| !s.cols.is_empty()),
         _ => None,
     }
 }
 
-pub fn editable_ref<'a>(kind: &'a TabKind, source: &'a Option<Box<TableState>>) -> Option<&'a TableState> {
+pub fn editable_ref(kind: &TabKind) -> Option<&TableState> {
     match kind {
         TabKind::Table(ts) => Some(ts),
-        TabKind::Sql { .. } => source.as_deref().filter(|s| !s.cols.is_empty()),
+        TabKind::Sql(ed) => ed.source.as_deref().filter(|s| !s.cols.is_empty()),
         _ => None,
     }
 }
 
 /// Undoes the most recent pending change.
 pub fn undo_change(tab: &mut Tab) {
-    if let Some(ts) = editable_mut(&mut tab.kind, &mut tab.source) {
+    if let Some(ts) = editable_mut(&mut tab.kind) {
         ts.changes.pop();
     }
 }
 
 pub fn discard_changes(tab: &mut Tab) {
-    if let Some(ts) = editable_mut(&mut tab.kind, &mut tab.source) {
+    if let Some(ts) = editable_mut(&mut tab.kind) {
         ts.changes.clear();
         ts.confirm_save = false;
     }
@@ -2800,8 +2834,8 @@ pub fn discard_changes(tab: &mut Tab) {
 /// editor's SELECT).
 pub fn save_changes(tab: &mut Tab, s: &Session) {
     let is_table = matches!(tab.kind, TabKind::Table(_));
-    let query = tab.source_query.clone();
-    let Some(ts) = editable_mut(&mut tab.kind, &mut tab.source) else {
+    let query = tab.editor().map(|ed| ed.source_query.clone()).unwrap_or_default();
+    let Some(ts) = editable_mut(&mut tab.kind) else {
         return;
     };
     ts.confirm_save = false;
@@ -2823,7 +2857,7 @@ pub fn save_changes(tab: &mut Tab, s: &Session) {
 }
 
 pub fn has_unsaved(tab: &Tab) -> bool {
-    editable_ref(&tab.kind, &tab.source).is_some_and(|ts| !ts.changes.is_empty())
+    editable_ref(&tab.kind).is_some_and(|ts| !ts.changes.is_empty())
 }
 
 #[cfg(test)]
@@ -3233,7 +3267,7 @@ mod poll_tests {
         app.open_file(path.clone());
         assert_eq!(app.tabs[0].title, "consulta.sql");
         assert!(!file_dirty(&app.tabs[0]));
-        if let TabKind::Sql { text } = &mut app.tabs[0].kind {
+        if let Some(text) = app.tabs[0].editor_mut().map(|ed| &mut ed.text) {
             text.push_str("\nSELECT 2;");
         }
         assert!(file_dirty(&app.tabs[0]));
@@ -3282,7 +3316,7 @@ mod poll_tests {
 
     #[test]
     fn a_tab_is_timed_from_its_first_job_to_its_last_reply() {
-        let mut tab = Tab::new(1, "t".into(), TabKind::Sql { text: String::new() });
+        let mut tab = Tab::new(1, "t".into(), TabKind::Sql(Box::new(Editor::new(String::new()))));
         tab.begin_job();
         tab.begin_job();
         assert_eq!(tab.end_job(), None, "still waiting for one");

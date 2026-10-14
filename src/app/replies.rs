@@ -174,7 +174,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
             }
         }
         Reply::Preview { res, .. } => {
-            if let Some(p) = &mut t.preview {
+            if let Some(p) = t.editor_mut().and_then(|ed| ed.preview.as_mut()) {
                 p.data = Some(res.map_err(|e| e.to_string()));
             }
         }
@@ -201,8 +201,8 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
         }
         Reply::Source { res, .. } => match res {
             Ok(code) => {
-                if let TabKind::Sql { text } = &mut t.kind {
-                    *text = code;
+                if let Some(ed) = t.editor_mut() {
+                    ed.text = code;
                 }
             }
             Err(e) => t.error = Some(e.to_string()),
@@ -211,16 +211,18 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
             let ran = t.pending_sql.take();
             // A plain SELECT of one table from the editor: its rows can be edited in place.
             let source = match (&t.kind, &ran, &*res) {
-                (TabKind::Sql { .. }, Some(sql), Ok(r)) if r.previous.is_empty() && !r.rows.is_empty() => {
+                (TabKind::Sql(_), Some(sql), Ok(r)) if r.previous.is_empty() && !r.rows.is_empty() => {
                     sql::editable_select(sql).and_then(|(schema, table)| {
                         resolve_table(s, schema.as_deref(), &table).map(|(sc, tb)| (sc, tb, sql.clone()))
                     })
                 }
                 _ => None,
             };
-            if let Some((schema, table, query)) = source {
-                t.source = Some(Box::new(TableState::new(&schema, &table, None)));
-                t.source_query = query;
+            if let Some((schema, table, query)) = source
+                && let Some(ed) = t.editor_mut()
+            {
+                ed.source = Some(Box::new(TableState::new(&schema, &table, None)));
+                ed.source_query = query;
                 t.begin_job();
                 s.send(Job::Columns {
                     tab: t.id,
@@ -292,7 +294,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
         Reply::Saved { res, .. } => {
             match *res {
                 Ok(r) => {
-                    if let Some(ts) = editable_mut(&mut t.kind, &mut t.source) {
+                    if let Some(ts) = editable_mut(&mut t.kind) {
                         ts.changes.clear();
                     }
                     t.result = Some(r);
@@ -321,7 +323,11 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
             }
         }
         Reply::Plan { res, .. } => match res {
-            Ok(p) => t.plan = Some(p),
+            Ok(p) => {
+                if let Some(ed) = t.editor_mut() {
+                    ed.plan = Some(p);
+                }
+            }
             Err(e) => t.error = Some(e.to_string()),
         },
         Reply::Structure { res, .. } => match (res, &mut t.kind) {
@@ -339,8 +345,8 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                     ts.cols = c;
                     ts.incoming = incoming;
                 }
-                (Ok(c), TabKind::Sql { .. }) => {
-                    if let Some(src) = &mut t.source {
+                (Ok(c), TabKind::Sql(ed)) => {
+                    if let Some(src) = &mut ed.source {
                         src.cols = c;
                         src.incoming = incoming;
                     }

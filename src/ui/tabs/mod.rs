@@ -100,7 +100,7 @@ impl App {
                     for (i, tab) in self.tabs.iter().enumerate() {
                         let glyph = match tab.kind {
                             TabKind::Table(_) => icon::TABLE,
-                            TabKind::Sql { .. } => icon::CODE,
+                            TabKind::Sql(_) => icon::CODE,
                             TabKind::Structure(_) => icon::TREE_STRUCTURE,
                             TabKind::Activity(_) => icon::PULSE,
                             TabKind::Design(_) => icon::PENCIL_SIMPLE,
@@ -118,7 +118,7 @@ impl App {
                         if label.clicked() {
                             self.active = i;
                         }
-                        let is_sql = matches!(tab.kind, TabKind::Sql { .. });
+                        let is_sql = matches!(tab.kind, TabKind::Sql(_));
                         let closed = !self.closed.is_empty();
                         let n = self.tabs.len();
                         label.context_menu(|ui| {
@@ -212,7 +212,7 @@ impl App {
             request: None,
         };
         match &tab.kind {
-            TabKind::Sql { .. } => sql_tab(ui, tab, &mut cx),
+            TabKind::Sql(_) => sql_tab(ui, tab, &mut cx),
             TabKind::Table(_) => table_tab(ui, tab, &mut cx),
             TabKind::Activity(_) => activity_tab(ui, tab, &mut cx),
             TabKind::Search(_) => search_tab(ui, tab, &mut cx),

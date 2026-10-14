@@ -302,7 +302,7 @@ impl App {
         let active_table = self.tabs.get(self.active).and_then(|t| match &t.kind {
             TabKind::Table(ts) => Some((ts.schema.as_str(), ts.table.as_str())),
             TabKind::Structure(st) => Some((st.schema.as_str(), st.table.as_str())),
-            TabKind::Sql { .. }
+            TabKind::Sql(_)
             | TabKind::Activity(_)
             | TabKind::Design(_)
             | TabKind::Search(_)

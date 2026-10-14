@@ -577,7 +577,11 @@ mod screenshots {
         table_tab.result = Some(result.clone());
         table_tab.selected = Some((2, 2));
         let sql = "SELECT id, nome, saldo\nFROM public.clientes\nWHERE ativo\nORDER BY saldo DESC;";
-        let mut sql_tab = Tab::new(2, "SQL 1".into(), TabKind::Sql { text: sql.into() });
+        let mut sql_tab = Tab::new(
+            2,
+            "SQL 1".into(),
+            TabKind::Sql(Box::new(crate::app::Editor::new(sql.into()))),
+        );
         sql_tab.result = Some(result);
         app.tabs = vec![table_tab, sql_tab];
         app.active = 0;
@@ -856,10 +860,10 @@ mod screenshots {
                 ]}]},
               "Planning Time": 0.4, "Execution Time": 812.5}]"#;
             let tab = &mut harness.state_mut().tabs[1];
-            tab.plan = Some(crate::plan::from_pg_json(json).unwrap());
+            tab.editor_mut().unwrap().plan = Some(crate::plan::from_pg_json(json).unwrap());
             harness.run();
             harness.render().unwrap().save(format!("{dir}/plan.png")).unwrap();
-            harness.state_mut().tabs[1].plan = None;
+            harness.state_mut().tabs[1].editor_mut().unwrap().plan = None;
         }
 
         // Wide editor result scrolled sideways: "id" and "nome" are pinned and stay at the left.
@@ -924,7 +928,7 @@ mod screenshots {
             let state = harness.state_mut();
             let tab = &mut state.tabs[1];
             let mut old = script.to_string();
-            if let TabKind::Sql { text } = &mut tab.kind {
+            if let Some(text) = tab.editor_mut().map(|ed| &mut ed.text) {
                 std::mem::swap(text, &mut old);
             }
             let main = tab.result.clone().unwrap();
@@ -948,7 +952,7 @@ mod screenshots {
                 .unwrap();
             let tab = &mut harness.state_mut().tabs[1];
             tab.sets.clear();
-            if let TabKind::Sql { text } = &mut tab.kind {
+            if let Some(text) = tab.editor_mut().map(|ed| &mut ed.text) {
                 *text = old;
             }
         }
@@ -1000,7 +1004,7 @@ mod screenshots {
         {
             let state = harness.state_mut();
             state.active = 1;
-            if let TabKind::Sql { text } = &mut state.tabs[1].kind {
+            if let Some(text) = state.tabs[1].editor_mut().map(|ed| &mut ed.text) {
                 *text = "SELECT *\nFROM clientes\nWHERE id = :id\n  AND cidade = :cidade\n  AND id IN (SELECT cliente_id FROM pedidos);".into();
             }
             let saved = state.tabs[1].result.take();
@@ -1034,8 +1038,11 @@ mod screenshots {
                 .ctx
                 .data_mut(|d| d.remove::<super::find::FindState>(egui::Id::new(("find", 2u64))));
             let tab = &mut harness.state_mut().tabs[1];
-            tab.param_values.insert("id".into(), "42".into());
-            tab.params = Some(crate::app::ParamPrompt {
+            tab.editor_mut()
+                .unwrap()
+                .param_values
+                .insert("id".into(), "42".into());
+            tab.editor_mut().unwrap().params = Some(crate::app::ParamPrompt {
                 sql: String::new(),
                 names: vec!["id".into(), "cidade".into()],
                 mode: crate::app::RunMode::Run,
@@ -1048,10 +1055,10 @@ mod screenshots {
                 .save(format!("{dir}/params.png"))
                 .unwrap();
             let tab = &mut harness.state_mut().tabs[1];
-            tab.params = None;
+            tab.editor_mut().unwrap().params = None;
             tab.result = saved;
             tab.selected = None;
-            if let TabKind::Sql { text } = &mut tab.kind {
+            if let Some(text) = tab.editor_mut().map(|ed| &mut ed.text) {
                 *text =
                     "SELECT id, nome, saldo\nFROM public.clientes\nWHERE ativo\nORDER BY saldo DESC;".into();
             }
@@ -1143,7 +1150,7 @@ mod screenshots {
                 .data_mut(|d| d.insert_temp::<Option<super::chart::ChartSpec>>(chart_id, None));
 
             let tab = &mut harness.state_mut().tabs[1];
-            tab.preview = Some(crate::app::PreviewState {
+            tab.editor_mut().unwrap().preview = Some(crate::app::PreviewState {
                 sql: "UPDATE clientes SET ativo = false\nWHERE uf = 'SP' AND criado_em < '2023-01-01'".into(),
                 data: Some(Ok(crate::db::PreviewData {
                     count: 18_342,
@@ -1178,7 +1185,7 @@ mod screenshots {
                 .save(format!("{dir}/preview.png"))
                 .unwrap();
             let tab = &mut harness.state_mut().tabs[1];
-            tab.preview = None;
+            tab.editor_mut().unwrap().preview = None;
             tab.result = saved;
         }
 
@@ -1222,8 +1229,9 @@ mod screenshots {
                 value: Some("Cliente Três".into()),
                 before: Some("Cliente 3".into()),
             });
-            tab.source = Some(Box::new(src));
-            tab.source_query = "SELECT id, nome, saldo FROM clientes WHERE ativo".into();
+            tab.editor_mut().unwrap().source = Some(Box::new(src));
+            tab.editor_mut().unwrap().source_query =
+                "SELECT id, nome, saldo FROM clientes WHERE ativo".into();
             tab.selected = Some((2, 1));
             harness.run();
             harness
@@ -1232,11 +1240,11 @@ mod screenshots {
                 .save(format!("{dir}/sql-edit.png"))
                 .unwrap();
             let tab = &mut harness.state_mut().tabs[1];
-            tab.source = None;
+            tab.editor_mut().unwrap().source = None;
             tab.selected = None;
 
             let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "clientes", "Alias": "clientes", "Total Cost": 21000, "Plan Rows": 31000, "Filter": "((saldo > '1000'::numeric) AND (ativo = true))"}}]"#;
-            tab.plan = Some(crate::plan::from_pg_json(json).unwrap());
+            tab.editor_mut().unwrap().plan = Some(crate::plan::from_pg_json(json).unwrap());
             harness.run();
             harness
                 .render()
@@ -1244,7 +1252,7 @@ mod screenshots {
                 .save(format!("{dir}/plan-index.png"))
                 .unwrap();
             let tab = &mut harness.state_mut().tabs[1];
-            tab.plan = None;
+            tab.editor_mut().unwrap().plan = None;
             tab.result = saved;
 
             let info = crate::db::ServerInfo {
@@ -1382,7 +1390,7 @@ mod screenshots {
         {
             let state = harness.state_mut();
             state.active = 1;
-            if let TabKind::Sql { text } = &mut state.tabs[1].kind {
+            if let Some(text) = state.tabs[1].editor_mut().map(|ed| &mut ed.text) {
                 *text = "SELECT *\nFROM clientes\nWHERE ativo;".into();
             }
             harness.run();
@@ -1587,7 +1595,7 @@ mod screenshots {
 
         // Autocomplete: type a partial word and put the cursor after it.
         let editor = egui::Id::new(("sql", 2u64));
-        if let TabKind::Sql { text } = &mut harness.state_mut().tabs[1].kind {
+        if let Some(text) = harness.state_mut().tabs[1].editor_mut().map(|ed| &mut ed.text) {
             *text = "SELECT no".into();
         }
         harness.ctx.memory_mut(|m| m.request_focus(editor));

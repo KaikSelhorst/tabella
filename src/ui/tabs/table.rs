@@ -249,7 +249,7 @@ pub(super) fn insert_form(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
 
 /// "N alterações pendentes · Desfazer · Descartar · Salvar" while there are unsaved edits.
 pub(super) fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab, s: &Session) {
-    let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source) else {
+    let Some(ts) = app::editable_mut(&mut tab.kind) else {
         return;
     };
     if ts.changes.is_empty() {
@@ -299,7 +299,7 @@ pub(super) fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab, s: &Session) {
         app::undo_change(tab);
     } else if discard {
         app::discard_changes(tab);
-    } else if save && let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source) {
+    } else if save && let Some(ts) = app::editable_mut(&mut tab.kind) {
         ts.confirm_save = true;
     }
 }
@@ -307,7 +307,7 @@ pub(super) fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab, s: &Session) {
 /// Summary before saving: what will change, and the exact SQL. Deletions make the confirm
 /// button red; Enter never confirms here.
 pub(super) fn confirm_save(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
-    let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source) else {
+    let Some(ts) = app::editable_mut(&mut tab.kind) else {
         return;
     };
     if !ts.confirm_save {

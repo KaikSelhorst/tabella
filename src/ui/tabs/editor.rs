@@ -7,18 +7,19 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let busy = tab.busy();
     let can_export = !busy && tab.result.as_ref().is_some_and(|r| !r.columns.is_empty());
     let mut export = None;
-    let tab_last_query = tab.last_query.clone();
-    let mut repeat_value = tab.repeat;
-    let repeat = &mut repeat_value;
-    let TabKind::Sql { text } = &mut tab.kind else {
+    let TabKind::Sql(ed) = &mut tab.kind else {
         return;
     };
+    let tab_last_query = ed.last_query.clone();
+    let mut repeat_value = ed.repeat;
+    let repeat = &mut repeat_value;
+    let has_file = ed.file.is_some();
+    let text = &mut ed.text;
     let mut run: Option<String> = None;
     let mut explain: Option<(String, bool)> = None;
     let mut preview: Option<String> = None;
     let mut open_table: Option<(String, String)> = None;
     let mut file_menu_action: Option<Request> = None;
-    let has_file = tab.file.is_some();
     let t = theme::tokens();
     let f5 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
     egui::Panel::top(egui::Id::new(("editor", tab.id)))
@@ -370,17 +371,19 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     if let Some((schema, table)) = open_table {
         cx.request = Some(Request::Data(schema, table));
     }
-    tab.repeat = repeat_value;
     // "Repetir a cada": stops at the first error, so a broken query doesn't keep failing.
-    if let Some(every) = tab.repeat {
-        if tab.error.is_some() {
-            tab.repeat = None;
-        } else if !tab.busy() {
-            let wait = std::time::Duration::from_secs(every);
-            match tab.last_run.map(|at| at.elapsed()) {
-                Some(passed) if passed < wait => ui.ctx().request_repaint_after(wait - passed),
-                _ => app::rerun(tab, s),
-            }
+    let repeat_value = repeat_value.filter(|_| tab.error.is_none());
+    let last_run = tab.editor_mut().and_then(|ed| {
+        ed.repeat = repeat_value;
+        ed.last_run
+    });
+    if let Some(every) = repeat_value
+        && !tab.busy()
+    {
+        let wait = std::time::Duration::from_secs(every);
+        match last_run.map(|at| at.elapsed()) {
+            Some(passed) if passed < wait => ui.ctx().request_repaint_after(wait - passed),
+            _ => app::rerun(tab, s),
         }
     }
     if let Some(sql) = run.filter(|q| !q.trim().is_empty())
@@ -413,9 +416,9 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             i.consume_key(egui::Modifiers::COMMAND, Key::S),
         )
     });
-    let pending_edits = app::editable_ref(&tab.kind, &tab.source).is_some_and(|ts| !ts.changes.is_empty());
+    let pending_edits = app::editable_ref(&tab.kind).is_some_and(|ts| !ts.changes.is_empty());
     if save && pending_edits {
-        if let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source) {
+        if let Some(ts) = app::editable_mut(&mut tab.kind) {
             ts.confirm_save = true;
         }
     } else if save || save_as {
@@ -427,19 +430,23 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     // Ctrl+Z undoes a result edit (in the editor it undoes typing).
     if !ui.ctx().egui_wants_keyboard_input()
         && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Z))
-        && let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source)
+        && let Some(ts) = app::editable_mut(&mut tab.kind)
     {
         ts.changes.pop();
     }
     changes_bar(ui, tab, s);
     confirm_save(ui.ctx(), tab, s);
-    if let Some(plan) = &tab.plan {
+    if let Some(plan) = tab.editor().and_then(|ed| ed.plan.as_ref()) {
         if let Some(e) = &tab.error {
             error_banner(ui, e);
         }
         let hints = index_suggestions(s, plan);
         match plan_view::plan_view(ui, plan, &hints) {
-            Some(plan_view::PlanAction::Close) => tab.plan = None,
+            Some(plan_view::PlanAction::Close) => {
+                if let Some(ed) = tab.editor_mut() {
+                    ed.plan = None;
+                }
+            }
             Some(plan_view::PlanAction::OpenSql(sql)) => cx.request = Some(Request::Sql(sql)),
             None => {}
         }
@@ -562,8 +569,8 @@ pub(super) fn request_run(tab: &mut Tab, s: &Session, sql: String, mode: RunMode
     let names = sql::param_names(&sql);
     if names.is_empty() {
         run_now(tab, s, sql, mode);
-    } else {
-        tab.params = Some(app::ParamPrompt {
+    } else if let Some(ed) = tab.editor_mut() {
+        ed.params = Some(app::ParamPrompt {
             sql,
             names,
             mode,
@@ -595,10 +602,12 @@ pub(super) fn run_now(tab: &mut Tab, s: &Session, sql: String, mode: RunMode) {
 
 /// "Parâmetros": one field per `:name`, remembered per tab for the next run.
 pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
-    let Some(p) = &mut tab.params else { return };
+    let id = tab.id;
+    let Some(ed) = tab.editor_mut() else { return };
+    let Some(p) = &mut ed.params else { return };
     let t = theme::tokens();
     let (mut go, mut cancel) = (false, false);
-    let modal = egui::Modal::new(egui::Id::new(("params", tab.id)))
+    let modal = egui::Modal::new(egui::Id::new(("params", id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(420.0);
@@ -612,7 +621,7 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                     .color(t.subtle),
             );
             ui.add_space(8.0);
-            egui::Grid::new(("params_grid", tab.id))
+            egui::Grid::new(("params_grid", id))
                 .num_columns(2)
                 .spacing([12.0, 8.0])
                 .show(ui, |ui| {
@@ -622,7 +631,7 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                                 .monospace()
                                 .color(t.number),
                         );
-                        let v = tab.param_values.entry(name.clone()).or_default();
+                        let v = ed.param_values.entry(name.clone()).or_default();
                         let r = ui.add(
                             TextEdit::singleline(v)
                                 .font(egui::FontId::monospace(12.5))
@@ -655,19 +664,21 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             });
         });
     if go {
-        let p = tab.params.take().expect("open prompt");
-        let values = &tab.param_values;
+        let p = ed.params.take().expect("open prompt");
+        let values = &ed.param_values;
         let sql = sql::bind_params(s.cfg.kind, &p.sql, |n| values.get(n).cloned().unwrap_or_default());
         run_now(tab, s, sql, p.mode);
     } else if cancel || modal.should_close() {
-        tab.params = None;
+        ed.params = None;
     }
 }
 
 /// "Prévia": how many rows an UPDATE/DELETE would touch and some of them; run it from here or
 /// give up.
 pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
-    let Some(p) = &tab.preview else { return };
+    let Some(p) = tab.editor().and_then(|ed| ed.preview.as_ref()) else {
+        return;
+    };
     let t = theme::tokens();
     let delete = sql::statement_words_first(&p.sql).is_some_and(|w| w == "DELETE");
     let (mut run, mut cancel) = (false, false);
@@ -755,11 +766,14 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 }
             });
         });
-    if run {
-        let p = tab.preview.take().expect("open preview");
+    let close = run || cancel || modal.should_close();
+    let p = if close {
+        tab.editor_mut().and_then(|ed| ed.preview.take())
+    } else {
+        None
+    };
+    if run && let Some(p) = p {
         run_now(tab, s, p.sql, RunMode::RunPreviewed);
-    } else if cancel || modal.should_close() {
-        tab.preview = None;
     }
 }
 
