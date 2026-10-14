@@ -88,6 +88,7 @@ pub(super) fn summary(res: &QueryResult) -> String {
 pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     let s = cx.s;
     stats_dialog(ui.ctx(), tab, s);
+    value_filter_dialog(ui.ctx(), tab, s);
     if let Some(e) = fill_dialog(ui.ctx(), tab) {
         app::handle_grid_event(tab, s, e, true);
     }
@@ -224,6 +225,10 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
     let no_cols = Vec::new();
     let no_incoming = Vec::new();
     let table_tab = matches!(tab.kind, TabKind::Table(_));
+    let filtered: Vec<String> = match &tab.kind {
+        TabKind::Table(ts) => ts.value_conds.iter().map(|v| v.column.clone()).collect(),
+        _ => Vec::new(),
+    };
     let (cols, edit, order, bool_pick, row_offset, has_pk, incoming) = match app::editable_mut(&mut tab.kind)
     {
         Some(ts) => {
@@ -355,6 +360,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         found: found_set.as_ref(),
         found_current,
         incoming,
+        filtered: &filtered,
     };
     // Wide results scroll sideways instead of running under the detail panel. A pinned cell
     // double-clicked while scrolled away scrolls back so its editor shows.
@@ -803,4 +809,154 @@ pub(super) fn selection_stats(
                 });
             });
         });
+}
+
+/// "Filtrar valores": check the values to keep; the list comes from the database.
+pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
+    let id = tab.id;
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let table = ts.table.clone();
+    let has_cond = |col: &str| ts.value_conds.iter().any(|v| v.column == col);
+    let Some(vf) = &ts.value_filter else { return };
+    let had = has_cond(&vf.column);
+    let Some(vf) = &mut ts.value_filter else { return };
+    let t = theme::tokens();
+    let (mut apply, mut cancel, mut clear, mut search_db) = (false, false, false, false);
+    let modal = egui::Modal::new(egui::Id::new(("value_filter", id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::FUNNEL).size(16.0).color(t.lime));
+                ui.label(egui::RichText::new(&vf.column).size(15.0).color(t.foreground));
+                ui.label(
+                    egui::RichText::new(format!("em {table}"))
+                        .size(11.0)
+                        .color(t.subtle),
+                );
+            });
+            ui.add_space(8.0);
+            let r = ui.add(
+                TextEdit::singleline(&mut vf.search)
+                    .hint_text(if vf.complete {
+                        "Buscar na lista"
+                    } else {
+                        "Buscar (Enter busca no banco)"
+                    })
+                    .desired_width(f32::INFINITY),
+            );
+            if !vf.focused {
+                r.request_focus();
+                vf.focused = true;
+            }
+            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !vf.complete {
+                search_db = true;
+            }
+            ui.add_space(8.0);
+            let values = match &vf.values {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new("Lendo os valores…").color(t.muted_foreground));
+                    });
+                    None
+                }
+                Some(Err(e)) => {
+                    ui.label(egui::RichText::new(e).color(t.destructive));
+                    None
+                }
+                Some(Ok(v)) => Some(v),
+            };
+            let mut can_apply = false;
+            if let Some(values) = values {
+                let needle = vf.search.trim().to_lowercase();
+                let shown: Vec<&(Option<String>, i64)> = values
+                    .iter()
+                    .filter(|(v, _)| {
+                        needle.is_empty() || v.as_deref().unwrap_or("null").to_lowercase().contains(&needle)
+                    })
+                    .collect();
+                // "Selecionar todos" acts on what the search shows.
+                let all_on = shown.iter().all(|(v, _)| !vf.unchecked.contains(v));
+                let mut all = all_on;
+                let label = if needle.is_empty() {
+                    "Selecionar todos"
+                } else {
+                    "Selecionar os encontrados"
+                };
+                if ui.checkbox(&mut all, label).changed() {
+                    for (v, _) in &shown {
+                        if all {
+                            vf.unchecked.remove(v);
+                        } else {
+                            vf.unchecked.insert(v.clone());
+                        }
+                    }
+                }
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (v, n) in &shown {
+                            let mut on = !vf.unchecked.contains(v);
+                            ui.horizontal(|ui| {
+                                let text = match v {
+                                    Some(v) => egui::RichText::new(v).monospace().color(t.foreground),
+                                    None => egui::RichText::new("NULL").monospace().italics().color(t.subtle),
+                                };
+                                if ui.checkbox(&mut on, text).changed() {
+                                    if on {
+                                        vf.unchecked.remove(v);
+                                    } else {
+                                        vf.unchecked.insert(v.clone());
+                                    }
+                                }
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.label(
+                                        egui::RichText::new(palette::format_count(*n))
+                                            .size(11.0)
+                                            .color(t.subtle),
+                                    );
+                                });
+                            });
+                        }
+                        if shown.is_empty() {
+                            ui.label(egui::RichText::new("Nenhum valor encontrado").color(t.subtle));
+                        }
+                    });
+                ui.separator();
+                let kept = values.iter().filter(|(v, _)| !vf.unchecked.contains(v)).count();
+                can_apply = kept > 0;
+                let mut note = format!("{kept} de {} marcados", values.len());
+                if !vf.complete {
+                    note.push_str(&format!(
+                        " · só os {} mais comuns: os outros ficam de fora ao aplicar",
+                        sql::DISTINCT_LIMIT
+                    ));
+                }
+                ui.label(egui::RichText::new(note).size(11.0).color(t.subtle));
+            }
+            ui.add_space(12.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                apply = ui
+                    .add_enabled(can_apply, theme::primary_button(Some(icon::FUNNEL), "Aplicar"))
+                    .on_disabled_hover_text("Marque pelo menos um valor")
+                    .clicked();
+                cancel = ui.add(theme::outline_button("Cancelar")).clicked();
+                if had {
+                    clear = ui.add(theme::outline_button("Remover filtro")).clicked();
+                }
+            });
+        });
+    if apply {
+        app::apply_value_filter(tab, s);
+    } else if clear {
+        vf.unchecked.clear();
+        app::apply_value_filter(tab, s);
+    } else if search_db {
+        app::load_values(tab, s);
+    } else if cancel || modal.should_close() {
+        ts.value_filter = None;
+    }
 }

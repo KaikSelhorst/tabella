@@ -1733,6 +1733,45 @@ mod screenshots {
             .unwrap();
         harness.state_mut().master = None;
 
+        // "Filtrar valores" on a table column, with a funnel on a column already filtered.
+        {
+            let state = harness.state_mut();
+            state.active = 0;
+            if let TabKind::Table(ts) = &mut state.tabs[0].kind {
+                let v = |x: &str, n| (Some(x.to_string()), n);
+                ts.value_conds.push(crate::app::ValueCond {
+                    column: "ativo".into(),
+                    cond: "\"ativo\" IN ('t')".into(),
+                    unchecked: Default::default(),
+                });
+                ts.value_filter = Some(crate::app::ValueFilter {
+                    column: "nome".into(),
+                    expr: "\"nome\"".into(),
+                    values: Some(Ok(vec![
+                        v("Ana Souza", 412),
+                        v("Bruno Lima", 388),
+                        v("Carla Rocha", 301),
+                        (None, 57),
+                        v("Diego Costa", 12),
+                    ])),
+                    complete: true,
+                    unchecked: [None, Some("Diego Costa".to_string())].into_iter().collect(),
+                    search: String::new(),
+                    focused: true,
+                });
+            }
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/value-filter.png"))
+                .unwrap();
+            if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
+                ts.value_filter = None;
+                ts.value_conds.clear();
+            }
+        }
+
         // An error marked where it is in the editor.
         {
             let state = harness.state_mut();

@@ -132,6 +132,34 @@ pub struct TableState {
     pub insert: Option<Vec<InsertField>>,
     /// The CSV import dialog, while open.
     pub import: Option<ImportForm>,
+    /// "Filtrar valores" of a column, while open.
+    pub value_filter: Option<ValueFilter>,
+    /// Conditions "Filtrar valores" put in `filter`, so applying it again replaces them.
+    pub value_conds: Vec<ValueCond>,
+}
+
+/// A column's values and how many rows have each.
+pub type ValueCounts = Vec<(Option<String>, i64)>;
+
+/// "Filtrar valores": a column's values to check and uncheck, like a spreadsheet filter.
+pub struct ValueFilter {
+    pub column: String,
+    /// The column as compared (see `sql::value_expr`).
+    pub expr: String,
+    /// Values and row counts, most common first; `None` while loading.
+    pub values: Option<Result<ValueCounts, String>>,
+    /// Every value is listed (not cut at `sql::DISTINCT_LIMIT`).
+    pub complete: bool,
+    pub unchecked: HashSet<Option<String>>,
+    /// Narrows the list as typed; Enter asks the database when the list isn't complete.
+    pub search: String,
+    pub focused: bool,
+}
+
+pub struct ValueCond {
+    pub column: String,
+    pub cond: String,
+    pub unchecked: HashSet<Option<String>>,
 }
 
 /// "Importar CSV" dialog: a file, how to read it, and where each of its columns goes.
@@ -199,6 +227,8 @@ impl TableState {
             bool_pick: None,
             insert: None,
             import: None,
+            value_filter: None,
+            value_conds: Vec::new(),
         }
     }
 
@@ -742,6 +772,8 @@ pub enum GridEvent {
     Paste(String),
     /// Profile of a column: counts, distinct values, range, most common values.
     ColumnStats(usize),
+    /// "Filtrar valores" of a column (table tabs).
+    FilterValues(usize),
     /// Hide a shown column, or show a hidden one.
     ToggleColumn(usize),
     ShowAllColumns,
@@ -2310,6 +2342,82 @@ pub fn locate_error(text: &str, sent: &str, e: &crate::error::DbError) -> Option
     })
 }
 
+/// Opens "Filtrar valores" for a column of a table tab, with what was unchecked last time.
+pub fn open_value_filter(tab: &mut Tab, s: &Session, column: &str) {
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let data_type = ts
+        .cols
+        .iter()
+        .find(|c| c.name == column)
+        .map_or("", |c| c.data_type.as_str());
+    let unchecked = ts
+        .value_conds
+        .iter()
+        .find(|v| v.column == column)
+        .map(|v| v.unchecked.clone())
+        .unwrap_or_default();
+    ts.value_filter = Some(ValueFilter {
+        column: column.to_string(),
+        expr: sql::value_expr(s.cfg.kind, column, data_type),
+        values: None,
+        complete: false,
+        unchecked,
+        search: String::new(),
+        focused: false,
+    });
+    load_values(tab, s);
+}
+
+/// Asks for the open filter's values: the rows the other conditions let through (its own
+/// condition left out, so what it hides can be checked again).
+pub fn load_values(tab: &mut Tab, s: &Session) {
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let Some(vf) = &ts.value_filter else { return };
+    let k = s.cfg.kind;
+    let mut filter = ts.filter.clone();
+    if let Some(own) = ts.value_conds.iter().find(|v| v.column == vf.column)
+        && let Some(rest) = sql::remove_condition(&filter, &own.cond)
+    {
+        filter = rest;
+    }
+    let names: Vec<String> = ts.cols.iter().map(|c| c.name.clone()).collect();
+    let filter = sql::and(&filter, &sql::search_condition(k, &names, &ts.search));
+    let sql = sql::distinct_values(k, &ts.schema, &ts.table, &vf.expr, &filter, &vf.search);
+    if let Some(vf) = &mut ts.value_filter {
+        vf.values = None;
+    }
+    tab.begin_job();
+    s.send(Job::Distinct { tab: tab.id, sql });
+}
+
+/// Puts the checked values in the table's filter (replacing what this column had) and reloads.
+pub fn apply_value_filter(tab: &mut Tab, s: &Session) {
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let Some(vf) = ts.value_filter.take() else { return };
+    let Some(Ok(values)) = &vf.values else { return };
+    let (unchecked, checked): (Vec<_>, Vec<_>) = values
+        .iter()
+        .map(|(v, _)| v.clone())
+        .partition(|v| vf.unchecked.contains(v));
+    let cond = sql::values_condition(s.cfg.kind, &vf.expr, &checked, &unchecked, vf.complete);
+    if let Some(i) = ts.value_conds.iter().position(|v| v.column == vf.column) {
+        let old = ts.value_conds.remove(i);
+        if let Some(rest) = sql::remove_condition(&ts.filter, &old.cond) {
+            ts.filter = rest;
+        }
+    }
+    if let Some(cond) = cond {
+        ts.filter = sql::and(&ts.filter, &cond);
+        ts.value_conds.push(ValueCond {
+            column: vf.column,
+            cond,
+            unchecked: unchecked.into_iter().collect(),
+        });
+    }
+    ts.page = 0;
+    reload(tab, s);
+}
+
 /// Opens the CSV import dialog, with `path` already chosen when a file was dropped on the window.
 pub fn open_import(tab: &mut Tab, path: Option<String>) {
     let TabKind::Table(ts) = &mut tab.kind else { return };
@@ -2530,6 +2638,11 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             } else {
                 tab.pinned_cols.push(name);
             }
+            return None;
+        }
+        GridEvent::FilterValues(col) => {
+            let name = res.columns[*col].clone();
+            open_value_filter(tab, s, &name);
             return None;
         }
         GridEvent::ColumnStats(col) => {
@@ -2777,6 +2890,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         | GridEvent::CopyMarkdown
         | GridEvent::FollowIncoming(..)
         | GridEvent::ColumnStats(..)
+        | GridEvent::FilterValues(..)
         | GridEvent::ToggleColumn(..)
         | GridEvent::ShowAllColumns
         | GridEvent::TogglePin(..)
@@ -3455,6 +3569,73 @@ mod poll_tests {
             "UPDATE \"public\".\"clientes\" SET \"nome\" = 'bia' WHERE \"id\" = '7'"
         );
         assert_eq!(refresh, sql, "then the same SELECT runs again");
+    }
+
+    /// Check values, apply, reopen with the same checks (and without its own condition in the
+    /// list query), then remove.
+    #[test]
+    fn value_filter_round_trip() {
+        let (s, jobs, replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.open_table_filtered("public", "clientes", "ativo".into());
+        let tab = app.tabs[0].id;
+        let distinct = |jobs: &Receiver<Job>| {
+            jobs.try_iter()
+                .find_map(|j| match j {
+                    Job::Distinct { sql, .. } => Some(sql),
+                    _ => None,
+                })
+                .expect("a Distinct job")
+        };
+        let reply = |replies: &Sender<Reply>| {
+            let row = |v: Option<&str>, n: &str| vec![v.map(String::from), Some(n.to_string())];
+            replies
+                .send(Reply::Distinct {
+                    tab,
+                    res: Ok(QueryResult {
+                        rows: vec![row(Some("SP"), "50"), row(Some("RJ"), "30"), row(None, "2")],
+                        ..Default::default()
+                    }),
+                })
+                .unwrap();
+        };
+        let s = app.session.as_ref().unwrap();
+        open_value_filter(&mut app.tabs[0], s, "uf");
+        assert!(distinct(&jobs).contains("WHERE ativo GROUP BY 1"));
+        reply(&replies);
+        app.poll();
+        fn t(app: &mut App) -> &mut TableState {
+            match &mut app.tabs[0].kind {
+                TabKind::Table(ts) => ts,
+                _ => unreachable!(),
+            }
+        }
+        let vf = t(&mut app).value_filter.as_mut().unwrap();
+        assert!(vf.complete && vf.values.as_ref().unwrap().as_ref().unwrap().len() == 3);
+        vf.unchecked.insert(Some("RJ".into()));
+        let s = app.session.as_ref().unwrap();
+        apply_value_filter(&mut app.tabs[0], s);
+        assert_eq!(
+            t(&mut app).filter,
+            "(ativo) AND (\"uf\" NOT IN ('RJ') OR \"uf\" IS NULL)"
+        );
+        assert!(t(&mut app).value_filter.is_none());
+
+        let s = app.session.as_ref().unwrap();
+        open_value_filter(&mut app.tabs[0], s, "uf");
+        assert!(
+            distinct(&jobs).contains("WHERE ativo GROUP BY 1"),
+            "its own condition is left out"
+        );
+        let vf = t(&mut app).value_filter.as_ref().unwrap();
+        assert!(vf.unchecked.contains(&Some("RJ".into())));
+        reply(&replies);
+        app.poll();
+        t(&mut app).value_filter.as_mut().unwrap().unchecked.clear();
+        let s = app.session.as_ref().unwrap();
+        apply_value_filter(&mut app.tabs[0], s);
+        assert_eq!(t(&mut app).filter, "ativo");
+        assert!(t(&mut app).value_conds.is_empty());
     }
 
     /// Progress keeps the tab busy, the end frees it; a closed tab's reply is dropped; the

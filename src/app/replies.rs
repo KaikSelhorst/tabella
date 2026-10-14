@@ -178,6 +178,28 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                 p.data = Some(res.map_err(|e| e.to_string()));
             }
         }
+        Reply::Distinct { res, .. } => {
+            if let TabKind::Table(ts) = &mut t.kind
+                && let Some(vf) = &mut ts.value_filter
+            {
+                vf.values = Some(
+                    res.map(|r| {
+                        vf.complete = r.rows.len() <= sql::DISTINCT_LIMIT;
+                        r.rows
+                            .into_iter()
+                            .take(sql::DISTINCT_LIMIT)
+                            .map(|row| {
+                                let mut it = row.into_iter();
+                                let v = it.next().flatten();
+                                let n = it.next().flatten().and_then(|n| n.parse().ok()).unwrap_or(0);
+                                (v, n)
+                            })
+                            .collect()
+                    })
+                    .map_err(|e| e.to_string()),
+                );
+            }
+        }
         Reply::ColumnStats { res, .. } => {
             if let Some(v) = &mut t.col_stats {
                 v.data = Some(

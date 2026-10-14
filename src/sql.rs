@@ -1149,6 +1149,120 @@ pub fn delete_row(kind: Kind, schema: &str, table: &str, wh: Stmt) -> Stmt {
     Stmt::new(format!("DELETE FROM {} WHERE ", kind.qualified(schema, table))).append(wh)
 }
 
+/// Values "Filtrar valores" lists at most (the most common ones).
+pub const DISTINCT_LIMIT: usize = 1000;
+
+/// The column as "Filtrar valores" compares it: Postgres `json`/`xml` have no equality, so as text.
+pub fn value_expr(kind: Kind, column: &str, data_type: &str) -> String {
+    let c = kind.quote_ident(column);
+    match kind {
+        Kind::Postgres if matches!(data_type, "json" | "xml") => format!("{c}::text"),
+        _ => c,
+    }
+}
+
+/// Distinct values of `expr` and how many rows have each, most common first; one more than
+/// `DISTINCT_LIMIT` to tell whether the list is complete. `search` narrows it on the server.
+pub fn distinct_values(
+    kind: Kind,
+    schema: &str,
+    table: &str,
+    expr: &str,
+    filter: &str,
+    search: &str,
+) -> String {
+    let search = search.trim();
+    let cond = if search.is_empty() {
+        filter.to_string()
+    } else {
+        and(filter, &contains(kind, expr, search))
+    };
+    let wh = if cond.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {cond}")
+    };
+    format!(
+        "SELECT {expr}, count(*) FROM {}{wh} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {}",
+        kind.qualified(schema, table),
+        DISTINCT_LIMIT + 1
+    )
+}
+
+/// The condition keeping only the checked values (`None`: everything is checked). With the
+/// whole list known, the unchecked ones are listed instead when that is shorter. NULL is
+/// handled apart: `IN`/`NOT IN` never match it.
+pub fn values_condition(
+    kind: Kind,
+    expr: &str,
+    checked: &[Option<String>],
+    unchecked: &[Option<String>],
+    complete: bool,
+) -> Option<String> {
+    if unchecked.is_empty() {
+        return None;
+    }
+    let list = |vals: &[Option<String>]| {
+        vals.iter()
+            .flatten()
+            .map(|v| kind.quote_str(v))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let has_null = |vals: &[Option<String>]| vals.iter().any(Option::is_none);
+    if complete && unchecked.len() < checked.len() {
+        let out = list(unchecked);
+        return Some(match (out.is_empty(), has_null(checked)) {
+            (true, _) => format!("{expr} IS NOT NULL"),
+            (false, true) => format!("({expr} NOT IN ({out}) OR {expr} IS NULL)"),
+            (false, false) => format!("{expr} NOT IN ({out})"),
+        });
+    }
+    let keep = list(checked);
+    Some(match (keep.is_empty(), has_null(checked)) {
+        (true, true) => format!("{expr} IS NULL"),
+        // Nothing checked: no row.
+        (true, false) => "1 = 0".to_string(),
+        (false, true) => format!("({expr} IN ({keep}) OR {expr} IS NULL)"),
+        (false, false) => format!("{expr} IN ({keep})"),
+    })
+}
+
+/// `filter` without `cond`, when `cond` was added with `and` (as the whole filter, its last
+/// part or its first). `None` when it isn't there any more (the user edited the filter).
+pub fn remove_condition(filter: &str, cond: &str) -> Option<String> {
+    let (f, c) = (filter.trim(), cond.trim());
+    if f == c {
+        return Some(String::new());
+    }
+    if let Some(rest) = f.strip_suffix(&format!(" AND {c}")) {
+        return Some(unwrap_parens(rest).to_string());
+    }
+    // It was first, and something was added after it: "(cond) AND rest".
+    f.strip_prefix(&format!("({c}) AND "))
+        .map(|rest| rest.trim().to_string())
+}
+
+/// `(a)` → `a`, but `(a) AND (b)` stays.
+fn unwrap_parens(s: &str) -> &str {
+    let s = s.trim();
+    let Some(inner) = s.strip_prefix('(').and_then(|r| r.strip_suffix(')')) else {
+        return s;
+    };
+    let mut depth = 0i32;
+    for c in inner.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+        if depth < 0 {
+            return s;
+        }
+    }
+    inner
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1660,5 +1774,58 @@ mod tests {
         .with_placeholders();
         assert_eq!(sql, "DELETE FROM `s`.`t` WHERE `id` IS NULL");
         assert!(values.is_empty());
+    }
+
+    #[test]
+    fn value_filters() {
+        let k = Kind::Postgres;
+        let v = |x: &str| Some(x.to_string());
+        let sql = distinct_values(k, "public", "clientes", "\"uf\"", "ativo", "s");
+        assert_eq!(
+            sql,
+            "SELECT \"uf\", count(*) FROM \"public\".\"clientes\" WHERE (ativo) AND CAST(\"uf\" AS TEXT) ILIKE '%s%' \
+             GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 1001"
+        );
+        let c = "\"uf\"";
+        assert_eq!(values_condition(k, c, &[v("SP"), v("RJ")], &[], true), None);
+        assert_eq!(
+            values_condition(k, c, &[v("SP")], &[v("RJ"), None], true).as_deref(),
+            Some("\"uf\" IN ('SP')")
+        );
+        // Fewer unchecked than checked: listed instead, NULL kept.
+        assert_eq!(
+            values_condition(k, c, &[v("SP"), v("RJ"), None], &[v("MG")], true).as_deref(),
+            Some("(\"uf\" NOT IN ('MG') OR \"uf\" IS NULL)")
+        );
+        assert_eq!(
+            values_condition(k, c, &[v("SP"), v("RJ")], &[None], true).as_deref(),
+            Some("\"uf\" IS NOT NULL")
+        );
+        // Not every value was listed: only IN is safe.
+        assert_eq!(
+            values_condition(k, c, &[v("SP"), v("RJ"), None], &[v("MG")], false).as_deref(),
+            Some("(\"uf\" IN ('SP', 'RJ') OR \"uf\" IS NULL)")
+        );
+        assert_eq!(
+            values_condition(k, c, &[], &[v("SP")], true).as_deref(),
+            Some("1 = 0")
+        );
+
+        let cond = "\"uf\" IN ('SP')";
+        assert_eq!(remove_condition(cond, cond).as_deref(), Some(""));
+        assert_eq!(
+            remove_condition(&and("ativo", cond), cond).as_deref(),
+            Some("ativo")
+        );
+        assert_eq!(
+            remove_condition(&and("a OR b", cond), cond).as_deref(),
+            Some("a OR b")
+        );
+        assert_eq!(remove_condition(&and(&and("(a) AND (b)", cond), "x"), cond), None);
+        assert_eq!(
+            remove_condition(&and(cond, "x > 1"), cond).as_deref(),
+            Some("x > 1")
+        );
+        assert_eq!(unwrap_parens("(a) AND (b)"), "(a) AND (b)");
     }
 }

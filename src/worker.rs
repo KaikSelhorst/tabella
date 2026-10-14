@@ -132,6 +132,11 @@ pub enum Job {
         summary: String,
         top: String,
     },
+    /// "Filtrar valores": a column's distinct values with their counts.
+    Distinct {
+        tab: u64,
+        sql: String,
+    },
     /// "Commit manual": writes open a transaction that only ends with `EndTx`.
     SetManual(bool),
     EndTx {
@@ -274,6 +279,10 @@ pub enum Reply {
         tab: u64,
         res: DbResult<(QueryResult, QueryResult)>,
     },
+    Distinct {
+        tab: u64,
+        res: DbResult<QueryResult>,
+    },
     Preview {
         tab: u64,
         res: DbResult<PreviewData>,
@@ -319,6 +328,7 @@ impl Reply {
             | Reply::Saved { tab, .. }
             | Reply::Exported { tab, .. }
             | Reply::ColumnStats { tab, .. }
+            | Reply::Distinct { tab, .. }
             | Reply::Preview { tab, .. }
             | Reply::ServerInfo { tab, .. }
             | Reply::SearchDone { tab, .. }
@@ -568,6 +578,10 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                 Job::Preview { tab, sql } => Reply::Preview {
                     tab,
                     res: conn.preview(&sql, tx.open),
+                },
+                Job::Distinct { tab, sql } => Reply::Distinct {
+                    tab,
+                    res: conn.query(&sql),
                 },
                 Job::ColumnStats { tab, summary, top } => Reply::ColumnStats {
                     tab,

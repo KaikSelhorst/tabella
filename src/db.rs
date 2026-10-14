@@ -2300,6 +2300,22 @@ mod tests {
             assert!(run(&mut c, &spec, false).is_err());
             let _ = std::fs::remove_file(path);
         }
+        // "Filtrar valores": the list and the condition it builds run as they are.
+        {
+            let schema = if kind == Kind::MySql { db } else { "public" };
+            let expr = kind.quote_ident("name");
+            let list = c
+                .query(&crate::sql::distinct_values(kind, schema, "dbl_t", &expr, "", ""))
+                .unwrap();
+            let values: Vec<Option<String>> = list.rows.iter().map(|r| r[0].clone()).collect();
+            assert!(values.len() >= 2, "{kind:?}: {values:?}");
+            let (kept, dropped) = values.split_at(1);
+            let cond = crate::sql::values_condition(kind, &expr, kept, dropped, true).unwrap();
+            let n = c
+                .query(&format!("SELECT count(*) FROM dbl_t WHERE {cond}"))
+                .unwrap();
+            assert_eq!(n.rows[0][0], list.rows[0][1], "{kind:?}: {cond}");
+        }
         // Errors say where they are: a typo in a keyword, a column, a table.
         let pos = |c: &mut Conn, sql: &str| c.query(sql).expect_err(sql).position_in(sql);
         let at = |c: &mut Conn, sql: &str| {

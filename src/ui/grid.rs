@@ -231,6 +231,8 @@ pub struct GridOpts<'a> {
     pub found_current: Option<(usize, usize)>,
     /// Foreign keys elsewhere pointing at this table, offered in the cell menu.
     pub incoming: &'a [IncomingFk],
+    /// Columns with a "Filtrar valores" condition: a funnel in their header.
+    pub filtered: &'a [String],
 }
 
 /// A cell of a pinned column (or the row-number gutter, `col: None`) as drawn this frame. The
@@ -276,6 +278,7 @@ pub fn grid(
         found,
         found_current,
         incoming,
+        filtered,
     } = *opts;
     let in_range = |ri: usize, ci: usize| range.is_some_and(|r| r.contains(ri, ci));
     // Dragging across cells selects a range: set when a drag starts on a cell, until release.
@@ -388,6 +391,17 @@ pub fn grid(
                     if let Some(a) = arrow {
                         ui.label(theme::icon(a).color(t.lime).size(12.0));
                     }
+                    if filtered.contains(name)
+                        && ui
+                            .add(
+                                egui::Label::new(theme::icon(icon::FUNNEL).color(t.lime).size(12.0))
+                                    .sense(Sense::click()),
+                            )
+                            .on_hover_text("Filtrado por valores: clique para mudar")
+                            .clicked()
+                    {
+                        event = Some(GridEvent::FilterValues(ci));
+                    }
                     // Type sits on the right, dimmed; it is the first thing to go when the column is narrow.
                     if let Some(c) = c {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -409,6 +423,15 @@ pub fn grid(
                         event = Some(GridEvent::Sort(name.clone()));
                     }
                     r.context_menu(|ui| {
+                        if can_filter
+                            && ui
+                                .button("Filtrar valores…")
+                                .on_hover_text("Marque os valores que ficam, como no filtro do Excel")
+                                .clicked()
+                        {
+                            event = Some(GridEvent::FilterValues(ci));
+                            ui.close();
+                        }
                         if ui.button("Estatísticas da coluna").clicked() {
                             event = Some(GridEvent::ColumnStats(ci));
                             ui.close();
@@ -904,6 +927,7 @@ mod tests {
                     found: None,
                     found_current: None,
                     incoming: &[],
+                    filtered: &[],
                 },
                 &mut Vec::new(),
             );
@@ -941,6 +965,7 @@ mod tests {
                     found: None,
                     found_current: None,
                     incoming: &[],
+                    filtered: &[],
                 },
                 &mut Vec::new(),
             ) {
