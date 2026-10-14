@@ -350,6 +350,24 @@ pub enum TabKind {
     Script(Box<ScriptState>),
     /// "Exportar .sql": tables (and a schema's objects) written as a script.
     Dump(Box<DumpState>),
+    /// "Comparar estrutura" between two schemas or databases.
+    Compare(Box<CompareState>),
+}
+
+pub struct CompareState {
+    pub source_schema: String,
+    /// Saved connection id of the target, its database and schema (MySQL: the database).
+    pub target_conn: String,
+    pub target_db: String,
+    pub target_schema: String,
+    pub running: bool,
+    pub result: Option<Result<Vec<crate::compare::TableDiff>, String>>,
+    /// What was compared, as shown with the result ("dev · public → homolog · public").
+    pub compared: String,
+    /// The SQL runs here (same connection and database), or must be run on the target.
+    pub same_connection: bool,
+    /// "Salvar .sql": the file written.
+    pub saved: Option<PathBuf>,
 }
 
 /// What "Exportar .sql" covers.
@@ -1765,6 +1783,27 @@ impl App {
         self.push_tab(title, TabKind::Dump(Box::new(st)));
     }
 
+    /// "Comparar estrutura": this connection's schema against another (here or elsewhere).
+    pub fn open_compare(&mut self, schema: Option<String>) {
+        let Some(s) = &self.session else { return };
+        let here = match s.cfg.kind {
+            Kind::Postgres => s.current_schema.clone(),
+            Kind::MySql => s.current_db.clone(),
+        };
+        let st = CompareState {
+            source_schema: schema.unwrap_or(here),
+            target_conn: s.cfg.id.clone(),
+            target_db: s.current_db.clone(),
+            target_schema: String::new(),
+            running: false,
+            result: None,
+            compared: String::new(),
+            same_connection: true,
+            saved: None,
+        };
+        self.push_tab("Comparar estrutura".into(), TabKind::Compare(Box::new(st)));
+    }
+
     /// Ctrl+P "Executar arquivo .sql…".
     pub fn pick_script(&mut self) {
         if crate::files::NATIVE_DIALOGS {
@@ -2103,6 +2142,69 @@ pub fn refresh_activity(tab: &mut Tab, s: &Session) {
     tab.send_rows_job(s, Job::Activity { tab: id, view });
 }
 
+/// Starts "Comparar estrutura" with what the tab has chosen.
+pub fn start_compare(tab: &mut Tab, s: &Session, saved: &[ConnConfig]) {
+    let TabKind::Compare(st) = &mut tab.kind else {
+        return;
+    };
+    if st.running || st.target_schema.trim().is_empty() {
+        return;
+    }
+    let Some(cfg) = saved
+        .iter()
+        .find(|c| c.id == st.target_conn)
+        .or(Some(&s.cfg).filter(|c| c.id == st.target_conn))
+    else {
+        return;
+    };
+    let target_db = st.target_db.trim().to_string();
+    // The same connection compares in place: MySQL sees every database, Postgres only its own.
+    let same = cfg.id == s.cfg.id && (s.cfg.kind == Kind::MySql || target_db == s.current_db);
+    let target = (!same).then(|| {
+        Box::new(ConnConfig {
+            database: if target_db.is_empty() {
+                cfg.database.clone()
+            } else {
+                target_db.clone()
+            },
+            ..cfg.clone()
+        })
+    });
+    let schema_note = |conn: &str, db: &str, schema: &str| match s.cfg.kind {
+        Kind::Postgres => format!("{conn} · {db} · {schema}"),
+        Kind::MySql => format!("{conn} · {schema}"),
+    };
+    st.compared = format!(
+        "{} → {}",
+        schema_note(&s.cfg.name, &s.current_db, &st.source_schema),
+        schema_note(&cfg.name, &target_db, st.target_schema.trim())
+    );
+    st.same_connection = same;
+    st.running = true;
+    st.result = None;
+    st.saved = None;
+    let job = Job::Compare {
+        tab: tab.id,
+        source_schema: st.source_schema.clone(),
+        target,
+        target_schema: st.target_schema.trim().to_string(),
+    };
+    tab.begin_job();
+    s.send(job);
+}
+
+/// The SQL of a comparison, with where it must run.
+pub fn compare_script(st: &CompareState) -> String {
+    let Some(Ok(diffs)) = &st.result else {
+        return String::new();
+    };
+    format!(
+        "-- Comparação de estrutura: {}\n-- Execute no DESTINO. Remoção de tabelas fica comentada.\n{}\n",
+        st.compared,
+        crate::compare::script(diffs)
+    )
+}
+
 /// Starts "Exportar .sql": a new file in Downloads named after what is exported.
 pub fn start_dump(tab: &mut Tab, s: &Session) {
     let TabKind::Dump(st) = &mut tab.kind else { return };
@@ -2307,7 +2409,8 @@ fn saved_tab(t: &Tab) -> Option<SavedTab> {
         | TabKind::Diagram(_)
         | TabKind::History(_)
         | TabKind::Script(_)
-        | TabKind::Dump(_) => None,
+        | TabKind::Dump(_)
+        | TabKind::Compare(_) => None,
         TabKind::Sql(ed) => Some(SavedTab::Sql {
             text: ed.text.clone(),
             title: (t.renamed && ed.file.is_none()).then(|| t.title.clone()),

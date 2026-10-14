@@ -178,6 +178,12 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                 p.data = Some(res.map_err(|e| e.to_string()));
             }
         }
+        Reply::Compared { res, .. } => {
+            if let TabKind::Compare(st) = &mut t.kind {
+                st.running = false;
+                st.result = Some(res);
+            }
+        }
         Reply::DumpProgress { progress, .. } => {
             if let TabKind::Dump(st) = &mut t.kind {
                 st.progress = progress;

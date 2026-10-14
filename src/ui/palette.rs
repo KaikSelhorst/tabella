@@ -21,6 +21,7 @@ enum Cmd {
     History,
     RunFile,
     Dump,
+    Compare,
     Diagram,
     Search,
     NewTable,
@@ -241,6 +242,12 @@ impl App {
                 });
             }
             items.push(Item {
+                icon: icon::GIT_DIFF,
+                label: "Comparar estrutura…".into(),
+                detail: "com outro schema ou banco (dev × produção): diferenças e o SQL para igualar".into(),
+                cmd: Cmd::Compare,
+            });
+            items.push(Item {
                 icon: icon::DOWNLOAD_SIMPLE,
                 label: "Exportar banco como .sql…".into(),
                 detail: "estrutura e dados de todas as tabelas, views, funções e triggers".into(),
@@ -429,6 +436,7 @@ impl App {
                 Cmd::History => self.open_history(),
                 Cmd::RunFile => self.pick_script(),
                 Cmd::Dump => self.open_dump(crate::app::DumpScope::Database),
+                Cmd::Compare => self.open_compare(None),
                 Cmd::Diagram => self.open_diagram(None),
                 Cmd::Search => self.open_search(),
                 Cmd::NewTable => self.open_new_table(None),

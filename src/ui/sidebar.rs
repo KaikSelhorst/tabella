@@ -309,7 +309,8 @@ impl App {
             | TabKind::Diagram(_)
             | TabKind::History(_)
             | TabKind::Script(_)
-            | TabKind::Dump(_) => None,
+            | TabKind::Dump(_)
+            | TabKind::Compare(_) => None,
         });
         let needle = self.filter.to_lowercase();
         let by_size = self.sort_by_size;
@@ -321,6 +322,7 @@ impl App {
         let mut to_run: Option<DbObject> = None;
         let mut to_action: Option<crate::app::TableActionPrompt> = None;
         let mut to_dump: Option<crate::app::DumpScope> = None;
+        let mut to_compare: Option<String> = None;
         let mut to_structure: Option<(String, String)> = None;
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
@@ -587,6 +589,10 @@ impl App {
                             to_dump = Some(crate::app::DumpScope::Schema(schema.clone()));
                             ui.close();
                         }
+                        if ui.button("Comparar estrutura com…").clicked() {
+                            to_compare = Some(schema.clone());
+                            ui.close();
+                        }
                     });
                 }
             });
@@ -632,6 +638,9 @@ impl App {
         }
         if let Some(scope) = to_dump {
             self.open_dump(scope);
+        }
+        if let Some(schema) = to_compare {
+            self.open_compare(Some(schema));
         }
         if to_action.is_some() {
             self.table_action = to_action;

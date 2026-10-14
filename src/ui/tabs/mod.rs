@@ -23,6 +23,7 @@ use crate::sql::{self, page_size};
 use crate::values;
 
 mod activity;
+mod compare;
 mod dump;
 mod editor;
 mod query_history;
@@ -32,6 +33,7 @@ mod search;
 mod table;
 
 use activity::*;
+use compare::*;
 use dump::*;
 use editor::*;
 use query_history::*;
@@ -47,6 +49,7 @@ pub(super) struct Cx<'a> {
     history: &'a [Entry],
     favorites: &'a [Favorite],
     filters: &'a [SavedFilter],
+    saved: &'a [crate::db::ConnConfig],
     /// Something only the app can do (open another tab), carried out after drawing.
     request: Option<Request>,
 }
@@ -111,6 +114,7 @@ impl App {
                             TabKind::Diagram(_) => icon::GRAPH,
                             TabKind::Script(_) => icon::PLAY,
                             TabKind::Dump(_) => icon::DOWNLOAD_SIMPLE,
+                            TabKind::Compare(_) => icon::GIT_DIFF,
                         };
                         let shown = if app::file_dirty(tab) {
                             format!("{} •", tab.title)
@@ -212,6 +216,7 @@ impl App {
             history: &self.history,
             favorites: &self.favorites,
             filters: &self.filters,
+            saved: &self.saved,
             request: None,
         };
         match &tab.kind {
@@ -222,6 +227,7 @@ impl App {
             TabKind::History(_) => history_tab(ui, tab, &mut cx),
             TabKind::Script(_) => script_tab(ui, tab, &mut cx),
             TabKind::Dump(_) => dump_tab(ui, tab, &mut cx),
+            TabKind::Compare(_) => compare_tab(ui, tab, &mut cx),
             TabKind::Diagram(_) => {
                 let busy = tab.busy();
                 let schemas: Vec<String> = {

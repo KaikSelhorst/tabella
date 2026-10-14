@@ -137,6 +137,13 @@ pub enum Job {
         tab: u64,
         sql: String,
     },
+    /// "Comparar estrutura": `target: None` is another schema of this connection.
+    Compare {
+        tab: u64,
+        source_schema: String,
+        target: Option<Box<ConnConfig>>,
+        target_schema: String,
+    },
     /// "Exportar .sql".
     Dump {
         tab: u64,
@@ -293,6 +300,10 @@ pub enum Reply {
         tab: u64,
         progress: crate::dump::DumpProgress,
     },
+    Compared {
+        tab: u64,
+        res: Result<Vec<crate::compare::TableDiff>, String>,
+    },
     DumpDone {
         tab: u64,
         progress: crate::dump::DumpProgress,
@@ -345,6 +356,7 @@ impl Reply {
             | Reply::ColumnStats { tab, .. }
             | Reply::Distinct { tab, .. }
             | Reply::DumpDone { tab, .. }
+            | Reply::Compared { tab, .. }
             | Reply::Preview { tab, .. }
             | Reply::ServerInfo { tab, .. }
             | Reply::SearchDone { tab, .. }
@@ -479,6 +491,40 @@ pub(crate) fn run_script(
     (p, error)
 }
 
+/// Both sides of "Comparar estrutura": the target on this connection, or on its own one
+/// (through its SSH tunnel), closed when done.
+fn compare_with(
+    conn: &mut Conn,
+    source_schema: &str,
+    target: Option<&ConnConfig>,
+    target_schema: &str,
+) -> Result<Vec<crate::compare::TableDiff>, String> {
+    let kind = conn.kind();
+    let source = crate::compare::snapshot(conn, source_schema).map_err(|e| e.to_string())?;
+    let dest = match target {
+        None => crate::compare::snapshot(conn, target_schema),
+        Some(cfg) => {
+            if cfg.kind != kind {
+                return Err("os dois lados precisam ser do mesmo tipo de banco".into());
+            }
+            let tunnel = match &cfg.ssh {
+                Some(ssh) => {
+                    Some(Tunnel::open(ssh, &cfg.host, cfg.port).map_err(|e| format!("túnel SSH: {e}"))?)
+                }
+                None => None,
+            };
+            let mut other = Conn::connect(cfg, tunnel.as_ref().map(|t| t.local_port))
+                .map_err(|e| format!("não foi possível conectar no destino: {e}"))?;
+            crate::compare::snapshot(&mut other, target_schema)
+        }
+    }
+    .map_err(|e| e.to_string())?;
+    if dest.tables.is_empty() && source.tables.is_empty() {
+        return Err("nenhuma tabela nos dois lados: confira os nomes".into());
+    }
+    Ok(crate::compare::diff(kind, &source, &dest))
+}
+
 /// SQL the user asked for (editor, table actions, script files), keeping the manual-commit
 /// state right: a write opens the transaction, BEGIN/COMMIT typed by hand are followed, MySQL's
 /// DDL commits by itself, and a Postgres error leaves the transaction failed.
@@ -595,6 +641,15 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                 Job::Preview { tab, sql } => Reply::Preview {
                     tab,
                     res: conn.preview(&sql, tx.open),
+                },
+                Job::Compare {
+                    tab,
+                    source_schema,
+                    target,
+                    target_schema,
+                } => Reply::Compared {
+                    tab,
+                    res: compare_with(&mut conn, &source_schema, target.as_deref(), &target_schema),
                 },
                 Job::Dump { tab, spec, cancel } => {
                     let last = std::cell::Cell::new(std::time::Instant::now());
@@ -1167,6 +1222,38 @@ mod tests {
         );
         assert!(err.is_some_and(|e| e.cancelled) && p.statements == 0);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Same connection (two schemas) and a separate one to the same server: same differences.
+    #[test]
+    #[ignore]
+    fn compare_here_and_elsewhere() {
+        let mut cfg = ConnConfig::new(Kind::Postgres);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 55432;
+        cfg.password = "pw".into();
+        cfg.database = "postgres".into();
+        let mut c = Conn::connect(&cfg, None).expect("connect");
+        for sql in [
+            "DROP SCHEMA IF EXISTS cw_a CASCADE",
+            "DROP SCHEMA IF EXISTS cw_b CASCADE",
+            "CREATE SCHEMA cw_a",
+            "CREATE SCHEMA cw_b",
+            "CREATE TABLE cw_a.t (id int PRIMARY KEY, nome text NOT NULL)",
+            "CREATE TABLE cw_b.t (id int PRIMARY KEY)",
+        ] {
+            c.query(sql).unwrap();
+        }
+        let here = compare_with(&mut c, "cw_a", None, "cw_b").unwrap();
+        let there = compare_with(&mut c, "cw_a", Some(&cfg), "cw_b").unwrap();
+        assert_eq!(here, there);
+        assert_eq!(here.len(), 1);
+        assert!(here[0].items[0].sql.contains("ADD COLUMN \"nome\" text NOT NULL"));
+        let mut other = cfg.clone();
+        other.kind = Kind::MySql;
+        assert!(compare_with(&mut c, "cw_a", Some(&other), "cw_b").is_err());
+        c.query("DROP SCHEMA cw_a CASCADE").unwrap();
+        c.query("DROP SCHEMA cw_b CASCADE").unwrap();
     }
 
     #[test]

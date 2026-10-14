@@ -1734,6 +1734,68 @@ mod screenshots {
             .unwrap();
         harness.state_mut().master = None;
 
+        // "Comparar estrutura" against another connection, with differences.
+        {
+            harness.state_mut().open_compare(None);
+            let app = harness.state_mut();
+            if let Some(Tab {
+                kind: TabKind::Compare(st),
+                ..
+            }) = app.tabs.last_mut()
+            {
+                use crate::compare::{Item, Status, TableDiff};
+                let it = |what: &str, sql: &str, destructive| Item {
+                    what: what.into(),
+                    sql: sql.into(),
+                    destructive,
+                };
+                st.target_conn = "homolog".into();
+                st.target_db = "loja".into();
+                st.target_schema = "public".into();
+                st.compared = "dev · postgres · public → homolog · loja · public".into();
+                st.same_connection = false;
+                st.result = Some(Ok(vec![
+                    TableDiff {
+                        table: "clientes".into(),
+                        status: Status::Changed,
+                        items: vec![
+                            it(
+                                "coluna email: text → character varying(120)",
+                                "ALTER TABLE …",
+                                false,
+                            ),
+                            it("coluna ativo nova", "ALTER TABLE …", false),
+                            it(
+                                "coluna fax só existe no destino (os dados dela se perdem)",
+                                "ALTER TABLE …",
+                                true,
+                            ),
+                            it("índice clientes_email_idx (novo)", "CREATE INDEX …", false),
+                        ],
+                    },
+                    TableDiff {
+                        table: "cupons".into(),
+                        status: Status::New,
+                        items: vec![it("tabela nova", "CREATE TABLE …", false)],
+                    },
+                    TableDiff {
+                        table: "log_antigo".into(),
+                        status: Status::Extra,
+                        items: vec![it("só existe no destino", "-- DROP TABLE …", true)],
+                    },
+                ]));
+            }
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/compare.png"))
+                .unwrap();
+            let app = harness.state_mut();
+            app.tabs.pop();
+            app.active = 0;
+        }
+
         // "Exportar .sql" of a schema, finished.
         {
             harness
