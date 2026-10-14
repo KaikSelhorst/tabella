@@ -156,6 +156,22 @@ impl Default for SshConfig {
 }
 
 impl ConnConfig {
+    /// Whether `other` connects the same way (server, account, database and the session
+    /// settings applied at connect time). The password is left out: the saved copy may not
+    /// carry it (it lives in the keyring).
+    pub fn same_session_settings(&self, other: &ConnConfig) -> bool {
+        self.kind == other.kind
+            && self.host.trim() == other.host.trim()
+            && self.port == other.port
+            && self.user == other.user
+            && self.database == other.database
+            && self.ssl == other.ssl
+            && self.ssl_insecure == other.ssl_insecure
+            && self.read_only == other.read_only
+            && self.timeout_secs == other.timeout_secs
+            && self.ssh == other.ssh
+    }
+
     /// Whether traffic to this host stays on the machine (no need for TLS).
     pub fn is_local(&self) -> bool {
         matches!(self.host.trim(), "localhost" | "127.0.0.1" | "::1" | "") || self.host.starts_with("127.")

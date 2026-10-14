@@ -903,13 +903,23 @@ impl App {
             .iter()
             .position(|c| c.id == cfg.id && !cfg.id.is_empty())
         {
-            Some(i) => self.saved[i] = cfg,
+            Some(i) => self.saved[i] = cfg.clone(),
             None => {
                 cfg.id = config::new_id();
-                self.saved.push(cfg);
+                self.saved.push(cfg.clone());
             }
         }
         self.save_connections();
+        // Editing the open connection: what can change live does, now.
+        if let Some(s) = &mut self.session
+            && s.cfg.id == cfg.id
+            && !apply_live_settings(s, &cfg)
+        {
+            self.notice = Notice::info(
+                "Salvo. Reconecte (menu … → Reconectar) para aplicar servidor, usuário, banco, TLS, \
+                 somente leitura, timeout ou SSH.",
+            );
+        }
     }
 
     pub fn delete_connection(&mut self, id: &str) {
@@ -1686,6 +1696,17 @@ pub fn kill_session(tab: &mut Tab, s: &Session) {
     );
 }
 
+/// Copies the settings that don't need a new connection (name, color, preview) from an edited
+/// copy of the open connection. Returns false when other changes wait for a reconnect.
+pub fn apply_live_settings(s: &mut Session, edited: &ConnConfig) -> bool {
+    s.cfg.name = edited.name.clone();
+    s.cfg.color = edited.color;
+    s.cfg.preview_writes = edited.preview_writes;
+    // The saved default; the session's own mode is switched in the "…" menu.
+    s.cfg.manual_commit = edited.manual_commit;
+    s.cfg.same_session_settings(edited)
+}
+
 /// Re-runs the current page query of a table tab.
 pub fn reload(tab: &mut Tab, s: &Session) {
     let TabKind::Table(ts) = &mut tab.kind else { return };
@@ -2405,6 +2426,22 @@ pub mod tests {
         );
         handle_grid_event(&mut tab, &s, GridEvent::Select(1, 1), true);
         assert_eq!(tab.range(), None);
+    }
+
+    #[test]
+    fn editing_the_open_connection_applies_what_it_can() {
+        let (mut s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut edited = s.cfg.clone();
+        edited.preview_writes = true;
+        edited.name = "produção".into();
+        assert!(apply_live_settings(&mut s, &edited), "nothing needs a reconnect");
+        assert!(s.cfg.preview_writes && s.cfg.name == "produção");
+        edited.host = "outro-servidor".into();
+        assert!(
+            !apply_live_settings(&mut s, &edited),
+            "a new host waits for a reconnect"
+        );
+        assert_eq!(s.cfg.host, "localhost", "and isn't applied live");
     }
 
     #[test]
