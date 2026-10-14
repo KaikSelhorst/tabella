@@ -11,7 +11,7 @@ use eframe::egui;
 
 use crate::config;
 use crate::db::{
-    ActivityView, Canceller, ColumnInfo, ConnConfig, IncomingFk, Kind, PreviewData, QueryResult,
+    ActivityView, Canceller, ColumnInfo, ConnConfig, FkEdge, IncomingFk, Kind, PreviewData, QueryResult,
     SchemaColumn, ServerInfo, TableRef, TableStructure,
 };
 use crate::design::Design;
@@ -43,7 +43,7 @@ impl Notice {
         })
     }
 
-    fn error(text: impl Into<String>) -> Option<Self> {
+    pub fn error(text: impl Into<String>) -> Option<Self> {
         Some(Notice {
             text: text.into(),
             error: true,
@@ -63,6 +63,8 @@ pub struct Session {
     pub columns: Vec<(String, String)>,
     /// The same columns with schema and type (schema search, hover info, ER diagram).
     pub schema_cols: Vec<SchemaColumn>,
+    /// Foreign keys, for JOIN suggestions in the editor.
+    pub fks: Vec<FkEdge>,
     /// Manual-commit mode and the open transaction, as last reported by the worker.
     pub txn: TxState,
 }
@@ -305,6 +307,18 @@ pub enum TabKind {
     Search(Box<SearchState>),
     /// ER diagram of a schema.
     Diagram(Box<DiagramState>),
+    /// Every query run, searchable.
+    History(Box<HistoryState>),
+}
+
+#[derive(Default)]
+pub struct HistoryState {
+    pub query: String,
+    pub all_conns: bool,
+    pub only_errors: bool,
+    /// The entry shown in full: (connection, sql).
+    pub selected: Option<(String, String)>,
+    pub focus: bool,
 }
 
 pub struct SearchState {
@@ -408,6 +422,12 @@ pub struct Tab {
     pub source_query: String,
     /// The user gave the tab its own name.
     pub renamed: bool,
+    /// Editor tabs: the `.sql` file being edited, and its text as last read or written (the
+    /// tab has unsaved changes when the editor differs from it).
+    pub file: Option<PathBuf>,
+    pub saved_text: String,
+    /// Closing was refused once because of unsaved file changes; the next close goes through.
+    pub close_armed: bool,
     /// "Repetir a cada": seconds between automatic re-runs of `last_query` (editor tabs).
     pub repeat: Option<u64>,
     pub last_query: String,
@@ -477,6 +497,9 @@ impl Tab {
             source: None,
             source_query: String::new(),
             renamed: false,
+            file: None,
+            saved_text: String::new(),
+            close_armed: false,
             repeat: None,
             last_query: String::new(),
             last_run: None,
@@ -721,6 +744,9 @@ pub struct App {
     pub help: bool,
     /// Recently closed tabs, newest last.
     pub closed: Vec<SavedTab>,
+    pub path_prompt: Option<PathPrompt>,
+    pub settings: crate::settings::Settings,
+    pub prefs_open: bool,
     /// The window title announces a finished job (cleared when the window is focused).
     title_changed: bool,
     /// Close the window once the transaction has been ended.
@@ -759,6 +785,9 @@ impl App {
             quit_prompt: false,
             help: false,
             closed: Vec::new(),
+            path_prompt: None,
+            settings: crate::settings::load(),
+            prefs_open: false,
             title_changed: false,
             quit_after_tx: false,
             frames: 0,
@@ -810,11 +839,19 @@ impl App {
     fn restore_tab(&mut self, t: SavedTab) {
         {
             match t {
-                SavedTab::Sql { text, title } => {
+                SavedTab::Sql { text, title, file } => {
                     self.open_sql(text);
-                    if let (Some(title), Some(tab)) = (title, self.tabs.last_mut()) {
+                    let Some(tab) = self.tabs.last_mut() else { return };
+                    if let Some(title) = title {
                         tab.title = title;
                         tab.renamed = true;
+                    }
+                    // The editor keeps the text it had (unsaved edits included); the file on disk
+                    // says what "saved" means.
+                    if let Some(path) = file {
+                        tab.saved_text = crate::files::read_sql(&path).unwrap_or_default();
+                        tab.title = crate::files::title(&path);
+                        tab.file = Some(path);
                     }
                 }
                 SavedTab::Structure { schema, table } => self.open_structure(&schema, &table),
@@ -838,6 +875,79 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// Opens a `.sql` file in a new editor tab (or focuses the tab that has it).
+    pub fn open_file(&mut self, path: PathBuf) {
+        if let Some(i) = self.tabs.iter().position(|t| t.file.as_ref() == Some(&path)) {
+            self.active = i;
+            return;
+        }
+        match crate::files::read_sql(&path) {
+            Ok(text) => {
+                self.open_sql(text.clone());
+                if let Some(t) = self.tabs.last_mut() {
+                    t.title = crate::files::title(&path);
+                    t.saved_text = text;
+                    t.file = Some(path);
+                }
+            }
+            Err(e) => self.notice = Notice::error(e),
+        }
+    }
+
+    /// Writes an editor tab to `path` (its file from now on).
+    pub fn save_file_as(&mut self, i: usize, path: PathBuf) {
+        let Some(t) = self.tabs.get_mut(i) else { return };
+        let TabKind::Sql { text } = &t.kind else { return };
+        match crate::files::write_sql(&path, text) {
+            Ok(written) => {
+                t.saved_text = text.clone();
+                t.title = crate::files::title(&written);
+                self.notice = Notice::info(format!("Salvo em {}", written.display()));
+                t.file = Some(written);
+                t.close_armed = false;
+            }
+            Err(e) => self.notice = Notice::error(e),
+        }
+    }
+
+    /// Ctrl+S on an editor tab: its file, or "salvar como" when it has none yet.
+    pub fn save_file(&mut self, i: usize, ask: bool) {
+        let Some(t) = self.tabs.get(i) else { return };
+        match (&t.file, ask) {
+            (Some(path), false) => {
+                let path = path.clone();
+                self.save_file_as(i, path);
+            }
+            _ => {
+                let suggested = format!("{}.sql", t.title.trim_end_matches(".sql"));
+                if crate::files::NATIVE_DIALOGS {
+                    if let Some(path) = crate::files::pick_save(&suggested) {
+                        self.save_file_as(i, path);
+                    }
+                } else {
+                    self.path_prompt = Some(PathPrompt {
+                        save_tab: Some(t.id),
+                        path: suggested,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Ctrl+O.
+    pub fn open_file_dialog(&mut self) {
+        if crate::files::NATIVE_DIALOGS {
+            if let Some(path) = crate::files::pick_open() {
+                self.open_file(path);
+            }
+        } else {
+            self.path_prompt = Some(PathPrompt {
+                save_tab: None,
+                path: String::new(),
+            });
         }
     }
 
@@ -1112,6 +1222,7 @@ impl App {
             tables: vec![],
             columns: vec![],
             schema_cols: vec![],
+            fks: vec![],
             txn: TxState {
                 manual: cfg_manual,
                 ..Default::default()
@@ -1286,6 +1397,9 @@ impl App {
                 }
                 // Autocomplete just has no columns then.
                 Reply::AllColumns(Err(_)) => {}
+                Reply::AllFks(Ok(f)) => s.fks = f,
+                // Without them the editor just doesn't suggest joins.
+                Reply::AllFks(Err(_)) => {}
                 Reply::Rows { tab, res, notice } => {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
@@ -1603,6 +1717,18 @@ impl App {
 
     pub fn close_tab(&mut self, i: usize) {
         if let Some(t) = self.tabs.get_mut(i)
+            && file_dirty(t)
+            && !t.close_armed
+        {
+            t.close_armed = true;
+            t.error = Some(format!(
+                "{} tem alterações não salvas: Ctrl+S salva; feche de novo para descartar.",
+                t.title
+            ));
+            self.active = i;
+            return;
+        }
+        if let Some(t) = self.tabs.get_mut(i)
             && has_unsaved(t)
         {
             t.error = Some(
@@ -1675,6 +1801,28 @@ impl App {
         let tab = &mut self.tabs[i];
         tab.begin_job();
         s.send(Job::Fks { tab: tab.id });
+    }
+
+    /// Opens (or focuses) the full query history.
+    pub fn open_history(&mut self) {
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::History(_)))
+        {
+            self.active = i;
+            return;
+        }
+        let st = HistoryState {
+            focus: true,
+            ..Default::default()
+        };
+        self.push_tab("Histórico".into(), TabKind::History(Box::new(st)));
+    }
+
+    /// Drops one entry from the history (and the file).
+    pub fn forget_history(&mut self, conn: &str, sql: &str) {
+        history::forget(&mut self.history, conn, sql);
     }
 
     /// Opens the "buscar valor" tab (or focuses it).
@@ -2073,6 +2221,21 @@ fn resolve_table(s: &Session, schema: Option<&str>, table: &str) -> Option<(Stri
     pick(true).or_else(|| pick(false))
 }
 
+/// Where there are no native file dialogs: the path, typed.
+pub struct PathPrompt {
+    /// `Some(tab id)` to save that tab; `None` to open a file.
+    pub save_tab: Option<u64>,
+    pub path: String,
+}
+
+/// An editor tab whose text differs from its file.
+pub fn file_dirty(t: &Tab) -> bool {
+    match (&t.kind, &t.file) {
+        (TabKind::Sql { text }, Some(_)) => *text != t.saved_text,
+        _ => false,
+    }
+}
+
 /// Closed tabs remembered for "reabrir aba fechada".
 const MAX_CLOSED: usize = 20;
 
@@ -2080,10 +2243,15 @@ const MAX_CLOSED: usize = 20;
 /// only meaningful while open.
 fn saved_tab(t: &Tab) -> Option<SavedTab> {
     match &t.kind {
-        TabKind::Activity(_) | TabKind::Design(_) | TabKind::Search(_) | TabKind::Diagram(_) => None,
+        TabKind::Activity(_)
+        | TabKind::Design(_)
+        | TabKind::Search(_)
+        | TabKind::Diagram(_)
+        | TabKind::History(_) => None,
         TabKind::Sql { text } => Some(SavedTab::Sql {
             text: text.clone(),
-            title: t.renamed.then(|| t.title.clone()),
+            title: (t.renamed && t.file.is_none()).then(|| t.title.clone()),
+            file: t.file.clone(),
         }),
         TabKind::Table(ts) => Some(SavedTab::Table {
             schema: ts.schema.clone(),
@@ -2749,6 +2917,7 @@ pub mod tests {
             tables: vec![],
             columns: vec![],
             schema_cols: vec![],
+            fks: vec![],
             txn: TxState::default(),
         };
         (s, jobs, replies)
@@ -3065,6 +3234,37 @@ mod poll_tests {
             .map(|j| matches!(j, Job::Columns { .. } | Job::Structure { .. }))
             .collect();
         assert_eq!(kinds, [true, true]);
+    }
+
+    #[test]
+    fn sql_files_open_save_and_guard_unsaved_changes() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        let dir = std::env::temp_dir().join(format!("dblite-tabfile-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("consulta.sql");
+        std::fs::write(&path, "SELECT 1;").unwrap();
+        app.open_file(path.clone());
+        assert_eq!(app.tabs[0].title, "consulta.sql");
+        assert!(!file_dirty(&app.tabs[0]));
+        if let TabKind::Sql { text } = &mut app.tabs[0].kind {
+            text.push_str("\nSELECT 2;");
+        }
+        assert!(file_dirty(&app.tabs[0]));
+        app.close_tab(0);
+        assert_eq!(app.tabs.len(), 1, "the first close only warns");
+        app.save_file(0, false);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "SELECT 1;\nSELECT 2;");
+        assert!(!file_dirty(&app.tabs[0]));
+        // Opening it again focuses the tab instead of a second copy.
+        app.open_sql(String::new());
+        app.open_file(path.clone());
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active, 0);
+        // The session remembers the file.
+        let snap = app.snapshot();
+        assert!(matches!(&snap.tabs[0], SavedTab::Sql { file: Some(f), .. } if *f == path));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

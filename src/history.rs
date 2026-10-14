@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 /// Oldest entries are dropped past this.
-const MAX_ENTRIES: usize = 300;
+const MAX_ENTRIES: usize = 3_000;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Entry {
@@ -68,6 +68,12 @@ pub fn now() -> u64 {
 /// instead of duplicating it.
 pub fn push(list: &mut Vec<Entry>, entry: Entry) {
     insert(list, entry);
+    save(list);
+}
+
+/// Removes an entry and saves.
+pub fn forget(list: &mut Vec<Entry>, conn: &str, sql: &str) {
+    list.retain(|e| !(e.conn == conn && e.sql == sql));
     save(list);
 }
 

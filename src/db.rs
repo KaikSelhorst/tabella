@@ -11,7 +11,10 @@ use crate::sql::Stmt;
 use crate::tls;
 
 /// Rows kept in memory per result; protects against `SELECT *` on huge tables.
-const MAX_ROWS: usize = 5000;
+/// Most rows kept from one query (a preference).
+fn max_rows() -> usize {
+    crate::settings::max_rows()
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub enum Kind {
@@ -243,7 +246,7 @@ pub struct QueryResult {
     pub previous: Vec<QueryResult>,
 }
 
-/// Most result sets kept from one script (each up to `MAX_ROWS` rows).
+/// Most result sets kept from one script (each up to `max_rows()` rows).
 const MAX_SETS: usize = 20;
 
 impl QueryResult {
@@ -467,9 +470,9 @@ impl Conn {
         }
     }
 
-    /// Runs one or more statements; returns the last result set (capped at `MAX_ROWS`).
+    /// Runs one or more statements; returns the last result set (capped at `max_rows()`).
     pub fn query(&mut self, sql: &str) -> DbResult<QueryResult> {
-        self.query_limit(sql, MAX_ROWS)
+        self.query_limit(sql, max_rows())
     }
 
     /// Runs a generated statement (see `sql::Stmt`): bound parameters on MySQL, escaped literals
@@ -477,10 +480,10 @@ impl Conn {
     pub fn execute(&mut self, stmt: &Stmt) -> DbResult<QueryResult> {
         let start = Instant::now();
         let mut out = match self {
-            Conn::Pg(c) => pg_query(c, &stmt.render(Kind::Postgres), MAX_ROWS)?,
+            Conn::Pg(c) => pg_query(c, &stmt.render(Kind::Postgres), max_rows())?,
             Conn::My(c) => {
                 let (sql, values) = stmt.with_placeholders();
-                my_exec(c, &sql, values, MAX_ROWS)?
+                my_exec(c, &sql, values, max_rows())?
             }
         };
         out.elapsed = start.elapsed();

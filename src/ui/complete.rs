@@ -3,7 +3,7 @@
 use eframe::egui::{self, Key, Modifiers, TextEdit, text::CCursor, text::CCursorRange};
 
 use super::{icon, syntax::KEYWORDS, theme};
-use crate::db::TableRef;
+use crate::db::{FkEdge, TableRef};
 
 const MAX_ITEMS: usize = 8;
 
@@ -14,6 +14,8 @@ pub enum ItemKind {
     Keyword,
     /// Expands into a template; see `SNIPPETS`.
     Snippet,
+    /// `tabela t ON t.id = x.tabela_id`, from a foreign key.
+    Join,
 }
 
 /// Where the cursor lands after a snippet expands.
@@ -77,12 +79,137 @@ fn previous_keyword(chars: &[char], pos: usize) -> Option<String> {
         .find(|w| KEYWORDS.contains(&w.as_str()))
 }
 
-pub fn suggest(
-    text: &str,
-    cursor: usize,
-    tables: &[TableRef],
-    columns: &[(String, String)],
-) -> Option<Suggestions> {
+/// What the editor knows about the database, for suggestions.
+#[derive(Clone, Copy)]
+pub struct Catalog<'a> {
+    pub tables: &'a [TableRef],
+    /// `(table, column)`.
+    pub columns: &'a [(String, String)],
+    pub fks: &'a [FkEdge],
+}
+
+/// `(alias or table name, table)` for each table the query names after FROM / JOIN / UPDATE /
+/// INTO, lowercase: `FROM pedidos p JOIN clientes AS c` → (p, pedidos), (c, clientes); a table
+/// without alias answers to its own name.
+pub fn query_tables(text: &str) -> Vec<(String, String)> {
+    // Words (identifiers, possibly dotted and quoted) and single punctuation chars.
+    let mut tokens: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for c in text.chars() {
+        if c.is_alphanumeric() || matches!(c, '_' | '.' | '"' | '`') {
+            cur.push(c);
+        } else {
+            if !cur.is_empty() {
+                tokens.push(std::mem::take(&mut cur));
+            }
+            if c == ',' || c == ';' || c == '(' || c == ')' {
+                tokens.push(c.to_string());
+            }
+        }
+    }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    let is_kw = |w: &str| KEYWORDS.contains(&w.to_uppercase().as_str());
+    let name_of = |w: &str| {
+        w.rsplit('.')
+            .next()
+            .unwrap_or(w)
+            .trim_matches(|c| c == '"' || c == '`')
+            .to_lowercase()
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let up = tokens[i].to_uppercase();
+        if !matches!(up.as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO") {
+            i += 1;
+            continue;
+        }
+        // FROM a x, b y: a list.
+        loop {
+            i += 1;
+            let Some(t) = tokens.get(i) else { break };
+            // A subquery, the end of the list, or the next clause.
+            if matches!(t.as_str(), "(" | ")" | "," | ";") || is_kw(t) {
+                break;
+            }
+            let table = name_of(t);
+            let mut alias = table.clone();
+            let mut j = i + 1;
+            if tokens.get(j).is_some_and(|w| w.eq_ignore_ascii_case("AS")) {
+                j += 1;
+            }
+            if let Some(a) = tokens
+                .get(j)
+                .filter(|a| !is_kw(a) && a.chars().all(|c| c.is_alphanumeric() || c == '_'))
+            {
+                alias = a.to_lowercase();
+                i = j;
+            }
+            out.push((alias, table));
+            if tokens.get(i + 1).is_some_and(|w| w == ",") {
+                i += 1;
+                continue;
+            }
+            break;
+        }
+    }
+    out
+}
+
+/// Short alias for a table, not among `used`: initials of its words (`pedido_itens` → `pi`),
+/// then a number.
+fn new_alias(table: &str, used: &[String]) -> String {
+    let base: String = table
+        .split('_')
+        .filter_map(|p| p.chars().next())
+        .collect::<String>()
+        .to_lowercase();
+    let base = if base.is_empty() { "t".to_string() } else { base };
+    if !used.contains(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}{n}"))
+        .find(|a| !used.contains(a))
+        .unwrap_or(base)
+}
+
+/// After JOIN: the tables linked by a foreign key to those already in the query, with the
+/// ON condition written out.
+fn join_items(text: &str, prefix: &str, fks: &[FkEdge]) -> Vec<Item> {
+    let in_query = query_tables(text);
+    let used: Vec<String> = in_query.iter().map(|(a, _)| a.clone()).collect();
+    let mut out = Vec::new();
+    for (alias, table) in &in_query {
+        for e in fks {
+            let (target, target_col, own_col) = if e.table.to_lowercase() == *table {
+                (&e.ref_table, &e.ref_column, &e.column)
+            } else if e.ref_table.to_lowercase() == *table {
+                (&e.table, &e.column, &e.ref_column)
+            } else {
+                continue;
+            };
+            if !target.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                continue;
+            }
+            let a = new_alias(target, &used);
+            let text = format!("{target} {a} ON {a}.{target_col} = {alias}.{own_col}");
+            if !out.iter().any(|i: &Item| i.text == text) {
+                out.push(Item {
+                    text,
+                    kind: ItemKind::Join,
+                    detail: "pela chave estrangeira".into(),
+                });
+            }
+        }
+    }
+    out
+}
+
+pub fn suggest(text: &str, cursor: usize, cat: Catalog) -> Option<Suggestions> {
+    let Catalog { tables, columns, fks } = cat;
     let chars: Vec<char> = text.chars().collect();
     let cursor = cursor.min(chars.len());
     // Don't pop up in the middle of a word.
@@ -103,7 +230,20 @@ pub fn suggest(
         }
         chars[q..start - 1].iter().collect::<String>().to_lowercase()
     });
+    let after_join = previous_keyword(&chars, start).as_deref() == Some("JOIN");
+    // Right after "JOIN ": the joins the foreign keys allow, nothing else.
     if prefix.is_empty() && qualifier.is_none() {
+        let words_before: String = chars[..start].iter().collect();
+        let last_word = words_before.split_whitespace().last().unwrap_or("");
+        if after_join
+            && last_word.eq_ignore_ascii_case("JOIN")
+            && start > 0
+            && chars[start - 1].is_whitespace()
+        {
+            let mut items = join_items(text, "", fks);
+            items.truncate(MAX_ITEMS);
+            return (!items.is_empty()).then_some(Suggestions { start, items });
+        }
         return None;
     }
     let matches = |s: &str| {
@@ -114,6 +254,13 @@ pub fn suggest(
     let mut table_items: Vec<Item> = Vec::new();
     let mut column_items: Vec<Item> = Vec::new();
     let mut keyword_items: Vec<Item> = Vec::new();
+    // `c.` where c is an alias: that table's columns.
+    let qualifier = qualifier.map(|q| {
+        query_tables(text)
+            .into_iter()
+            .find(|(a, _)| *a == q)
+            .map_or(q, |(_, t)| t)
+    });
     let qualified_cols: Vec<&(String, String)> = match &qualifier {
         Some(q) if columns.iter().any(|(t, _)| t.to_lowercase() == *q) => {
             columns.iter().filter(|(t, _)| t.to_lowercase() == *q).collect()
@@ -175,8 +322,21 @@ pub fn suggest(
             }
         }
     }
+    let joins = if after_join && qualifier.is_none() {
+        join_items(text, &prefix, fks)
+    } else {
+        Vec::new()
+    };
     let mut items = if wants_table {
-        [exact, table_items, column_items, keyword_items, snippet_items].concat()
+        [
+            exact,
+            joins,
+            table_items,
+            column_items,
+            keyword_items,
+            snippet_items,
+        ]
+        .concat()
     } else {
         [exact, column_items, table_items, keyword_items, snippet_items].concat()
     };
@@ -198,8 +358,7 @@ pub fn before_editor(
     ctx: &egui::Context,
     editor_id: egui::Id,
     text: &mut String,
-    tables: &[TableRef],
-    columns: &[(String, String)],
+    cat: Catalog,
 ) -> Option<(Suggestions, usize)> {
     if !ctx.memory(|m| m.has_focus(editor_id)) {
         return None;
@@ -210,7 +369,7 @@ pub fn before_editor(
         return None;
     }
     let cursor = usize::from(range.primary.index);
-    let sugg = suggest(text, cursor, tables, columns)?;
+    let sugg = suggest(text, cursor, cat)?;
     let state_id = editor_id.with("complete");
     let mut st: State = ctx.data(|d| d.get_temp(state_id)).unwrap_or_default();
     if st.dismissed_at == Some(sugg.start) {
@@ -302,6 +461,7 @@ pub fn popup(
                             ItemKind::Column => (icon::COLUMNS, t.number),
                             ItemKind::Keyword => (icon::TEXT_AA, t.subtle),
                             ItemKind::Snippet => (icon::LIGHTNING, t.lime),
+                            ItemKind::Join => (icon::LINK, t.info),
                         };
                         p.text(
                             rect.left_center() + egui::vec2(8.0, 0.0),
@@ -375,7 +535,15 @@ mod tests {
     #[test]
     fn tables_first_after_from() {
         let text = "SELECT * FROM p";
-        let s = suggest(text, text.len(), &tables(), &columns());
+        let s = suggest(
+            text,
+            text.len(),
+            Catalog {
+                tables: &tables(),
+                columns: &columns(),
+                fks: &[],
+            },
+        );
         assert_eq!(texts(&s)[..2], ["pedidos", "produtos"]);
         assert_eq!(s.unwrap().start, 14);
     }
@@ -384,19 +552,44 @@ mod tests {
     fn columns_first_elsewhere_and_keywords_keep_case() {
         let text = "SELECT p";
         assert_eq!(
-            texts(&suggest(text, text.len(), &tables(), &columns()))[0],
+            texts(&suggest(
+                text,
+                text.len(),
+                Catalog {
+                    tables: &tables(),
+                    columns: &columns(),
+                    fks: &[]
+                }
+            ))[0],
             "produto_id"
         );
         let text = "sel";
         assert_eq!(
-            texts(&suggest(text, 3, &tables(), &columns())),
+            texts(&suggest(
+                text,
+                3,
+                Catalog {
+                    tables: &tables(),
+                    columns: &columns(),
+                    fks: &[]
+                }
+            )),
             ["sel", "select", "selw"]
         );
     }
 
     #[test]
     fn snippets_expand_with_the_cursor_inside() {
-        let s = suggest("cn", 2, &tables(), &columns()).unwrap();
+        let s = suggest(
+            "cn",
+            2,
+            Catalog {
+                tables: &tables(),
+                columns: &columns(),
+                fks: &[],
+            },
+        )
+        .unwrap();
         let item = s.items.iter().find(|i| i.kind == ItemKind::Snippet).unwrap();
         assert_eq!(item.text, "cnt");
         let (text, pos) = expansion(item);
@@ -404,9 +597,65 @@ mod tests {
         assert_eq!(&text[..pos], "SELECT count(*)\nFROM ");
         // One letter is too little to offer them.
         assert!(
-            texts(&suggest("c", 1, &tables(), &columns()))
-                .iter()
-                .all(|t| *t != "cnt")
+            texts(&suggest(
+                "c",
+                1,
+                Catalog {
+                    tables: &tables(),
+                    columns: &columns(),
+                    fks: &[]
+                }
+            ))
+            .iter()
+            .all(|t| *t != "cnt")
+        );
+    }
+
+    #[test]
+    fn aliases_and_joins_by_foreign_key() {
+        assert_eq!(
+            query_tables(
+                "SELECT * FROM public.pedidos p, produtos JOIN clientes AS c ON c.id = p.cliente_id WHERE 1"
+            ),
+            [
+                ("p".to_string(), "pedidos".to_string()),
+                ("produtos".into(), "produtos".into()),
+                ("c".into(), "clientes".into())
+            ]
+        );
+        let cols = columns();
+        let fks = [FkEdge {
+            schema: "public".into(),
+            table: "pedidos".into(),
+            column: "cliente_id".into(),
+            ref_schema: "public".into(),
+            ref_table: "clientes".into(),
+            ref_column: "id".into(),
+        }];
+        let cat = Catalog {
+            tables: &tables(),
+            columns: &cols,
+            fks: &fks,
+        };
+        // `p.` is pedidos: its columns, not every table's.
+        let text = "SELECT p. FROM pedidos p";
+        assert_eq!(texts(&suggest(text, 9, cat)), ["id", "produto_id"]);
+        // Right after JOIN: the join the foreign key allows, ON clause included.
+        let text = "SELECT * FROM pedidos p JOIN ";
+        assert_eq!(
+            texts(&suggest(text, text.chars().count(), cat)),
+            ["clientes c ON c.id = p.cliente_id"]
+        );
+        // From the other side, and the alias avoids the ones in use.
+        let text = "SELECT * FROM clientes c JOIN ";
+        assert_eq!(
+            texts(&suggest(text, text.chars().count(), cat)),
+            ["pedidos p ON p.cliente_id = c.id"]
+        );
+        let text = "SELECT * FROM clientes p JOIN pe";
+        assert_eq!(
+            texts(&suggest(text, text.chars().count(), cat))[0],
+            "pedidos p2 ON p2.cliente_id = p.id"
         );
     }
 
@@ -414,15 +663,56 @@ mod tests {
     fn qualified_columns_only() {
         let text = "SELECT clientes.";
         assert_eq!(
-            texts(&suggest(text, text.len(), &tables(), &columns())),
+            texts(&suggest(
+                text,
+                text.len(),
+                Catalog {
+                    tables: &tables(),
+                    columns: &columns(),
+                    fks: &[]
+                }
+            )),
             ["id", "nome"]
         );
     }
 
     #[test]
     fn quiet_when_nothing_to_do() {
-        assert!(suggest("SELECT ", 7, &tables(), &columns()).is_none());
-        assert!(suggest("clientes", 3, &tables(), &columns()).is_none()); // mid-word
-        assert!(suggest("clientes", 8, &tables(), &columns()).is_none()); // exact match only
+        assert!(
+            suggest(
+                "SELECT ",
+                7,
+                Catalog {
+                    tables: &tables(),
+                    columns: &columns(),
+                    fks: &[]
+                }
+            )
+            .is_none()
+        );
+        assert!(
+            suggest(
+                "clientes",
+                3,
+                Catalog {
+                    tables: &tables(),
+                    columns: &columns(),
+                    fks: &[]
+                }
+            )
+            .is_none()
+        ); // mid-word
+        assert!(
+            suggest(
+                "clientes",
+                8,
+                Catalog {
+                    tables: &tables(),
+                    columns: &columns(),
+                    fks: &[]
+                }
+            )
+            .is_none()
+        ); // exact match only
     }
 }

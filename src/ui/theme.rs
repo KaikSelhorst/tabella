@@ -85,12 +85,59 @@ pub struct Tokens {
     pub number: Color32,
     pub boolean: Color32,
     pub date: Color32,
+    /// Text on the accent (primary buttons).
+    pub on_accent: Color32,
 }
 
-/// The palette, computed once (OKLCH conversions aren't free and this is read every frame).
+static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switches between the dark and the light palette; call `apply` afterwards.
+pub fn set_light(light: bool) {
+    LIGHT.store(light, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_light() -> bool {
+    LIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The palette, computed once per theme (OKLCH conversions aren't free and this is read every
+/// frame).
 pub fn tokens() -> &'static Tokens {
-    static TOKENS: std::sync::OnceLock<Tokens> = std::sync::OnceLock::new();
-    TOKENS.get_or_init(build_tokens)
+    static DARK: std::sync::OnceLock<Tokens> = std::sync::OnceLock::new();
+    static LIGHT_TOKENS: std::sync::OnceLock<Tokens> = std::sync::OnceLock::new();
+    if is_light() {
+        LIGHT_TOKENS.get_or_init(build_light_tokens)
+    } else {
+        DARK.get_or_init(build_tokens)
+    }
+}
+
+/// Same roles as the dark palette, on a near-white scale; accents darkened so lines and text
+/// in them stay readable on light surfaces.
+fn build_light_tokens() -> Tokens {
+    let brand = |l: f32| oklch(l, 0.0, 0.0);
+    let background = brand(0.99);
+    let lime = oklch(0.78, 0.19, 122.0);
+    Tokens {
+        background,
+        sidebar: brand(0.965),
+        card: brand(0.975),
+        hover: brand(0.945),
+        border: brand(0.885),
+        foreground: brand(0.22),
+        muted_foreground: brand(0.45),
+        subtle: brand(0.58),
+        lime,
+        ring: mix(oklch(0.58, 0.16, 125.0), 0.8, background),
+        selection: mix(lime, 0.22, background),
+        destructive: oklch(0.55, 0.2, 25.0),
+        warning: oklch(0.62, 0.15, 65.0),
+        info: oklch(0.50, 0.16, 264.0),
+        number: oklch(0.48, 0.13, 240.0),
+        boolean: oklch(0.50, 0.17, 300.0),
+        date: oklch(0.50, 0.08, 65.0),
+        on_accent: brand(0.18),
+    }
 }
 
 fn build_tokens() -> Tokens {
@@ -115,16 +162,20 @@ fn build_tokens() -> Tokens {
         number: oklch(0.80, 0.09, 235.0),
         boolean: oklch(0.74, 0.14, 300.0),
         date: oklch(0.76, 0.045, 75.0),
+        on_accent: background,
     }
 }
 
 pub fn apply(ctx: &egui::Context) {
     install_fonts(ctx);
     let t = tokens();
-    let brand = |l: f32| oklch(l, 0.0, 0.0);
+    let light = is_light();
+    // Control states: the dark theme lightens on hover, the light one darkens.
+    let brand = |l: f32| oklch(if light { 1.0 - (l - 0.165) } else { l }, 0.0, 0.0);
     let radius = CornerRadius::same(RADIUS);
+    let shadow_alpha = if light { 40 } else { 140 };
 
-    let mut v = Visuals::dark();
+    let mut v = if light { Visuals::light() } else { Visuals::dark() };
     v.override_text_color = Some(t.foreground);
     v.weak_text_color = Some(t.muted_foreground);
     v.panel_fill = t.background;
@@ -135,13 +186,13 @@ pub fn apply(ctx: &egui::Context) {
         offset: [0, 8],
         blur: 24,
         spread: 0,
-        color: Color32::from_black_alpha(140),
+        color: Color32::from_black_alpha(shadow_alpha),
     };
     v.popup_shadow = Shadow {
         offset: [0, 4],
         blur: 12,
         spread: 0,
-        color: Color32::from_black_alpha(120),
+        color: Color32::from_black_alpha(if light { 34 } else { 120 }),
     };
     v.menu_corner_radius = radius;
     v.extreme_bg_color = t.sidebar; // text inputs, code editor
@@ -300,8 +351,8 @@ pub fn modal_frame(margin: i8) -> egui::Frame {
 pub fn primary_button(glyph: Option<&str>, text: &str) -> egui::Button<'static> {
     let t = tokens();
     let label: egui::WidgetText = match glyph {
-        Some(g) => icon_text(g, text, t.background, t.background).into(),
-        None => egui::RichText::new(text).color(t.background).into(),
+        Some(g) => icon_text(g, text, t.on_accent, t.on_accent).into(),
+        None => egui::RichText::new(text).color(t.on_accent).into(),
     };
     egui::Button::new(label).fill(t.lime)
 }

@@ -11,10 +11,19 @@ use crate::sql::FilterOp;
 use crate::values::{CellRange, SAMPLE_ROWS, ValueKind, column_info};
 
 const HEADER_HEIGHT: f32 = 28.0;
-const ROW_HEIGHT: f32 = 24.0;
-const CELL_FONT: f32 = 12.0;
+/// Row height for the grid font (a preference): 24 at the default 12.
+fn row_height() -> f32 {
+    (crate::settings::grid_font() + 12.0).round()
+}
+
+fn cell_font_size() -> f32 {
+    crate::settings::grid_font()
+}
 /// Rough advance of one character of the cell font, for sizing columns to their content.
-const CHAR_WIDTH: f32 = 7.3;
+/// Width of one monospace char at the grid font.
+fn char_width() -> f32 {
+    7.3 * crate::settings::grid_font() / 12.0
+}
 /// Space between a right-aligned number and its column's edge.
 const NUMBER_PAD: f32 = 4.0;
 const MIN_COL_WIDTH: f32 = 112.0;
@@ -25,6 +34,8 @@ pub fn display_value(kind: ValueKind, v: &str) -> String {
     match (kind, v) {
         (ValueKind::Bool, "t" | "1" | "true") => "true".to_string(),
         (ValueKind::Bool, "f" | "0" | "false") => "false".to_string(),
+        // "Números com vírgula decimal": display only; editing and copying keep the real value.
+        (ValueKind::Number, v) if crate::settings::decimal_comma() => v.replace('.', ","),
         _ => v.replace('\n', icon::ARROW_ELBOW_DOWN_LEFT),
     }
 }
@@ -37,7 +48,7 @@ fn column_width(name: &str, data_type: Option<&str>, samples: impl Iterator<Item
     let longest = samples
         .map(|n| n.unwrap_or(4) as f32 + 2.0)
         .fold(header, f32::max);
-    (longest * CHAR_WIDTH + 24.0).clamp(MIN_COL_WIDTH, MAX_COL_WIDTH)
+    (longest * char_width() + 24.0).clamp(MIN_COL_WIDTH, MAX_COL_WIDTH)
 }
 
 /// Painter for a cell that may draw into the gap between columns.
@@ -278,7 +289,7 @@ pub fn grid(
     }
     let mut event = None;
     let t = theme::tokens();
-    let cell_font = FontId::monospace(CELL_FONT);
+    let cell_font = FontId::monospace(cell_font_size());
 
     let info = column_info(res, cols);
     let sample = &res.rows[..res.rows.len().min(SAMPLE_ROWS)];
@@ -310,7 +321,7 @@ pub fn grid(
     }
     // Row-number gutter sized to the largest number on the page.
     let digits = (row_offset + res.rows.len()).max(1).to_string().len() as f32;
-    table = table.column(Column::exact((digits * CHAR_WIDTH + 12.0).max(32.0)));
+    table = table.column(Column::exact((digits * char_width() + 12.0).max(32.0)));
     let last = view.len().saturating_sub(1);
     for (vi, &ci) in view.iter().enumerate() {
         let name = &res.columns[ci];
@@ -453,7 +464,7 @@ pub fn grid(
             }
         })
         .body(|body| {
-            body.rows(ROW_HEIGHT, res.rows.len(), |mut row| {
+            body.rows(row_height(), res.rows.len(), |mut row| {
                 let ri = row.index();
                 row.col(|ui| {
                     row_background(ui, table_rect, t);

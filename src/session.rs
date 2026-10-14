@@ -22,6 +22,9 @@ pub enum SavedTab {
         /// Set when the user renamed the tab.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// The `.sql` file the tab edits, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<std::path::PathBuf>,
     },
     Table {
         schema: String,
@@ -70,6 +73,7 @@ mod tests {
                 SavedTab::Sql {
                     text: "select 1".into(),
                     title: Some("Relatório".into()),
+                    file: Some("/tmp/relatorio.sql".into()),
                 },
                 SavedTab::Table {
                     schema: "public".into(),

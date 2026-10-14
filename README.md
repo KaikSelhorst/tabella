@@ -78,6 +78,14 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - "Repetir": roda a última consulta de leitura a cada 2 s … 1 min
 - Diagrama ER por schema (`Ctrl+P` ou clique direito no schema): tabelas e chaves
   estrangeiras organizadas sozinhas, com zoom, arrastar e duplo clique para abrir
+- Autocomplete entende apelidos (`FROM pedidos p` → `p.` sugere as colunas de pedidos) e,
+  depois de `JOIN`, sugere a junção pronta pelas chaves estrangeiras
+  (`clientes c ON c.id = p.cliente_id`)
+- Arquivos `.sql`: abrir (`Ctrl+O` ou arrastar), salvar (`Ctrl+S`) e salvar como
+  (`Ctrl+Shift+S`); a aba marca alterações não salvas e avisa antes de fechar
+- Histórico completo (`Ctrl+Shift+H`): busca, filtro por conexão e por erro, abrir no editor
+- Preferências (`Ctrl+,`): tema claro ou escuro, zoom da interface (`Ctrl +`/`Ctrl −`),
+  fonte do editor e da grade, linhas por página, limite de linhas, vírgula decimal
 
 ## Segurança
 

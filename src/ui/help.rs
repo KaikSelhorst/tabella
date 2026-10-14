@@ -18,14 +18,24 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Paleta: tabelas, colunas (\"tabela.coluna\"), conexões, consultas, ações",
             ),
             ("Ctrl+Shift+F", "Buscar um valor em todas as tabelas"),
+            ("Ctrl+Shift+H", "Histórico completo de consultas"),
             ("Ctrl+T", "Nova aba SQL"),
             (
                 "Ctrl+W",
                 "Fechar aba (clique direito na aba: renomear, duplicar, fechar outras)",
             ),
             ("Ctrl+Shift+T", "Reabrir a última aba fechada"),
+            (
+                "Ctrl+O",
+                "Abrir arquivo .sql (ou arraste o arquivo para a janela)",
+            ),
             ("Ctrl+Tab / Ctrl+Shift+Tab", "Próxima / aba anterior"),
             ("F1", "Esta tela"),
+            (
+                "Ctrl+,",
+                "Preferências: tema claro/escuro, zoom, fontes, linhas por página",
+            ),
+            ("Ctrl + / Ctrl − / Ctrl 0", "Zoom da interface"),
         ],
     ),
     (
@@ -34,6 +44,10 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Enter", "Executar o comando sob o cursor (ou a seleção)"),
             ("F5", "Executar tudo"),
             ("Ctrl+E", "Plano de execução (EXPLAIN)"),
+            (
+                "Ctrl+S / Ctrl+Shift+S",
+                "Salvar o arquivo .sql / salvar como (com edições no resultado, Ctrl+S salva elas)",
+            ),
             ("Shift+Alt+F", "Formatar SQL"),
             ("Ctrl+F / Ctrl+H", "Buscar / substituir"),
             ("Tab / Enter", "Aceitar sugestão do autocomplete"),

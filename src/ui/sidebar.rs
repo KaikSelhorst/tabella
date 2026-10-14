@@ -222,7 +222,8 @@ impl App {
             | TabKind::Activity(_)
             | TabKind::Design(_)
             | TabKind::Search(_)
-            | TabKind::Diagram(_) => None,
+            | TabKind::Diagram(_)
+            | TabKind::History(_) => None,
         });
         let needle = self.filter.to_lowercase();
         let by_size = self.sort_by_size;

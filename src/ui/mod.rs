@@ -10,6 +10,7 @@ mod help;
 mod import_form;
 mod palette;
 mod plan_view;
+mod prefs;
 mod sidebar;
 mod structure;
 mod syntax;
@@ -105,6 +106,9 @@ impl eframe::App for App {
         self.master_prompt(&ctx);
         self.favorite_prompt(&ctx);
         self.help_ui(&ctx);
+        self.path_prompt_ui(&ctx);
+        self.prefs_ui(&ctx);
+        self.track_zoom(&ctx);
     }
 }
 
@@ -158,6 +162,67 @@ impl App {
             });
         if let Some(commit) = end {
             self.end_tx(commit);
+        }
+    }
+
+    /// Where there's no native file dialog: type the path.
+    fn path_prompt_ui(&mut self, ctx: &egui::Context) {
+        let Some(p) = &mut self.path_prompt else { return };
+        let t = theme::tokens();
+        let (mut ok, mut cancel) = (false, false);
+        let saving = p.save_tab.is_some();
+        let modal = egui::Modal::new(egui::Id::new("path_prompt"))
+            .frame(theme::modal_frame(16))
+            .show(ctx, |ui| {
+                ui.set_width(480.0);
+                ui.label(
+                    egui::RichText::new(if saving {
+                        "Salvar como"
+                    } else {
+                        "Abrir arquivo SQL"
+                    })
+                    .size(15.0)
+                    .color(t.foreground),
+                );
+                ui.add_space(8.0);
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut p.path)
+                        .hint_text("/caminho/do/arquivo.sql")
+                        .font(egui::FontId::monospace(12.5))
+                        .desired_width(f32::INFINITY),
+                );
+                r.request_focus();
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    ok = true;
+                }
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(theme::primary_button(
+                            None,
+                            if saving { "Salvar" } else { "Abrir" },
+                        ))
+                        .clicked()
+                    {
+                        ok = true;
+                    }
+                    if ui.add(theme::outline_button("Cancelar")).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if ok && !p.path.trim().is_empty() {
+            let p = self.path_prompt.take().expect("open prompt");
+            let path = std::path::PathBuf::from(p.path.trim());
+            match p
+                .save_tab
+                .and_then(|id| self.tabs.iter().position(|t| t.id == id))
+            {
+                Some(i) => self.save_file_as(i, path),
+                None => self.open_file(path),
+            }
+        } else if cancel || modal.should_close() {
+            self.path_prompt = None;
         }
     }
 
@@ -228,10 +293,37 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
             self.help = !self.help;
         }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)) {
+            self.prefs_open = !self.prefs_open;
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F))
             && self.session.as_ref().is_some_and(|s| s.ready)
         {
             self.open_search();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::H))
+            && self.session.as_ref().is_some_and(|s| s.ready)
+        {
+            self.open_history();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O))
+            && self.session.as_ref().is_some_and(|s| s.ready)
+        {
+            self.open_file_dialog();
+        }
+        // A .sql file dropped on the window opens in an editor tab.
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql")))
+                .collect()
+        });
+        if self.session.as_ref().is_some_and(|s| s.ready) {
+            for p in dropped {
+                self.open_file(p);
+            }
         }
         // Before Ctrl+T, which would match it too.
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::T)) {
@@ -1271,6 +1363,83 @@ mod screenshots {
             let state = harness.state_mut();
             state.tabs.pop();
             state.active = 1;
+        }
+
+        // Full history, the preferences dialog, then the light theme.
+        {
+            let state = harness.state_mut();
+            let now = crate::history::now();
+            for (i, (sql, ok)) in [
+                (
+                    "SELECT * FROM clientes WHERE uf = 'SP' ORDER BY id LIMIT 50",
+                    true,
+                ),
+                ("UPDATE pedidos SET status = 'pago' WHERE id = 42", true),
+                (
+                    "SELECT c.uf, count(*) FROM pedidos p JOIN clientes c ON c.id = p.cliente_id GROUP BY 1",
+                    true,
+                ),
+                ("SELECT * FROM produtos", false),
+            ]
+            .iter()
+            .enumerate()
+            {
+                state.history.push(crate::history::Entry {
+                    conn: "dev".into(),
+                    sql: sql.to_string(),
+                    at: now - 600 * (i as u64 + 1),
+                    ok: *ok,
+                    ms: 12 * (i as u64 + 1),
+                });
+            }
+            state.open_history();
+            let sel = state.history.last().map(|e| (e.conn.clone(), e.sql.clone()));
+            if let Some(TabKind::History(h)) = state.tabs.last_mut().map(|t| &mut t.kind) {
+                h.selected = sel;
+                h.focus = false;
+            }
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/history.png"))
+                .unwrap();
+            let state = harness.state_mut();
+            state.tabs.pop();
+            state.active = 0;
+            state.prefs_open = true;
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/prefs.png"))
+                .unwrap();
+            harness.state_mut().prefs_open = false;
+            let ctx = harness.ctx.clone();
+            let light = crate::settings::Settings {
+                light: true,
+                ..harness.state().settings.clone()
+            };
+            harness.state_mut().apply_settings(&ctx, light);
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/light.png"))
+                .unwrap();
+            harness.state_mut().active = 1;
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/light-sql.png"))
+                .unwrap();
+            let dark = crate::settings::Settings {
+                light: false,
+                ..harness.state().settings.clone()
+            };
+            harness.state_mut().apply_settings(&ctx, dark);
+            harness.state_mut().active = 1;
         }
 
         // Autocomplete: type a partial word and put the cursor after it.

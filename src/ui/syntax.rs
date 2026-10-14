@@ -164,13 +164,23 @@ fn tokens(text: &str) -> Vec<(Kind, &str)> {
 }
 
 pub fn keyword_color() -> Color32 {
-    theme::oklch(0.80, 0.11, 290.0)
+    if theme::is_light() {
+        theme::oklch(0.50, 0.17, 290.0)
+    } else {
+        theme::oklch(0.80, 0.11, 290.0)
+    }
 }
 
 fn color(kind: Kind, t: &Tokens) -> Color32 {
     match kind {
         Kind::Keyword => keyword_color(),
-        Kind::Str => theme::oklch(0.80, 0.12, 145.0),
+        Kind::Str => {
+            if theme::is_light() {
+                theme::oklch(0.52, 0.14, 145.0)
+            } else {
+                theme::oklch(0.80, 0.12, 145.0)
+            }
+        }
         Kind::Number => t.number,
         Kind::Comment => t.subtle,
         Kind::Ident => t.foreground,

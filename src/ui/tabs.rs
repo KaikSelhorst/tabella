@@ -18,7 +18,7 @@ use crate::export::{self, Format};
 use crate::favorites::{self, Favorite};
 use crate::filters::{self, SavedFilter};
 use crate::history::{self, Entry};
-use crate::sql::{self, PAGE_SIZE};
+use crate::sql::{self, page_size};
 use crate::values;
 
 /// What a tab body needs from the app besides the tab itself.
@@ -50,6 +50,12 @@ enum Request {
     DeleteFavorite(String),
     /// The ER diagram of a schema.
     Diagram(String),
+    /// Save the active editor tab to its file (`true`: ask where).
+    SaveFile(bool),
+    OpenFile,
+    History,
+    /// Remove one history entry: (connection, sql).
+    ForgetHistory(String, String),
     /// "Editar estrutura" of schema.table (its Estrutura tab has the data).
     Design(String, String),
     /// schema, table, name, filter
@@ -81,9 +87,15 @@ impl App {
                             TabKind::Activity(_) => icon::PULSE,
                             TabKind::Design(_) => icon::PENCIL_SIMPLE,
                             TabKind::Search(_) => icon::MAGNIFYING_GLASS,
+                            TabKind::History(_) => icon::CLOCK_COUNTER_CLOCKWISE,
                             TabKind::Diagram(_) => icon::GRAPH,
                         };
-                        let label = theme::tab_label(ui, glyph, &tab.title, i == self.active);
+                        let shown = if app::file_dirty(tab) {
+                            format!("{} •", tab.title)
+                        } else {
+                            tab.title.clone()
+                        };
+                        let label = theme::tab_label(ui, glyph, &shown, i == self.active);
                         if label.clicked() {
                             self.active = i;
                         }
@@ -185,6 +197,7 @@ impl App {
             TabKind::Table(_) => table_tab(ui, tab, &mut cx),
             TabKind::Activity(_) => activity_tab(ui, tab, &mut cx),
             TabKind::Search(_) => search_tab(ui, tab, &mut cx),
+            TabKind::History(_) => history_tab(ui, tab, &mut cx),
             TabKind::Diagram(_) => {
                 let busy = tab.busy();
                 let schemas: Vec<String> = {
@@ -256,6 +269,10 @@ impl App {
             }
             Some(Request::DeleteFavorite(id)) => self.delete_favorite(&id),
             Some(Request::Diagram(schema)) => self.open_diagram(Some(&schema)),
+            Some(Request::SaveFile(ask)) => self.save_file(self.active, ask),
+            Some(Request::OpenFile) => self.open_file_dialog(),
+            Some(Request::History) => self.open_history(),
+            Some(Request::ForgetHistory(conn, sql)) => self.forget_history(&conn, &sql),
             Some(Request::Design(schema, table)) => {
                 let data = self.tabs.iter().find_map(|t| match &t.kind {
                     TabKind::Structure(st) if st.schema == schema && st.table == table => st.data.clone(),
@@ -402,6 +419,8 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let mut explain: Option<(String, bool)> = None;
     let mut preview: Option<String> = None;
     let mut open_table: Option<(String, String)> = None;
+    let mut file_menu_action: Option<Request> = None;
+    let has_file = tab.file.is_some();
     let t = theme::tokens();
     let f5 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
     egui::Panel::top(egui::Id::new(("editor", tab.id)))
@@ -479,8 +498,10 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 if busy {
                     busy_indicator(ui, s);
                 }
-                if let Some(sql) = history_menu(ui, cx.history, &s.cfg.name) {
-                    *text = sql;
+                match history_menu(ui, cx.history, &s.cfg.name) {
+                    Some(HistoryPick::Load(sql)) => *text = sql,
+                    Some(HistoryPick::All) => file_menu_action = Some(Request::History),
+                    None => {}
                 }
                 match favorites_menu(ui, cx.favorites, &s.cfg.id, !text.trim().is_empty()) {
                     Some(FavAction::Load(sql)) => *text = sql,
@@ -535,6 +556,23 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     .response
                     .on_disabled_hover_text("Execute uma consulta de leitura primeiro (SELECT…)");
                 });
+                let file_label = theme::icon(icon::FOLDER_OPEN).color(t.muted_foreground);
+                ui.menu_button(file_label, |ui| {
+                    if ui.add(egui::Button::new("Abrir arquivo…").shortcut_text("Ctrl+O")).clicked() {
+                        file_menu_action = Some(Request::OpenFile);
+                        ui.close();
+                    }
+                    if ui.add(egui::Button::new("Salvar").shortcut_text("Ctrl+S")).clicked() {
+                        file_menu_action = Some(Request::SaveFile(false));
+                        ui.close();
+                    }
+                    if ui.add(egui::Button::new("Salvar como…").shortcut_text("Ctrl+Shift+S")).clicked() {
+                        file_menu_action = Some(Request::SaveFile(true));
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text(if has_file { "Arquivo .sql desta aba" } else { "Abrir ou salvar como arquivo .sql" });
                 let format = theme::icon_text(
                     icon::TEXT_ALIGN_LEFT,
                     "Formatar",
@@ -612,9 +650,14 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let popup = complete::before_editor(ui.ctx(), editor_id, text, &s.tables, &s.columns);
+                    let catalog = complete::Catalog {
+                        tables: &s.tables,
+                        columns: &s.columns,
+                        fks: &s.fks,
+                    };
+                    let popup = complete::before_editor(ui.ctx(), editor_id, text, catalog);
                     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-                        let mut job = syntax::highlight(buf.as_str(), egui::FontId::monospace(13.0));
+                        let mut job = syntax::highlight(buf.as_str(), egui::FontId::monospace(crate::settings::editor_font()));
                         if !query.is_empty() {
                             let ranges = find::find_all(buf.as_str(), &query, case);
                             find::mark(&mut job, &ranges, current_match);
@@ -744,22 +787,31 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     }
     confirm_run(ui.ctx(), tab, s);
     export_banner(ui, tab);
-    // Edits on an editable result: same keys and bar as a table tab.
-    if !ui.ctx().egui_wants_keyboard_input() {
-        let (save, undo) = ui.input_mut(|i| {
-            (
-                i.consume_key(egui::Modifiers::COMMAND, Key::S),
-                i.consume_key(egui::Modifiers::COMMAND, Key::Z),
-            )
-        });
+    // Ctrl+S saves the result's pending edits when there are any, the file otherwise;
+    // Ctrl+Shift+S always asks where to save the file (checked first: Ctrl+S would match it).
+    let (save_as, save) = ui.input_mut(|i| {
+        (
+            i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::S),
+            i.consume_key(egui::Modifiers::COMMAND, Key::S),
+        )
+    });
+    let pending_edits = app::editable_ref(&tab.kind, &tab.source).is_some_and(|ts| !ts.changes.is_empty());
+    if save && pending_edits {
         if let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source) {
-            if save && !ts.changes.is_empty() {
-                ts.confirm_save = true;
-            }
-            if undo {
-                ts.changes.pop();
-            }
+            ts.confirm_save = true;
         }
+    } else if save || save_as {
+        cx.request = Some(Request::SaveFile(save_as));
+    }
+    if file_menu_action.is_some() {
+        cx.request = file_menu_action;
+    }
+    // Ctrl+Z undoes a result edit (in the editor it undoes typing).
+    if !ui.ctx().egui_wants_keyboard_input()
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Z))
+        && let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source)
+    {
+        ts.changes.pop();
     }
     changes_bar(ui, tab, s);
     confirm_save(ui.ctx(), tab, s);
@@ -1384,6 +1436,172 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     result_area(ui, tab, cx, false);
 }
 
+/// Every query run, newest first: search, filter, look at one, open it in an editor.
+fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
+    let t = theme::tokens();
+    let conn = cx.s.cfg.name.clone();
+    let TabKind::History(st) = &mut tab.kind else {
+        return;
+    };
+    egui::Frame::new()
+        .fill(t.background)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    theme::icon(icon::CLOCK_COUNTER_CLOCKWISE)
+                        .size(15.0)
+                        .color(t.muted_foreground),
+                );
+                ui.label(
+                    egui::RichText::new("Histórico de consultas")
+                        .size(15.0)
+                        .color(t.foreground),
+                );
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let r = ui.add(
+                    TextEdit::singleline(&mut st.query)
+                        .hint_text("Buscar no texto das consultas")
+                        .desired_width(320.0),
+                );
+                if std::mem::take(&mut st.focus) {
+                    r.request_focus();
+                }
+                ui.checkbox(&mut st.all_conns, "todas as conexões");
+                ui.checkbox(&mut st.only_errors, "só as que falharam");
+            });
+        });
+    let needle = st.query.to_lowercase();
+    let list: Vec<&Entry> = cx
+        .history
+        .iter()
+        .rev()
+        .filter(|e| st.all_conns || e.conn == conn)
+        .filter(|e| !st.only_errors || !e.ok)
+        .filter(|e| needle.is_empty() || e.sql.to_lowercase().contains(&needle))
+        .collect();
+    let picked = st
+        .selected
+        .as_ref()
+        .and_then(|(c, q)| list.iter().find(|e| e.conn == *c && e.sql == *q).copied());
+
+    // The chosen one, whole, with what can be done with it.
+    if let Some(e) = picked {
+        egui::Panel::bottom(egui::Id::new(("history_detail", tab.id)))
+            .resizable(true)
+            .default_size(200.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(t.sidebar)
+                    .inner_margin(egui::Margin::same(12)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let when = history::ago(e.at, history::now());
+                    let status = if e.ok {
+                        format!("{} ms", e.ms)
+                    } else {
+                        "falhou".to_string()
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{} · {when} · {status}", e.conn))
+                            .size(12.0)
+                            .color(t.subtle),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(theme::primary_button(Some(icon::CODE), "Abrir no editor"))
+                            .clicked()
+                        {
+                            cx.request = Some(Request::Sql(e.sql.clone()));
+                        }
+                        if ui
+                            .button(theme::icon_text(
+                                icon::COPY,
+                                "Copiar",
+                                t.muted_foreground,
+                                t.foreground,
+                            ))
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(e.sql.clone());
+                        }
+                        if ui
+                            .button(theme::icon_text(
+                                icon::TRASH,
+                                "Esquecer",
+                                t.muted_foreground,
+                                t.foreground,
+                            ))
+                            .on_hover_text("Tira esta consulta do histórico")
+                            .clicked()
+                        {
+                            cx.request = Some(Request::ForgetHistory(e.conn.clone(), e.sql.clone()));
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let job = syntax::highlight(&e.sql, egui::FontId::monospace(12.5));
+                        ui.add(egui::Label::new(job).selectable(true));
+                    });
+            });
+    }
+
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        ui.label(
+            egui::RichText::new(format!("{} consulta(s)", list.len()))
+                .size(11.0)
+                .color(t.subtle),
+        );
+    });
+    // Only the rows on screen are laid out: the history can hold thousands.
+    let row_h = 26.0;
+    let now = history::now();
+    let mut select: Option<(String, String)> = None;
+    let mut open: Option<String> = None;
+    egui::ScrollArea::vertical()
+        .id_salt(("history_list", tab.id))
+        .auto_shrink([false, false])
+        .show_rows(ui, row_h, list.len(), |ui, range| {
+            for e in &list[range] {
+                let selected = picked.is_some_and(|p| std::ptr::eq(p, *e));
+                let first = e.sql.split_whitespace().collect::<Vec<_>>().join(" ");
+                let color = if e.ok { t.foreground } else { t.destructive };
+                let mut right = history::ago(e.at, now);
+                if st.all_conns {
+                    right = format!("{} · {right}", e.conn);
+                }
+                let r = ui.add(
+                    egui::Button::selectable(
+                        selected,
+                        egui::RichText::new(first).monospace().size(12.0).color(color),
+                    )
+                    .truncate()
+                    .min_size(egui::vec2(ui.available_width(), row_h - 2.0))
+                    .right_text(egui::RichText::new(right).size(11.0).color(t.subtle)),
+                );
+                if r.clicked() {
+                    select = Some((e.conn.clone(), e.sql.clone()));
+                }
+                if r.double_clicked() {
+                    open = Some(e.sql.clone());
+                }
+            }
+        });
+    if select.is_some() {
+        st.selected = select;
+    }
+    if let Some(sql) = open {
+        cx.request = Some(Request::Sql(sql));
+    }
+}
+
 /// "Buscar valor em todas as tabelas": the term, options, progress and where it was found.
 fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
@@ -1686,7 +1904,7 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let status = status_text(tab, s.cfg.read_only);
     let busy = tab.busy();
     let rows = tab.result.as_ref().map_or(0, |r| r.rows.len());
-    let full = rows >= PAGE_SIZE;
+    let full = rows >= page_size();
     let can_export = !busy && tab.result.as_ref().is_some_and(|r| !r.columns.is_empty());
     let mut export = None;
     let mut show_structure = false;
@@ -1711,7 +1929,7 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         ts.page += 1;
                         reload_now = true;
                     }
-                    let first = ts.page * PAGE_SIZE + 1;
+                    let first = ts.page * page_size() + 1;
                     let range = if rows == 0 {
                         "0".to_string()
                     } else {
@@ -2251,7 +2469,7 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
                     ts.edit.as_mut(),
                     ts.order.clone(),
                     ts.bool_pick,
-                    if table_tab { ts.page * PAGE_SIZE } else { 0 },
+                    if table_tab { ts.page * page_size() } else { 0 },
                     has_pk,
                     &ts.incoming,
                 )
@@ -2932,7 +3150,12 @@ fn favorites_menu(ui: &mut egui::Ui, favs: &[Favorite], conn: &str, can_save: bo
 }
 
 /// "Histórico" dropdown with this connection's recent queries; returns the one picked.
-fn history_menu(ui: &mut egui::Ui, history: &[Entry], conn: &str) -> Option<String> {
+enum HistoryPick {
+    Load(String),
+    All,
+}
+
+fn history_menu(ui: &mut egui::Ui, history: &[Entry], conn: &str) -> Option<HistoryPick> {
     let t = theme::tokens();
     let mut picked = None;
     let label = theme::icon_text(
@@ -2945,6 +3168,24 @@ fn history_menu(ui: &mut egui::Ui, history: &[Entry], conn: &str) -> Option<Stri
         ui.set_width(460.0);
         let now = history::now();
         let mine: Vec<&Entry> = history.iter().rev().filter(|e| e.conn == conn).take(40).collect();
+        let all = theme::icon_text(
+            icon::LIST_MAGNIFYING_GLASS,
+            "Ver histórico completo…",
+            t.lime,
+            t.foreground,
+        );
+        if ui
+            .add(
+                egui::Button::new(all)
+                    .frame_when_inactive(false)
+                    .shortcut_text("Ctrl+Shift+H"),
+            )
+            .clicked()
+        {
+            picked = Some(HistoryPick::All);
+            ui.close();
+        }
+        ui.separator();
         if mine.is_empty() {
             ui.label(egui::RichText::new("Nenhuma consulta ainda").color(t.subtle));
         }
@@ -2972,7 +3213,7 @@ fn history_menu(ui: &mut egui::Ui, history: &[Entry], conn: &str) -> Option<Stri
                         ),
                 );
                 if r.on_hover_text(&e.sql).clicked() {
-                    picked = Some(e.sql.clone());
+                    picked = Some(HistoryPick::Load(e.sql.clone()));
                     ui.close();
                 }
             }

@@ -8,6 +8,7 @@ mod diagram;
 mod error;
 mod export;
 mod favorites;
+mod files;
 mod filters;
 mod history;
 mod import;
@@ -15,6 +16,7 @@ mod plan;
 mod search;
 mod secrets;
 mod session;
+mod settings;
 mod sql;
 mod tls;
 mod tunnel;
@@ -28,6 +30,10 @@ use eframe::egui;
 fn main() -> eframe::Result {
     // Same size as when it was last closed.
     let size = session::load().window.unwrap_or([1100.0, 700.0]);
+    // Preferences first: the theme is built from them.
+    let prefs = settings::load();
+    settings::publish(&prefs);
+    ui::theme::set_light(prefs.light);
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size(size)
         .with_title("dblite");
@@ -44,6 +50,7 @@ fn main() -> eframe::Result {
         opts,
         Box::new(|cc| {
             ui::theme::apply(&cc.egui_ctx);
+            cc.egui_ctx.set_zoom_factor(prefs.zoom);
             Ok(Box::new(app::App::new(&cc.egui_ctx)))
         }),
     )

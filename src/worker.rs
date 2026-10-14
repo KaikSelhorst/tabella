@@ -180,6 +180,8 @@ pub enum Reply {
     },
     /// `(table, column)` pairs for autocomplete; sent after connecting and on table reloads.
     AllColumns(DbResult<Vec<SchemaColumn>>),
+    /// Every foreign key, for JOIN suggestions; sent with `AllColumns`.
+    AllFks(DbResult<Vec<FkEdge>>),
     Structure {
         tab: u64,
         res: DbResult<TableStructure>,
@@ -271,6 +273,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
             conn.tables().map(|tables| Connected { tables, canceller }),
         ));
         send(Reply::AllColumns(conn.all_columns()));
+        send(Reply::AllFks(conn.all_fks()));
         let mut tx = TxState {
             manual: cfg.manual_commit,
             ..Default::default()
@@ -404,6 +407,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                 Job::Tables => {
                     let tables = conn.tables();
                     send(Reply::AllColumns(conn.all_columns()));
+                    send(Reply::AllFks(conn.all_fks()));
                     Reply::Tables(tables)
                 }
                 Job::Batch { tab, stmts, refresh } => {

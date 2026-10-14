@@ -15,6 +15,8 @@ const COLUMN_PENALTY: i32 = 24;
 #[derive(Clone)]
 enum Cmd {
     Activity,
+    Prefs,
+    History,
     Diagram,
     Search,
     NewTable,
@@ -166,6 +168,12 @@ impl App {
             });
         }
         items.push(Item {
+            icon: icon::GEAR,
+            label: "Preferências".into(),
+            detail: "tema, zoom, fontes, linhas por página · Ctrl+,".into(),
+            cmd: Cmd::Prefs,
+        });
+        items.push(Item {
             icon: icon::KEYBOARD,
             label: "Atalhos de teclado".into(),
             detail: "F1".into(),
@@ -178,6 +186,12 @@ impl App {
             cmd: Cmd::NewConnection,
         });
         if self.session.is_some() {
+            items.push(Item {
+                icon: icon::CLOCK_COUNTER_CLOCKWISE,
+                label: "Histórico de consultas".into(),
+                detail: "Ctrl+Shift+H".into(),
+                cmd: Cmd::History,
+            });
             items.push(Item {
                 icon: icon::GRAPH,
                 label: "Diagrama ER".into(),
@@ -376,6 +390,8 @@ impl App {
                     })
                 }
                 Cmd::Activity => self.open_activity(),
+                Cmd::Prefs => self.prefs_open = true,
+                Cmd::History => self.open_history(),
                 Cmd::Diagram => self.open_diagram(None),
                 Cmd::Search => self.open_search(),
                 Cmd::NewTable => self.open_new_table(None),

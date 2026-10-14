@@ -2,7 +2,10 @@
 
 use crate::db::Kind;
 
-pub const PAGE_SIZE: usize = 200;
+/// Rows per page in table tabs (a preference).
+pub fn page_size() -> usize {
+    crate::settings::page_size()
+}
 
 pub struct PageQuery<'a> {
     pub schema: &'a str,
@@ -15,7 +18,8 @@ pub struct PageQuery<'a> {
 }
 
 pub fn select_page(kind: Kind, q: &PageQuery) -> String {
-    select_range(kind, q, PAGE_SIZE, q.page * PAGE_SIZE)
+    let n = page_size();
+    select_range(kind, q, n, q.page * n)
 }
 
 /// Same query as a page but with any window; exports walk the table in big chunks.
