@@ -1,7 +1,7 @@
 # Databases for dblite.
 #
 #   docker compose --profile test up -d --wait   # what `cargo test -- --ignored` expects
-#   docker compose --profile dev up -d --wait    # sample data to click around in the app
+#   docker compose --profile dev up -d --wait    # heavy sample data (millions of rows; ~3 min to seed)
 #
 # Test databases are throwaway (no volumes). Dev data is re-seeded on first start of a fresh
 # container; `docker compose --profile dev down` resets it.
@@ -71,7 +71,12 @@ services:
     environment: { POSTGRES_PASSWORD: postgres }
     ports: ["5432:5432"]
     volumes: ["./dev/postgres.sql:/docker-entrypoint-initdb.d/seed.sql:ro"]
-    healthcheck: *pg-health
+    # Over TCP: during the ~3 min seed the server only listens on its socket, so this
+    # reports healthy once the data is really there.
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 3s
+      retries: 120
 
   dev-mysql:
     profiles: [dev]
@@ -79,4 +84,7 @@ services:
     environment: { MYSQL_ROOT_PASSWORD: mysql, MYSQL_DATABASE: loja }
     ports: ["3307:3306"]
     volumes: ["./dev/mysql.sql:/docker-entrypoint-initdb.d/seed.sql:ro"]
-    healthcheck: *mysql-health
+    healthcheck:
+      <<: *mysql-health
+      interval: 3s
+      retries: 120 # the seed takes a few minutes

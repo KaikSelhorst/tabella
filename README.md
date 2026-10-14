@@ -48,11 +48,16 @@ teste no binário: não use em builds distribuídos.
 ## Bancos para desenvolvimento e testes
 
 ```sh
-docker compose --profile dev up -d --wait     # dados de exemplo: Postgres :5432, MySQL :3307
+docker compose --profile dev up -d --wait     # dados de exemplo pesados: Postgres :5432, MySQL :3307 (~4 min)
 docker compose --profile test up -d --wait    # bancos dos testes de integração
 cargo test                                    # testes de unidade e de interface
 cargo test -- --ignored db:: worker:: tunnel::   # testes contra os bancos reais (e SSH)
 ```
+
+Os dados de exemplo são grandes de propósito: no Postgres, `clientes` (1 mi), `pedidos` (5 mi),
+`eventos` (300 mil, tabela larga com JSON, arrays e IPs) e 200 tabelas pequenas no schema `arquivo`;
+no MySQL, `produtos` (1 mi), `vendas` (3 mi), `logs` (200 mil) e 150 tabelas no banco `arquivo`.
+Os scripts em `dev/` podem ser rodados de novo num banco existente (recriam o que é deles).
 
 O perfil `test` inclui um servidor SSH descartável (porta 52222) que alcança o Postgres de teste;
 a chave em `dev/ssh/` serve só para ele.
