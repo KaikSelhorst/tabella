@@ -211,6 +211,35 @@ pub fn highlight(text: &str, font: FontId) -> LayoutJob {
     job
 }
 
+/// Underlines `range` (bytes) in red: where the last error is.
+pub fn mark_error(job: &mut LayoutJob, range: std::ops::Range<usize>) {
+    let t = super::theme::tokens();
+    let mut out = Vec::with_capacity(job.sections.len() + 2);
+    for sec in job.sections.drain(..) {
+        let (start, end) = (sec.byte_range.start.0, sec.byte_range.end.0);
+        let mut cuts = vec![start];
+        cuts.extend(
+            [range.start, range.end]
+                .into_iter()
+                .filter(|&p| p > start && p < end),
+        );
+        cuts.push(end);
+        for (n, w) in cuts.windows(2).enumerate() {
+            let mut piece = sec.clone();
+            piece.byte_range = egui::text::ByteIndex(w[0])..egui::text::ByteIndex(w[1]);
+            if n > 0 {
+                piece.leading_space = 0.0;
+            }
+            if w[0] >= range.start && w[1] <= range.end {
+                piece.format.underline = egui::Stroke::new(2.0, t.destructive);
+                piece.format.background = super::theme::mix(t.destructive, 0.18, t.background);
+            }
+            out.push(piece);
+        }
+    }
+    job.sections = out;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

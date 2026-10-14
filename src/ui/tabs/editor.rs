@@ -14,7 +14,8 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let mut repeat_value = ed.repeat;
     let repeat = &mut repeat_value;
     let has_file = ed.file.is_some();
-    let text = &mut ed.text;
+    let error_jump = std::mem::take(&mut ed.error_jump);
+    let (text, error_at) = (&mut ed.text, &mut ed.error_at);
     let mut run: Option<String> = None;
     let mut explain: Option<(String, bool)> = None;
     let mut preview: Option<String> = None;
@@ -275,8 +276,15 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         fks: &s.fks,
                     };
                     let popup = complete::before_editor(ui.ctx(), editor_id, text, catalog);
+                    let error_bytes = error_at.and_then(|(a, b)| {
+                        let byte = |c: usize| text.char_indices().nth(c).map_or(text.len(), |(i, _)| i);
+                        (b <= text.chars().count()).then(|| byte(a)..byte(b))
+                    });
                     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
                         let mut job = syntax::highlight(buf.as_str(), egui::FontId::monospace(13.0));
+                        if let Some(r) = error_bytes.clone() {
+                            syntax::mark_error(&mut job, r);
+                        }
                         if !query.is_empty() {
                             let ranges = find::find_all(buf.as_str(), &query, case);
                             find::mark(&mut job, &ranges, current_match);
@@ -308,6 +316,19 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             let rect = out.galley.pos_from_cursor(egui::text::CCursor::new(a));
                             ui.scroll_to_rect(rect.translate(out.galley_pos.to_vec2()), Some(Align::Center));
                         }
+                    }
+                    // Editing makes the error mark stale.
+                    if out.response.changed() {
+                        *error_at = None;
+                    }
+                    // A new error: the cursor goes to it, scrolled into view.
+                    if error_jump && let Some((a, _)) = *error_at {
+                        let at = egui::text::CCursor::new(a);
+                        out.state.cursor.set_char_range(Some(egui::text::CCursorRange::one(at)));
+                        out.state.clone().store(ui.ctx(), editor_id);
+                        ui.memory_mut(|m| m.request_focus(editor_id));
+                        let rect = out.galley.pos_from_cursor(at);
+                        ui.scroll_to_rect(rect.translate(out.galley_pos.to_vec2()), Some(Align::Center));
                     }
                     // Lime bar in the gutter beside the statement Ctrl+Enter would run.
                     if let Some((a, b)) = current {

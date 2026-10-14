@@ -1733,6 +1733,33 @@ mod screenshots {
             .unwrap();
         harness.state_mut().master = None;
 
+        // An error marked where it is in the editor.
+        {
+            let state = harness.state_mut();
+            state.active = 1;
+            let tab = &mut state.tabs[1];
+            let saved = tab.result.take();
+            let ed = tab.editor_mut().unwrap();
+            let old = std::mem::replace(
+                &mut ed.text,
+                "SELECT id, nome, emial\nFROM clientes\nWHERE ativo;".into(),
+            );
+            ed.error_at = Some((17, 22));
+            tab.error = Some("column \"emial\" does not exist (dica: Perhaps you meant to reference the column \"clientes.email\".) (linha 1, coluna 18)".into());
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/sql-error.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.error = None;
+            tab.result = saved;
+            let ed = tab.editor_mut().unwrap();
+            ed.text = old;
+            ed.error_at = None;
+        }
+
         // Switched to another schema: it moves up, opens and is marked; the others fold.
         harness.state_mut().session.as_mut().unwrap().current_schema = "auth".into();
         harness.state_mut().schema_focus = Some("auth".into());

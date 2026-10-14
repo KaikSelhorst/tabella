@@ -2300,6 +2300,23 @@ mod tests {
             assert!(run(&mut c, &spec, false).is_err());
             let _ = std::fs::remove_file(path);
         }
+        // Errors say where they are: a typo in a keyword, a column, a table.
+        let pos = |c: &mut Conn, sql: &str| c.query(sql).expect_err(sql).position_in(sql);
+        let at = |c: &mut Conn, sql: &str| {
+            pos(c, sql).map(|i| sql[i..].split_whitespace().next().unwrap_or("").to_string())
+        };
+        let third_line = "SELECT id\nFROM dbl_t\nORDER id";
+        assert_eq!(pos(&mut c, third_line), third_line.rfind("id"), "{kind:?}");
+        assert_eq!(
+            at(&mut c, "SELECT id, nmae FROM dbl_t").as_deref(),
+            Some("nmae"),
+            "{kind:?}"
+        );
+        assert_eq!(
+            at(&mut c, "SELECT * FROM dbl_nada").as_deref(),
+            Some("dbl_nada"),
+            "{kind:?}"
+        );
         c.query("DROP TABLE dbl_t").unwrap();
     }
 

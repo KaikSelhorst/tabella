@@ -346,6 +346,10 @@ pub struct Editor {
     pub repeat: Option<u64>,
     pub last_query: String,
     pub last_run: Option<Instant>,
+    /// Where the last error is in `text` (chars), underlined until the text changes.
+    pub error_at: Option<(usize, usize)>,
+    /// Move the cursor to `error_at` on the next frame.
+    pub error_jump: bool,
 }
 
 impl Editor {
@@ -364,6 +368,8 @@ impl Editor {
             repeat: None,
             last_query: String::new(),
             last_run: None,
+            error_at: None,
+            error_jump: false,
         }
     }
 }
@@ -2262,6 +2268,7 @@ pub fn run_sql(tab: &mut Tab, s: &Session, sql: String) {
         }
         ed.source = None;
         ed.plan = None;
+        ed.error_at = None;
         ed.last_query = sql.clone();
         ed.last_run = Some(Instant::now());
     }
@@ -2269,6 +2276,38 @@ pub fn run_sql(tab: &mut Tab, s: &Session, sql: String) {
     tab.error = None;
     let id = tab.id;
     tab.send_rows_job(s, Job::Query { tab: id, sql });
+}
+
+/// Where an error is in the editor.
+#[derive(Debug, PartialEq)]
+pub struct ErrorSpot {
+    /// Char range in the editor text: the word the server complains about.
+    pub start: usize,
+    pub end: usize,
+    /// 1-based, for the message.
+    pub line: usize,
+    pub column: usize,
+}
+
+/// Finds the error of `sent` in the editor `text`, when the editor still has that SQL (a run
+/// with `:parameters` sent other text, so it has no place there).
+pub fn locate_error(text: &str, sent: &str, e: &crate::error::DbError) -> Option<ErrorSpot> {
+    let at = text.find(sent)? + e.position_in(sent)?;
+    let ident = |c: char| c.is_alphanumeric() || matches!(c, '_' | '"' | '`' | '.');
+    let rest = &text[at..];
+    let len = match rest.chars().next()? {
+        c if ident(c) => rest.find(|c: char| !ident(c)).unwrap_or(rest.len()),
+        c => c.len_utf8(),
+    };
+    let before = &text[..at];
+    let start = before.chars().count();
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    Some(ErrorSpot {
+        start,
+        end: start + text[at..at + len].chars().count(),
+        line: before.matches('\n').count() + 1,
+        column: text[line_start..at].chars().count() + 1,
+    })
 }
 
 /// Opens the CSV import dialog, with `path` already chosen when a file was dropped on the window.
@@ -3312,6 +3351,30 @@ mod poll_tests {
         assert_eq!(app.tabs[2].title, "Relatório (cópia)");
         app.close_others(2, false);
         assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[test]
+    fn errors_are_found_in_the_editor_text() {
+        let e = crate::error::DbError::MySql(mysql::Error::MySqlError(mysql::MySqlError {
+            state: "42S22".into(),
+            message: "Unknown column 'emial' in 'field list'".into(),
+            code: 1054,
+        }));
+        // The statement ran with Ctrl+Enter is the second one; accents before it count as chars.
+        let text = "-- relatório\nSELECT 1;\nSELECT nome, emial FROM clientes;";
+        let spot = locate_error(text, "SELECT nome, emial FROM clientes", &e).unwrap();
+        assert_eq!((spot.line, spot.column), (3, 14));
+        let chars: String = text
+            .chars()
+            .skip(spot.start)
+            .take(spot.end - spot.start)
+            .collect();
+        assert_eq!(chars, "emial");
+        // With :parameters bound, the SQL sent isn't in the editor: no place to mark.
+        assert_eq!(
+            locate_error(text, "SELECT nome, emial FROM clientes WHERE id = 1", &e),
+            None
+        );
     }
 
     #[test]

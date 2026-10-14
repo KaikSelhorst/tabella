@@ -230,6 +230,10 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                     table,
                 });
             }
+            let spot = match (&*res, &ran, t.editor()) {
+                (Err(e), Some(sql), Some(ed)) => locate_error(&ed.text, sql, e),
+                _ => None,
+            };
             if let Some(sql) = ran {
                 let (ok, ms) = match &*res {
                     Ok(r) => (true, r.elapsed.as_millis() as u64),
@@ -283,7 +287,17 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                         _ => t.error = notice,
                     }
                 }
-                Err(e) => t.error = Some(e.to_string()),
+                Err(e) => {
+                    let mut message = e.to_string();
+                    if let Some(sp) = &spot {
+                        message.push_str(&format!(" (linha {}, coluna {})", sp.line, sp.column));
+                    }
+                    if let Some(ed) = t.editor_mut() {
+                        ed.error_jump = spot.is_some();
+                        ed.error_at = spot.map(|sp| (sp.start, sp.end));
+                    }
+                    t.error = Some(message);
+                }
             }
         }
         Reply::Count { res, .. } => {
