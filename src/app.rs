@@ -757,6 +757,9 @@ pub struct App {
     pub active: usize,
     next_id: u64,
     pub filter: String,
+    /// The schema (MySQL: database) just switched to: the sidebar opens it and folds the others
+    /// once.
+    pub schema_focus: Option<String>,
     pub notice: Option<Notice>,
     /// Redraw every frame at the monitor's rate (for the FPS readout). Off by default: an idle
     /// app should use no CPU.
@@ -807,6 +810,7 @@ impl App {
             active: 0,
             next_id: 1,
             filter: String::new(),
+            schema_focus: None,
             notice: None,
             max_fps: false,
             history: history::load(),
@@ -1491,6 +1495,14 @@ impl App {
                     Err(e) => self.notice = Notice::error(format!("Não foi possível: {e}")),
                 },
                 Reply::Location(Ok((dbs, db, schema))) => {
+                    // A switch (not the first report at connect) focuses the new one.
+                    let (before, now) = match s.cfg.kind {
+                        Kind::Postgres => (&s.current_schema, &schema),
+                        Kind::MySql => (&s.current_db, &db),
+                    };
+                    if !before.is_empty() && before != now {
+                        self.schema_focus = Some(now.clone());
+                    }
                     s.databases = dbs;
                     s.current_db = db;
                     s.current_schema = schema;

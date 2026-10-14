@@ -1725,6 +1725,19 @@ mod screenshots {
             .unwrap();
         harness.state_mut().master = None;
 
+        // Switched to another schema: it moves up, opens and is marked; the others fold.
+        harness.state_mut().session.as_mut().unwrap().current_schema = "auth".into();
+        harness.state_mut().schema_focus = Some("auth".into());
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/schema-switch.png"))
+            .unwrap();
+        harness.state_mut().session.as_mut().unwrap().current_schema = "public".into();
+        harness.state_mut().schema_focus = Some("public".into());
+        harness.run();
+
         // Table action (drop) with its confirmation, then a script file that stopped on an error.
         harness.state_mut().table_action = Some(crate::app::TableActionPrompt {
             schema: "public".into(),

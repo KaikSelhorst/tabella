@@ -326,7 +326,16 @@ impl App {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
-                for group in s.tables.chunk_by(|a, b| a.schema == b.schema) {
+                // Where unqualified names go (the Postgres schema, the MySQL database) comes
+                // first and is marked.
+                let default_schema = match kind {
+                    crate::db::Kind::Postgres => s.current_schema.as_str(),
+                    crate::db::Kind::MySql => s.current_db.as_str(),
+                };
+                let mut groups: Vec<&[TableRef]> = s.tables.chunk_by(|a, b| a.schema == b.schema).collect();
+                groups.sort_by_key(|g| g[0].schema != default_schema);
+                let focus = self.schema_focus.take();
+                for group in groups {
                     let mut visible: Vec<&TableRef> = group
                         .iter()
                         .filter(|t| needle.is_empty() || t.search_key.contains(&needle))
@@ -338,12 +347,20 @@ impl App {
                         continue;
                     }
                     let schema = &group[0].schema;
-                    let header = egui::RichText::new(format!("{schema}  {}", visible.len()))
-                        .size(11.0)
-                        .color(tk.subtle);
+                    let is_default = schema == default_schema;
+                    let header = if is_default {
+                        egui::RichText::new(format!("{schema}  {}  · padrão", visible.len()))
+                            .size(11.0)
+                            .color(tk.foreground)
+                    } else {
+                        egui::RichText::new(format!("{schema}  {}", visible.len()))
+                            .size(11.0)
+                            .color(tk.subtle)
+                    };
                     let section = egui::CollapsingHeader::new(header)
                         .id_salt(("schema", schema))
-                        .default_open(!needle.is_empty() || group.len() < AUTO_EXPAND_BELOW)
+                        .default_open(!needle.is_empty() || is_default || group.len() < AUTO_EXPAND_BELOW)
+                        .open(focus.as_ref().map(|f| f == schema))
                         .show(ui, |ui| {
                             for t in visible {
                                 let glyph = if t.is_view { icon::EYE } else { icon::TABLE };
@@ -541,7 +558,14 @@ impl App {
                                     });
                             }
                         });
-                    section.header_response.context_menu(|ui| {
+                    let section_header = if is_default {
+                        section
+                            .header_response
+                            .on_hover_text("Nomes sem schema no editor (SELECT * FROM tabela) vão para cá")
+                    } else {
+                        section.header_response
+                    };
+                    section_header.context_menu(|ui| {
                         if ui.button("Diagrama ER deste schema").clicked() {
                             schema_action = Some((schema.clone(), true));
                             ui.close();
