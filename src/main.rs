@@ -5,21 +5,26 @@ mod config;
 mod db;
 mod error;
 mod export;
+mod favorites;
 mod history;
 mod secrets;
+mod session;
 mod sql;
 mod tls;
 mod tunnel;
 mod ui;
+mod url;
 mod values;
 mod worker;
 
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    // Same size as when it was last closed.
+    let size = session::load().window.unwrap_or([1100.0, 700.0]);
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1100.0, 700.0])
+            .with_inner_size(size)
             .with_title("dblite"),
         ..Default::default()
     };

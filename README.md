@@ -6,8 +6,12 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 ## Recursos
 
 - Navegação de tabelas com paginação, filtro `WHERE`, ordenação e total de linhas
-- Edição direta na grade e num painel de detalhes da linha (tabelas com chave primária)
-- Editor SQL com realce de sintaxe, autocomplete, histórico e execução da seleção
+- Edição direta na grade e num painel de detalhes da linha (tabelas com chave primária): as
+  alterações ficam pendentes e são salvas juntas numa transação (`Ctrl+S`), com desfazer (`Ctrl+Z`)
+- Editor SQL com realce de sintaxe, autocomplete, formatação (`Shift+Alt+F`), histórico,
+  consultas favoritas e execução da seleção
+- Importar conexão colando uma URL (`postgres://…`, `mysql://…`)
+- Reabre a última conexão, as abas (com o texto dos editores) e o tamanho da janela
 - Paleta de comandos (`Ctrl+P`) para abrir tabelas, conexões e consultas recentes
 - Inserção de linhas por formulário (cada coluna: padrão do banco, `NULL` ou valor)
 - Aba "Estrutura": colunas, índices, chaves estrangeiras e DDL pronto para copiar

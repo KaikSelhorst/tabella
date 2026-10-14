@@ -1,4 +1,6 @@
 use eframe::egui::{self, Align, FontId, Key, Layout, RichText, Sense, TextEdit};
+use std::collections::HashSet;
+
 use egui_extras::{Column, TableBuilder};
 
 use super::{icon, theme};
@@ -202,6 +204,9 @@ pub struct GridOpts<'a> {
     pub bool_pick: Option<(usize, usize)>,
     /// Kind of each column (computed once per frame by the caller).
     pub kinds: &'a [ValueKind],
+    /// Cells with an unsaved edit, and rows marked for deletion.
+    pub changed: Option<&'a HashSet<(usize, usize)>>,
+    pub deleted: Option<&'a HashSet<usize>>,
 }
 
 /// Result grid. Returns at most one user action per frame.
@@ -221,6 +226,8 @@ pub fn grid(
         row_offset,
         bool_pick,
         kinds,
+        changed,
+        deleted,
     } = *opts;
     let mut event = None;
     let t = theme::tokens();
@@ -357,6 +364,20 @@ pub fn grid(
                             }
                             return;
                         }
+                        let row_deleted = deleted.is_some_and(|d| d.contains(&ri));
+                        if row_deleted {
+                            gap_painter(ui, table_rect).rect_filled(
+                                full_cell(ui),
+                                0.0,
+                                theme::mix(t.destructive, 0.14, t.background),
+                            );
+                        } else if changed.is_some_and(|c| c.contains(&(ri, ci))) {
+                            gap_painter(ui, table_rect).rect_filled(
+                                full_cell(ui),
+                                0.0,
+                                theme::mix(t.warning, 0.18, t.background),
+                            );
+                        }
                         if selected == Some((ri, ci)) {
                             let rect = full_cell(ui);
                             let painter = gap_painter(ui, table_rect);
@@ -390,6 +411,12 @@ pub fn grid(
                                 };
                                 RichText::new(shown).font(cell_font.clone()).color(color)
                             }
+                        };
+                        // Rows going away read as struck through.
+                        let text = if row_deleted {
+                            text.strikethrough().color(t.subtle)
+                        } else {
+                            text
                         };
                         let label = egui::Label::new(text).truncate().sense(Sense::click());
                         let r = if kind == ValueKind::Number {
@@ -429,7 +456,12 @@ pub fn grid(
                                     event = Some(GridEvent::Commit(ri, ci, None));
                                     ui.close();
                                 }
-                                if ui.button("Excluir linha").clicked() {
+                                let label = if row_deleted {
+                                    "Restaurar linha"
+                                } else {
+                                    "Excluir linha"
+                                };
+                                if ui.button(label).clicked() {
                                     event = Some(GridEvent::DeleteRow(ri));
                                     ui.close();
                                 }
@@ -495,6 +527,8 @@ mod tests {
                     row_offset: 0,
                     bool_pick: None,
                     kinds: &[ValueKind::Number, ValueKind::Text],
+                    changed: None,
+                    deleted: None,
                 },
             );
         });
@@ -522,6 +556,8 @@ mod tests {
                     row_offset: 0,
                     bool_pick: None,
                     kinds: &[ValueKind::Number, ValueKind::Text],
+                    changed: None,
+                    deleted: None,
                 },
             ) {
                 got = Some(e);

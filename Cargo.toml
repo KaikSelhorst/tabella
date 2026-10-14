@@ -17,6 +17,7 @@ postgres = { version = "0.19.14", default-features = false }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+sqlformat = "0.5.0"
 thiserror = "2.0.21"
 tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
 webpki-roots = { version = "1.0.9", default-features = false }

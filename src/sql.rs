@@ -229,6 +229,21 @@ pub fn script_risk(script: &str) -> ScriptRisk {
     risk
 }
 
+/// Pretty-prints SQL: keywords in caps, one clause per line, short lists kept inline.
+pub fn format_sql(kind: Kind, sql: &str) -> String {
+    let options = sqlformat::FormatOptions {
+        uppercase: Some(true),
+        max_inline_arguments: Some(60),
+        max_inline_top_level: Some(60),
+        dialect: match kind {
+            Kind::Postgres => sqlformat::Dialect::PostgreSql,
+            Kind::MySql => sqlformat::Dialect::Generic,
+        },
+        ..Default::default()
+    };
+    sqlformat::format(sql, &sqlformat::QueryParams::None, &options)
+}
+
 /// A statement with its values kept apart from the SQL text.
 ///
 /// MySQL executes it as a prepared statement with `?` parameters, so values never touch the SQL
@@ -485,6 +500,23 @@ mod tests {
             insert_values(Kind::Postgres, "s", "t", &[]).render(Kind::Postgres),
             "INSERT INTO \"s\".\"t\" DEFAULT VALUES"
         );
+    }
+
+    #[test]
+    fn formatting() {
+        let raw = "select id, nome from clientes c join pedidos p on p.cliente_id = c.id where nome = 'select from' and ativo order by id";
+        let out = format_sql(Kind::Postgres, raw);
+        assert!(out.starts_with("SELECT"), "{out}");
+        assert!(out.lines().count() > 3, "one clause per line:\n{out}");
+        assert!(out.contains("'select from'"), "string contents untouched:\n{out}");
+        assert_eq!(
+            format_sql(Kind::Postgres, &out),
+            out,
+            "formatting twice changes nothing"
+        );
+        // Same statements, only whitespace and keyword case differ.
+        let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        assert_eq!(squash(&out), squash(raw));
     }
 
     #[test]

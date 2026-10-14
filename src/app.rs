@@ -1,6 +1,7 @@
 //! Application state and the logic that acts on it. The `ui` modules draw this state and turn
 //! clicks and keys into calls here; nothing in this file draws anything.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
@@ -11,8 +12,10 @@ use eframe::egui;
 use crate::config;
 use crate::db::{Canceller, ColumnInfo, ConnConfig, Kind, QueryResult, TableRef, TableStructure};
 use crate::export::{self, Format};
+use crate::favorites::{self, Favorite};
 use crate::history::{self, Entry};
 use crate::secrets::{Derived, SecretStore};
+use crate::session::{self, SavedTab};
 use crate::sql::{self, PageQuery, Stmt};
 use crate::values::{self, ValueKind};
 use crate::worker::{self, ExportSource, ExportSpec, Job, Reply};
@@ -92,12 +95,44 @@ pub struct TableState {
     pub estimate: Option<i64>,
     /// Filter the current `total` was computed for.
     pub counted_filter: Option<String>,
-    /// Row waiting for the user to confirm deletion.
-    pub confirm_delete: Option<usize>,
+    /// Grid edits and deletions not saved yet, oldest first (undo pops the last one).
+    pub changes: Vec<Change>,
+    /// The "save these changes?" summary is open.
+    pub confirm_save: bool,
     /// Boolean cell whose true/false/NULL dropdown is open.
     pub bool_pick: Option<(usize, usize)>,
     /// The "new row" form, while open.
     pub insert: Option<Vec<InsertField>>,
+}
+
+/// A pending grid change. Rows are identified by their primary key values, so changes survive
+/// the page being reloaded (e.g. after inserting a row).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Change {
+    Set {
+        key: Vec<Option<String>>,
+        col: String,
+        value: Option<String>,
+        before: Option<String>,
+    },
+    Delete {
+        key: Vec<Option<String>>,
+    },
+}
+
+impl Change {
+    fn key(&self) -> &[Option<String>] {
+        match self {
+            Change::Set { key, .. } | Change::Delete { key } => key,
+        }
+    }
+}
+
+/// The page as it will look after saving, plus which cells changed and which rows go away.
+pub struct Overlay {
+    pub result: QueryResult,
+    pub changed: HashSet<(usize, usize)>,
+    pub deleted: HashSet<usize>,
 }
 
 /// Exact counts are skipped above this many (estimated) rows: COUNT(*) would hold the connection.
@@ -116,10 +151,80 @@ impl TableState {
             total: None,
             estimate,
             counted_filter: None,
-            confirm_delete: None,
+            changes: Vec::new(),
+            confirm_save: false,
             bool_pick: None,
             insert: None,
         }
+    }
+
+    /// Primary key values of a row of the current result.
+    pub fn row_key(&self, res: &QueryResult, row: usize) -> Vec<Option<String>> {
+        self.pk_names()
+            .iter()
+            .map(|p| {
+                res.columns
+                    .iter()
+                    .position(|c| c == p)
+                    .and_then(|i| res.rows[row][i].clone())
+            })
+            .collect()
+    }
+
+    /// `(edited cells, deleted rows)` among the pending changes.
+    pub fn change_counts(&self) -> (usize, usize) {
+        let deletes = self
+            .changes
+            .iter()
+            .filter(|c| matches!(c, Change::Delete { .. }))
+            .count();
+        (self.changes.len() - deletes, deletes)
+    }
+
+    /// The current page with pending changes applied, for display. `None` when nothing is pending.
+    pub fn overlay(&self, res: &QueryResult) -> Option<Overlay> {
+        if self.changes.is_empty() {
+            return None;
+        }
+        let mut out = Overlay {
+            result: res.clone(),
+            changed: HashSet::new(),
+            deleted: HashSet::new(),
+        };
+        for row in 0..res.rows.len() {
+            let key = self.row_key(res, row);
+            for c in self.changes.iter().filter(|c| c.key() == key.as_slice()) {
+                match c {
+                    Change::Delete { .. } => {
+                        out.deleted.insert(row);
+                    }
+                    Change::Set { col, value, .. } => {
+                        if let Some(ci) = res.columns.iter().position(|n| n == col) {
+                            out.result.rows[row][ci] = value.clone();
+                            out.changed.insert((row, ci));
+                        }
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// One statement per pending change, in the order they were made.
+    pub fn change_statements(&self, kind: Kind) -> Vec<Stmt> {
+        let pk = self.pk_names();
+        self.changes
+            .iter()
+            .map(|c| {
+                let wh = sql::pk_where(kind, &pk, &pk, c.key());
+                match c {
+                    Change::Set { col, value, .. } => {
+                        sql::update_cell(kind, &self.schema, &self.table, col, value.as_deref(), wh)
+                    }
+                    Change::Delete { .. } => sql::delete_row(kind, &self.schema, &self.table, wh),
+                }
+            })
+            .collect()
     }
 
     pub fn pk_names(&self) -> Vec<String> {
@@ -263,6 +368,14 @@ pub struct MasterPrompt {
     pub working: Option<Receiver<Result<Derived, String>>>,
 }
 
+/// "Salvar consulta" dialog.
+pub struct FavPrompt {
+    pub name: String,
+    pub sql: String,
+    /// Offer it on every connection instead of only the current one.
+    pub shared: bool,
+}
+
 pub struct ConnForm {
     /// Id of the connection being edited; `None` for a new one.
     pub editing: Option<String>,
@@ -304,6 +417,12 @@ pub struct App {
     /// app should use no CPU.
     pub max_fps: bool,
     pub history: Vec<Entry>,
+    pub favorites: Vec<Favorite>,
+    /// Tabs from the last run, reopened once their connection is ready.
+    restore: Option<session::Saved>,
+    /// Current window size, saved on exit.
+    pub window: Option<[f32; 2]>,
+    pub fav_prompt: Option<FavPrompt>,
     /// Row detail panel on the right of the grid.
     pub show_detail: bool,
     frames: u32,
@@ -330,6 +449,10 @@ impl App {
             notice: None,
             max_fps: false,
             history: history::load(),
+            favorites: favorites::load(),
+            restore: None,
+            window: None,
+            fav_prompt: None,
             show_detail: true,
             frames: 0,
             fps_since: Instant::now(),
@@ -345,9 +468,67 @@ impl App {
         } else if vault_has_any {
             app.ask_master(AfterMaster::Nothing);
         }
+        // Pick up where the last run stopped: same connection, then its tabs (see `poll`).
+        let last = session::load();
+        if let Some(id) = last.conn.clone()
+            && app.find_saved(&id).is_some()
+        {
+            app.restore = Some(last);
+            app.connect_saved(&id);
+        }
         #[cfg(feature = "dev-conn")]
         app.add_dev_connections();
         app
+    }
+
+    /// What to restore next time: open connection, tabs and window size.
+    pub fn snapshot(&self) -> session::Saved {
+        let tabs = self
+            .tabs
+            .iter()
+            .map(|t| match &t.kind {
+                TabKind::Sql { text } => SavedTab::Sql { text: text.clone() },
+                TabKind::Table(ts) => SavedTab::Table {
+                    schema: ts.schema.clone(),
+                    table: ts.table.clone(),
+                    filter: ts.filter.clone(),
+                    order: ts.order.clone(),
+                },
+                TabKind::Structure(st) => SavedTab::Structure {
+                    schema: st.schema.clone(),
+                    table: st.table.clone(),
+                },
+            })
+            .collect();
+        session::Saved {
+            conn: self.session.as_ref().map(|s| s.cfg.id.clone()),
+            tabs,
+            active: self.active,
+            window: self.window,
+        }
+    }
+
+    fn restore_tabs(&mut self, saved: session::Saved) {
+        for t in saved.tabs {
+            match t {
+                SavedTab::Sql { text } => self.open_sql(text),
+                SavedTab::Structure { schema, table } => self.open_structure(&schema, &table),
+                SavedTab::Table {
+                    schema,
+                    table,
+                    filter,
+                    order,
+                } => {
+                    self.open_table(&schema, &table);
+                    // The first page is only requested when the columns arrive, so these apply.
+                    if let Some(TabKind::Table(ts)) = self.tabs.last_mut().map(|t| &mut t.kind) {
+                        ts.filter = filter;
+                        ts.order = order;
+                    }
+                }
+            }
+        }
+        self.active = saved.active.min(self.tabs.len().saturating_sub(1));
     }
 
     /// Test databases from the docker setup, listed first (`dev-conn` feature only: it embeds
@@ -379,6 +560,36 @@ impl App {
             self.fps = self.frames as f32 / elapsed;
             self.frames = 0;
             self.fps_since = Instant::now();
+        }
+    }
+
+    /// Stores the query from the "Salvar consulta" dialog.
+    pub fn add_favorite(&mut self, p: FavPrompt) {
+        let conn = if p.shared {
+            String::new()
+        } else {
+            self.session
+                .as_ref()
+                .map(|s| s.cfg.id.clone())
+                .unwrap_or_default()
+        };
+        self.favorites.push(Favorite {
+            id: config::new_id(),
+            name: p.name.trim().to_string(),
+            sql: p.sql,
+            conn,
+        });
+        self.save_favorites();
+    }
+
+    pub fn delete_favorite(&mut self, id: &str) {
+        self.favorites.retain(|f| f.id != id);
+        self.save_favorites();
+    }
+
+    fn save_favorites(&mut self) {
+        if let Err(e) = favorites::save(&self.favorites) {
+            self.notice = Notice::error(format!("Erro ao salvar favoritos: {e}"));
         }
     }
 
@@ -498,7 +709,14 @@ impl App {
         });
     }
 
-    pub fn disconnect(&mut self) {
+    /// Closes the connection. Refused (returns false) while a tab has unsaved changes.
+    pub fn disconnect(&mut self) -> bool {
+        if let Some(i) = self.tabs.iter().position(has_unsaved) {
+            self.active = i;
+            self.notice =
+                Notice::error("Há alterações não salvas: salve ou descarte antes de trocar de conexão.");
+            return false;
+        }
         if let Some(s) = self.session.take() {
             // Don't leave a long query running on the server after we stop listening.
             if self.tabs.iter().any(Tab::busy) {
@@ -507,14 +725,16 @@ impl App {
             self.notice = Notice::info("Desconectado");
         }
         self.tabs.clear();
+        true
     }
 
     pub fn poll(&mut self) {
         let Some(s) = &mut self.session else { return };
+        let mut restore = None;
         loop {
             let reply = match s.rx.try_recv() {
                 Ok(r) => r,
-                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     // The worker thread ended unexpectedly (or failed to connect, reported above).
                     if s.ready {
@@ -529,6 +749,13 @@ impl App {
             };
             match reply {
                 Reply::Connected(Ok(c)) => {
+                    if self
+                        .restore
+                        .as_ref()
+                        .is_some_and(|r| r.conn.as_deref() == Some(s.cfg.id.as_str()))
+                    {
+                        restore = self.restore.take();
+                    }
                     s.ready = true;
                     s.tables = c.tables;
                     s.canceller = Some(c.canceller);
@@ -581,6 +808,24 @@ impl App {
                         ts.total = res.ok();
                     }
                 }
+                Reply::Saved { tab, res } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    t.pending = t.pending.saturating_sub(1);
+                    match *res {
+                        Ok(r) => {
+                            if let TabKind::Table(ts) = &mut t.kind {
+                                ts.changes.clear();
+                            }
+                            t.result = Some(r);
+                            t.selected = None;
+                            t.error = None;
+                        }
+                        // Nothing was saved: the changes stay, so the user can fix and retry.
+                        Err(e) => t.error = Some(e.to_string()),
+                    }
+                }
                 Reply::Structure { tab, res } => {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
@@ -620,6 +865,9 @@ impl App {
                 }
             }
         }
+        if let Some(r) = restore {
+            self.restore_tabs(r);
+        }
     }
 
     fn push_tab(&mut self, title: String, kind: TabKind) -> usize {
@@ -630,6 +878,15 @@ impl App {
     }
 
     pub fn close_tab(&mut self, i: usize) {
+        if let Some(t) = self.tabs.get_mut(i)
+            && has_unsaved(t)
+        {
+            t.error = Some(
+                "Esta aba tem alterações não salvas: salve (Ctrl+S) ou descarte antes de fechar.".into(),
+            );
+            self.active = i;
+            return;
+        }
         if i < self.tabs.len() {
             self.tabs.remove(i);
             self.active = self.active.min(self.tabs.len().saturating_sub(1));
@@ -814,6 +1071,14 @@ pub fn submit_insert(tab: &mut Tab, s: &Session) {
 /// Re-runs the current page query of a table tab.
 pub fn reload(tab: &mut Tab, s: &Session) {
     let TabKind::Table(ts) = &mut tab.kind else { return };
+    if !ts.changes.is_empty() {
+        // A reload (page, sort, filter) would show rows the pending changes don't refer to.
+        tab.error = Some(format!(
+            "Salve (Ctrl+S) ou descarte as {} alteração(ões) pendentes antes de recarregar.",
+            ts.changes.len()
+        ));
+        return;
+    }
     if let Err(e) = sql::check_filter(&ts.filter) {
         tab.error = Some(e);
         return;
@@ -912,8 +1177,6 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
     if !editable {
         return None;
     }
-    let pk = ts.pk_names();
-    let where_pk = |row: usize| sql::pk_where(k, &pk, &res.columns, &res.rows[row]);
     match event {
         GridEvent::Sort(col) => {
             ts.order = match &ts.order {
@@ -958,33 +1221,80 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
                 },
                 (_, v) => v,
             };
-            let stmt = sql::update_cell(
-                k,
-                &ts.schema,
-                &ts.table,
-                &res.columns[col],
-                val.as_deref(),
-                where_pk(row),
+            // Not written yet: it joins the pending changes (saved together with Ctrl+S).
+            let key = ts.row_key(res, row);
+            let col_name = res.columns[col].clone();
+            let before = res.rows[row][col].clone();
+            ts.changes.retain(
+                |c| !matches!(c, Change::Set { key: k2, col: c2, .. } if *k2 == key && *c2 == col_name),
             );
-            exec(tab, s, stmt, true);
+            let same = match kinds[col] {
+                ValueKind::Bool => {
+                    before.as_deref().and_then(sql::parse_bool) == val.as_deref().and_then(sql::parse_bool)
+                }
+                _ => before == val,
+            };
+            if !same {
+                ts.changes.push(Change::Set {
+                    key,
+                    col: col_name,
+                    value: val,
+                    before,
+                });
+            }
         }
-        GridEvent::DeleteRow(row) => ts.confirm_delete = Some(row),
+        // Toggles: deleting an already-deleted row restores it.
+        GridEvent::DeleteRow(row) => {
+            let key = ts.row_key(res, row);
+            let before = ts.changes.len();
+            ts.changes
+                .retain(|c| !matches!(c, Change::Delete { key: k2 } if *k2 == key));
+            if ts.changes.len() == before {
+                ts.changes.push(Change::Delete { key });
+            }
+        }
         GridEvent::Select(..) | GridEvent::Copy(..) => {}
     }
     None
 }
 
-/// Deletes the row the user confirmed in the dialog.
-pub fn confirm_delete(tab: &mut Tab, s: &Session) {
-    let (Some(res), TabKind::Table(ts)) = (&tab.result, &mut tab.kind) else {
+/// Undoes the most recent pending change.
+pub fn undo_change(tab: &mut Tab) {
+    if let TabKind::Table(ts) = &mut tab.kind {
+        ts.changes.pop();
+    }
+}
+
+pub fn discard_changes(tab: &mut Tab) {
+    if let TabKind::Table(ts) = &mut tab.kind {
+        ts.changes.clear();
+        ts.confirm_save = false;
+    }
+}
+
+/// Writes every pending change in one transaction, then reloads the page.
+pub fn save_changes(tab: &mut Tab, s: &Session) {
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    ts.confirm_save = false;
+    if ts.changes.is_empty() {
         return;
-    };
-    let Some(row) = ts.confirm_delete.take().filter(|r| *r < res.rows.len()) else {
-        return;
-    };
-    let wh = sql::pk_where(s.cfg.kind, &ts.pk_names(), &res.columns, &res.rows[row]);
-    let stmt = sql::delete_row(s.cfg.kind, &ts.schema, &ts.table, wh);
-    exec(tab, s, stmt, true);
+    }
+    let stmts = ts.change_statements(s.cfg.kind);
+    let refresh = ts.page_sql(s.cfg.kind);
+    let id = tab.id;
+    tab.error = None;
+    tab.send_rows_job(
+        s,
+        Job::Batch {
+            tab: id,
+            stmts,
+            refresh,
+        },
+    );
+}
+
+pub fn has_unsaved(tab: &Tab) -> bool {
+    matches!(&tab.kind, TabKind::Table(ts) if !ts.changes.is_empty())
 }
 
 #[cfg(test)]
@@ -1036,25 +1346,26 @@ pub mod tests {
         tab
     }
 
-    fn exec_sql(job: Job) -> (String, bool) {
-        match job {
-            Job::Exec { stmt, expect_one, .. } => (stmt.render(Kind::Postgres), expect_one),
-            _ => panic!("expected an Exec job"),
-        }
-    }
-
     #[test]
     fn commit_writes_one_row_and_expects_it() {
         let (s, jobs, _replies) = fake_session(Kind::Postgres);
         let mut tab = table_tab();
         handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 2, Some("bia".into())), true);
-        assert!(matches!(jobs.try_recv(), Ok(Job::Count { .. })));
-        let (sql, expect_one) = exec_sql(jobs.try_recv().unwrap());
+        assert!(jobs.try_recv().is_err(), "edits wait for Salvar");
+        handle_grid_event(&mut tab, &s, GridEvent::DeleteRow(0), true);
+        save_changes(&mut tab, &s);
+        let Ok(Job::Batch { stmts, .. }) = jobs.try_recv() else {
+            panic!("expected a batch")
+        };
+        let sql: Vec<String> = stmts.iter().map(|st| st.render(Kind::Postgres)).collect();
         assert_eq!(
             sql,
-            "UPDATE \"public\".\"t\" SET \"nome\" = 'bia' WHERE \"id\" = '7'"
+            [
+                "UPDATE \"public\".\"t\" SET \"nome\" = 'bia' WHERE \"id\" = '7'",
+                "DELETE FROM \"public\".\"t\" WHERE \"id\" = '7'"
+            ]
         );
-        assert!(expect_one && tab.busy());
+        assert!(tab.busy());
     }
 
     #[test]
@@ -1065,12 +1376,12 @@ pub mod tests {
         assert!(matches!(&tab.kind, TabKind::Table(ts) if ts.bool_pick == Some((0, 1))));
         assert!(jobs.try_recv().is_err(), "opening the picker writes nothing");
         handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 1, Some("true".into())), true);
-        let _count = jobs.try_recv().unwrap();
-        let Job::Exec { stmt, .. } = jobs.try_recv().unwrap() else {
+        save_changes(&mut tab, &s);
+        let Ok(Job::Batch { stmts, .. }) = jobs.try_recv() else {
             panic!()
         };
         assert_eq!(
-            stmt.with_placeholders().1[0],
+            stmts[0].with_placeholders().1[0],
             "1",
             "MySQL booleans are written as 1/0"
         );
@@ -1096,8 +1407,7 @@ pub mod tests {
             ts.filter = "1=1; DELETE FROM t; SELECT 1 AS id".into();
         }
         reload(&mut tab, &s);
-        confirm_delete(&mut tab, &s);
-        handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 2, Some("x".into())), true);
+        handle_grid_event(&mut tab, &s, GridEvent::DeleteRow(0), true);
         assert!(jobs.try_recv().is_err());
         assert!(tab.error.is_some() && !tab.busy());
     }
@@ -1202,6 +1512,34 @@ mod poll_tests {
         assert!(app.session.is_none());
         assert!(app.notice.as_ref().is_some_and(|n| n.error));
         assert!(!app.tabs[0].busy(), "nothing stays stuck on Carregando…");
+    }
+
+    #[test]
+    fn session_snapshot_restores_the_same_tabs() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.open_sql("select 42".into());
+        app.open_table("public", "clientes");
+        if let TabKind::Table(ts) = &mut app.tabs[1].kind {
+            ts.filter = "ativo".into();
+            ts.order = Some(("nome".into(), false));
+        }
+        app.open_structure("public", "pedidos");
+        app.active = 1;
+        let snap = app.snapshot();
+        assert_eq!(snap.conn.as_deref(), Some("t"));
+
+        let (s2, jobs2, _r2) = fake_session(Kind::Postgres);
+        let mut fresh = app_with(s2);
+        fresh.restore_tabs(snap);
+        assert_eq!(fresh.snapshot().tabs, app.snapshot().tabs);
+        assert_eq!(fresh.active, 1);
+        // Restored tabs load their data like freshly opened ones.
+        let kinds: Vec<_> = jobs2
+            .try_iter()
+            .map(|j| matches!(j, Job::Columns { .. } | Job::Structure { .. }))
+            .collect();
+        assert_eq!(kinds, [true, true]);
     }
 
     #[test]

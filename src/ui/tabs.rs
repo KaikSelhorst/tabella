@@ -7,9 +7,10 @@ use super::detail::{self, DetailAction};
 use super::grid::{GridOpts, grid};
 use super::structure::{self, InsertAction, StructAction};
 use super::{complete, icon, palette, syntax, theme};
-use crate::app::{self, App, GridEvent, Session, Tab, TabKind};
+use crate::app::{self, App, FavPrompt, GridEvent, Session, Tab, TabKind};
 use crate::db::QueryResult;
 use crate::export::{self, Format};
+use crate::favorites::{self, Favorite};
 use crate::history::{self, Entry};
 use crate::sql::{self, PAGE_SIZE};
 use crate::values;
@@ -19,6 +20,7 @@ struct Cx<'a> {
     s: &'a Session,
     show_detail: &'a mut bool,
     history: &'a [Entry],
+    favorites: &'a [Favorite],
     /// Something only the app can do (open another tab), carried out after drawing.
     request: Option<Request>,
 }
@@ -27,6 +29,8 @@ enum Request {
     Structure(String, String),
     Data(String, String),
     Sql(String),
+    SaveFavorite(String),
+    DeleteFavorite(String),
 }
 
 impl App {
@@ -79,6 +83,7 @@ impl App {
             s,
             show_detail: &mut self.show_detail,
             history: &self.history,
+            favorites: &self.favorites,
             request: None,
         };
         match &tab.kind {
@@ -99,6 +104,14 @@ impl App {
             Some(Request::Structure(schema, table)) => self.open_structure(&schema, &table),
             Some(Request::Data(schema, table)) => self.open_table(&schema, &table),
             Some(Request::Sql(text)) => self.open_sql(text),
+            Some(Request::SaveFavorite(sql)) => {
+                self.fav_prompt = Some(FavPrompt {
+                    name: String::new(),
+                    sql,
+                    shared: false,
+                });
+            }
+            Some(Request::DeleteFavorite(id)) => self.delete_favorite(&id),
             None => {}
         }
     }
@@ -239,12 +252,14 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         .show(ui, |ui| {
             let editor_id = egui::Id::new(("sql", tab.id));
             // Selection survives losing focus (e.g. clicking Executar), so read it from the stored state.
-            let selection = TextEdit::load_state(ui.ctx(), editor_id)
+            let selected_range = TextEdit::load_state(ui.ctx(), editor_id)
                 .and_then(|st| st.cursor.char_range())
                 .map(|r| r.as_sorted_char_range())
                 .map(|r| (usize::from(r.start), usize::from(r.end)))
-                .filter(|(a, b)| a < b)
-                .map(|(a, b)| text.chars().skip(a).take(b - a).collect::<String>());
+                .filter(|(a, b)| a < b);
+            let selection = selected_range.map(|(a, b)| text.chars().skip(a).take(b - a).collect::<String>());
+            let format_key =
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT | egui::Modifiers::ALT, Key::F));
             ui.horizontal(|ui| {
                 let label = if selection.is_some() {
                     "Executar seleção"
@@ -264,7 +279,30 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 if let Some(sql) = history_menu(ui, cx.history, &s.cfg.name) {
                     *text = sql;
                 }
+                match favorites_menu(ui, cx.favorites, &s.cfg.id, !text.trim().is_empty()) {
+                    Some(FavAction::Load(sql)) => *text = sql,
+                    Some(FavAction::Save) => {
+                        let sql = selection.clone().unwrap_or_else(|| text.clone());
+                        cx.request = Some(Request::SaveFavorite(sql));
+                    }
+                    Some(FavAction::Delete(id)) => cx.request = Some(Request::DeleteFavorite(id)),
+                    None => {}
+                }
                 export = export_menu(ui, false, can_export);
+                let format = theme::icon_text(
+                    icon::TEXT_ALIGN_LEFT,
+                    "Formatar",
+                    t.muted_foreground,
+                    t.foreground,
+                );
+                if ui
+                    .button(format)
+                    .on_hover_text("Shift+Alt+F · formata a seleção, se houver")
+                    .clicked()
+                    || format_key
+                {
+                    format_in_place(text, selected_range, s.cfg.kind);
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     detail_toggle(ui, cx.show_detail);
                     ui.label(egui::RichText::new("Ctrl+Enter / F5").size(11.0).color(t.subtle));
@@ -314,6 +352,19 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     confirm_run(ui.ctx(), tab, s);
     export_banner(ui, tab);
     result_area(ui, tab, cx, false);
+}
+
+/// Formats the selected chars of `text` (or all of it) as SQL.
+fn format_in_place(text: &mut String, selected: Option<(usize, usize)>, kind: crate::db::Kind) {
+    let byte = |text: &str, ci: usize| text.char_indices().nth(ci).map_or(text.len(), |(b, _)| b);
+    match selected {
+        Some((a, b)) => {
+            let (a, b) = (byte(text, a), byte(text, b));
+            let formatted = sql::format_sql(kind, &text[a..b]);
+            text.replace_range(a..b, &formatted);
+        }
+        None => *text = sql::format_sql(kind, text),
+    }
 }
 
 /// "Are you sure" for scripts with DROP / TRUNCATE / ALTER or DELETE / UPDATE without WHERE.
@@ -374,6 +425,23 @@ fn danger_button(label: &str) -> egui::Button<'static> {
 
 fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
+    // Ctrl+S / Ctrl+Z work on pending changes, unless a text field wants the keys.
+    if !ui.ctx().egui_wants_keyboard_input() {
+        let (save, undo) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::COMMAND, Key::S),
+                i.consume_key(egui::Modifiers::COMMAND, Key::Z),
+            )
+        });
+        if let TabKind::Table(ts) = &mut tab.kind {
+            if save && !ts.changes.is_empty() {
+                ts.confirm_save = true;
+            }
+            if undo {
+                ts.changes.pop();
+            }
+        }
+    }
     let tab_id = tab.id;
     let mut reload_now = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
     let mut add_record = false;
@@ -514,8 +582,9 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         app::reload(tab, s);
     }
     export_banner(ui, tab);
+    changes_bar(ui, tab, s);
     result_area(ui, tab, cx, true);
-    confirm_delete(ui.ctx(), tab, s);
+    confirm_save(ui.ctx(), tab, s);
     insert_form(ui.ctx(), tab, s);
 }
 
@@ -531,53 +600,115 @@ fn insert_form(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     }
 }
 
-/// Asks before deleting; shows the exact WHERE clause that will run.
-fn confirm_delete(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
-    let (Some(res), TabKind::Table(ts)) = (&tab.result, &mut tab.kind) else {
+/// "N alterações pendentes · Desfazer · Descartar · Salvar" while there are unsaved edits.
+fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab, s: &Session) {
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    if ts.changes.is_empty() {
         return;
-    };
-    let Some(row) = ts.confirm_delete.filter(|r| *r < res.rows.len()) else {
-        ts.confirm_delete = None;
-        return;
-    };
+    }
     let t = theme::tokens();
-    let k = s.cfg.kind;
-    let wh = sql::pk_where(k, &ts.pk_names(), &res.columns, &res.rows[row]);
-    let (mut confirm, mut cancel) = (false, false);
-    let modal = egui::Modal::new(egui::Id::new(("confirm_delete", tab.id)))
-        .frame(theme::modal_frame(16))
-        .show(ctx, |ui| {
-            ui.set_width(420.0);
+    let (edits, deletes) = ts.change_counts();
+    let (mut undo, mut discard, mut save) = (false, false, false);
+    egui::Frame::new()
+        .fill(theme::mix(t.warning, 0.10, t.background))
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::TRASH).size(16.0).color(t.destructive));
+                ui.label(theme::icon(icon::PENCIL_SIMPLE).color(t.warning));
+                let mut parts = Vec::new();
+                if edits > 0 {
+                    parts.push(format!("{edits} edição(ões)"));
+                }
+                if deletes > 0 {
+                    parts.push(format!("{deletes} exclusão(ões)"));
+                }
                 ui.label(
-                    egui::RichText::new("Excluir 1 linha?")
-                        .size(15.0)
+                    egui::RichText::new(format!("{} pendente(s), ainda não salvas", parts.join(" e ")))
                         .color(t.foreground),
                 );
-            });
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(format!("de {}.{} onde", ts.schema, ts.table)).color(t.muted_foreground),
-            );
-            ui.add_space(4.0);
-            egui::Frame::new()
-                .fill(t.sidebar)
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.add(egui::Label::new(egui::RichText::new(wh.render(k)).monospace().size(12.0)).wrap());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    save = ui
+                        .add(theme::primary_button(Some(icon::FLOPPY_DISK), "Salvar"))
+                        .on_hover_text("Ctrl+S")
+                        .clicked();
+                    discard = ui.add(theme::outline_button("Descartar")).clicked();
+                    undo = ui
+                        .button(theme::icon_text(
+                            icon::ARROW_COUNTER_CLOCKWISE,
+                            "Desfazer",
+                            t.muted_foreground,
+                            t.foreground,
+                        ))
+                        .on_hover_text("Ctrl+Z")
+                        .clicked();
                 });
-            ui.add_space(16.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                confirm = ui.add(danger_button("Excluir")).clicked();
-                cancel = ui.add(theme::outline_button("Cancelar")).clicked();
             });
         });
-    if confirm {
-        app::confirm_delete(tab, s);
+    let _ = s;
+    if undo {
+        app::undo_change(tab);
+    } else if discard {
+        app::discard_changes(tab);
+    } else if save && let TabKind::Table(ts) = &mut tab.kind {
+        ts.confirm_save = true;
+    }
+}
+
+/// Summary before saving: what will change, and the exact SQL. Deletions make the confirm
+/// button red; Enter never confirms here.
+fn confirm_save(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    if !ts.confirm_save {
+        return;
+    }
+    if ts.changes.is_empty() {
+        ts.confirm_save = false;
+        return;
+    }
+    let t = theme::tokens();
+    let k = s.cfg.kind;
+    let (edits, deletes) = ts.change_counts();
+    let stmts = ts.change_statements(k);
+    let (mut go, mut cancel) = (false, false);
+    let modal = egui::Modal::new(egui::Id::new(("confirm_save", tab.id))).frame(theme::modal_frame(16)).show(ctx, |ui| {
+        ui.set_width(520.0);
+        ui.horizontal(|ui| {
+            ui.label(theme::icon(icon::FLOPPY_DISK).size(16.0).color(if deletes > 0 { t.destructive } else { t.lime }));
+            ui.label(egui::RichText::new(format!("Salvar {} alteração(ões)?", stmts.len())).size(15.0).color(t.foreground));
+        });
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "Em {}.{}: {edits} edição(ões), {deletes} exclusão(ões). Tudo numa transação: se uma falhar, nada é salvo.",
+                ts.schema, ts.table
+            ))
+            .color(t.muted_foreground),
+        );
+        ui.add_space(8.0);
+        egui::Frame::new().fill(t.sidebar).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
+                for st in &stmts {
+                    let job = syntax::highlight(&format!("{};", st.render(k)), egui::FontId::monospace(12.0));
+                    ui.add(egui::Label::new(job).wrap());
+                }
+            });
+        });
+        ui.add_space(16.0);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            go = if deletes > 0 {
+                ui.add(danger_button("Salvar e excluir")).clicked()
+            } else {
+                ui.add(theme::primary_button(Some(icon::FLOPPY_DISK), "Salvar")).clicked()
+            };
+            cancel = ui.add(theme::outline_button("Voltar")).clicked();
+        });
+    });
+    if go {
+        app::save_changes(tab, s);
     } else if cancel || modal.should_close() {
-        ts.confirm_delete = None;
+        ts.confirm_save = false;
     }
 }
 
@@ -590,7 +721,7 @@ fn status_text(tab: &Tab, read_only: bool) -> String {
         TabKind::Table(_) if read_only => " · conexão somente leitura",
         TabKind::Table(ts) if !ts.cols.is_empty() => {
             if ts.cols.iter().any(|c| c.pk) {
-                " · duplo clique ou Enter edita"
+                " · duplo clique ou Enter edita · Ctrl+S salva"
             } else {
                 " · sem chave primária: somente leitura"
             }
@@ -660,6 +791,12 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         return;
     }
 
+    // Pending changes are shown in place: edited values, deleted rows struck through.
+    let overlay = match &tab.kind {
+        TabKind::Table(ts) if editable => ts.overlay(res),
+        _ => None,
+    };
+    let shown = overlay.as_ref().map_or(res, |o| &o.result);
     let no_cols = Vec::new();
     let (cols, edit, order, bool_pick, row_offset, has_pk) = match &mut tab.kind {
         TabKind::Table(ts) if editable => {
@@ -702,7 +839,7 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
                     ui,
                     &detail::DetailRow {
                         tab_id: tab.id,
-                        res,
+                        res: shown,
                         cols,
                         kinds: &kinds,
                         row,
@@ -714,7 +851,7 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     }
 
     let key_event = if !editing && !ui.ctx().egui_wants_keyboard_input() {
-        selected.and_then(|sel| keyboard_event(ui, sel, res, can_edit))
+        selected.and_then(|sel| keyboard_event(ui, sel, shown, can_edit))
     } else {
         None
     };
@@ -730,12 +867,14 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         row_offset,
         bool_pick,
         kinds: &kinds,
+        changed: overlay.as_ref().map(|o| &o.changed),
+        deleted: overlay.as_ref().map(|o| &o.deleted),
     };
     // Wide results scroll sideways instead of running under the detail panel.
     let mut event = egui::ScrollArea::horizontal()
         .id_salt(("hscroll", tab.id))
         .auto_shrink([false, false])
-        .show(ui, |ui| grid(ui, tab.id, res, cols, edit, &opts))
+        .show(ui, |ui| grid(ui, tab.id, shown, cols, edit, &opts))
         .inner
         .or(key_event);
     if res.rows.is_empty() {
@@ -806,6 +945,67 @@ fn detail_toggle(ui: &mut egui::Ui, show: &mut bool) {
     {
         *show = !*show;
     }
+}
+
+enum FavAction {
+    Load(String),
+    Save,
+    Delete(String),
+}
+
+/// "★ Favoritos" dropdown: save the current query, or load / delete a saved one.
+fn favorites_menu(ui: &mut egui::Ui, favs: &[Favorite], conn: &str, can_save: bool) -> Option<FavAction> {
+    let t = theme::tokens();
+    let mut action = None;
+    let label = theme::icon_text(icon::STAR, "Favoritos", t.warning, t.foreground);
+    ui.menu_button(label, |ui| {
+        ui.set_width(380.0);
+        let save = theme::icon_text(icon::PLUS, "Salvar consulta atual…", t.lime, t.foreground);
+        if ui
+            .add_enabled(can_save, egui::Button::new(save).frame_when_inactive(false))
+            .clicked()
+        {
+            action = Some(FavAction::Save);
+            ui.close();
+        }
+        ui.separator();
+        let mine = favorites::for_conn(favs, conn);
+        if mine.is_empty() {
+            ui.label(egui::RichText::new("Nenhuma consulta salva").color(t.subtle));
+        }
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            for f in mine {
+                let scope = if f.conn.is_empty() {
+                    "todas as conexões"
+                } else {
+                    ""
+                };
+                let r = ui.add(
+                    egui::Button::new(egui::RichText::new(&f.name).color(t.foreground))
+                        .frame_when_inactive(false)
+                        .truncate()
+                        .min_size(egui::vec2(ui.available_width(), 22.0))
+                        .right_text(egui::RichText::new(scope).size(11.0).color(t.subtle)),
+                );
+                r.context_menu(|ui| {
+                    if ui.button("Excluir").clicked() {
+                        action = Some(FavAction::Delete(f.id.clone()));
+                        ui.close();
+                    }
+                });
+                if r.on_hover_text(&f.sql).clicked() {
+                    action = Some(FavAction::Load(f.sql.clone()));
+                    ui.close();
+                }
+            }
+        });
+        ui.label(
+            egui::RichText::new("Clique direito num item para excluir")
+                .size(10.0)
+                .color(t.subtle),
+        );
+    });
+    action
 }
 
 /// "Histórico" dropdown with this connection's recent queries; returns the one picked.

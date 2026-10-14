@@ -5,6 +5,7 @@ use eframe::egui::{self, Key, TextEdit};
 use super::{icon, theme};
 use crate::app::{App, ConnForm, Palette};
 use crate::db::{ConnConfig, Kind};
+use crate::favorites;
 use crate::history;
 
 const MAX_RESULTS: usize = 12;
@@ -99,6 +100,14 @@ impl App {
                 detail: "Ctrl+T".into(),
                 cmd: Cmd::NewSql,
             });
+            for f in favorites::for_conn(&self.favorites, &s.cfg.id) {
+                items.push(Item {
+                    icon: icon::STAR,
+                    label: f.name.clone(),
+                    detail: "favorito".into(),
+                    cmd: Cmd::OpenSql(f.sql.clone()),
+                });
+            }
             let now = history::now();
             for e in self
                 .history
@@ -291,7 +300,9 @@ impl App {
                         cfg: ConnConfig::new(Kind::Postgres),
                     })
                 }
-                Cmd::Disconnect => self.disconnect(),
+                Cmd::Disconnect => {
+                    self.disconnect();
+                }
             }
         }
     }

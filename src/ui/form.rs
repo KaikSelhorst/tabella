@@ -38,6 +38,44 @@ impl App {
                     .min_col_width(72.0)
                     .show(ui, |ui| {
                         let c = &mut form.cfg;
+                        // Paste a URL from a provider or .env file to fill the fields below.
+                        let url_id = egui::Id::new("conn_form_url");
+                        let (mut url, url_error) = ui
+                            .data(|d| d.get_temp::<(String, Option<String>)>(url_id))
+                            .unwrap_or_default();
+                        ui.label("URL");
+                        ui.horizontal(|ui| {
+                            let r = ui.add(
+                                TextEdit::singleline(&mut url)
+                                    .hint_text("postgres://usuário:senha@host:5432/banco")
+                                    .desired_width(FIELD_WIDTH - 80.0),
+                            );
+                            let fill = ui
+                                .add_enabled(!url.trim().is_empty(), egui::Button::new("Preencher"))
+                                .clicked()
+                                || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                            let error = if fill {
+                                match crate::url::apply(c, &url) {
+                                    Ok(()) => {
+                                        url.clear();
+                                        None
+                                    }
+                                    Err(e) => Some(e),
+                                }
+                            } else {
+                                url_error
+                            };
+                            ui.data_mut(|d| d.insert_temp(url_id, (url, error)));
+                        });
+                        ui.end_row();
+                        if let Some(e) = ui
+                            .data(|d| d.get_temp::<(String, Option<String>)>(url_id))
+                            .and_then(|(_, e)| e)
+                        {
+                            ui.label("");
+                            ui.label(egui::RichText::new(e).size(11.0).color(t.destructive));
+                            ui.end_row();
+                        }
                         ui.label("Nome");
                         ui.add(
                             TextEdit::singleline(&mut c.name)
@@ -189,6 +227,9 @@ impl App {
                 });
             });
         cancel |= modal.should_close();
+        if save || cancel {
+            ctx.data_mut(|d| d.remove::<(String, Option<String>)>(egui::Id::new("conn_form_url")));
+        }
         if save {
             if let Some(mut form) = self.form.take() {
                 form.cfg.name = form.cfg.name.trim().to_string();
@@ -374,4 +415,71 @@ fn color_picker(ui: &mut egui::Ui, color: &mut Option<Tag>) {
             }
         }
     });
+}
+
+impl App {
+    /// "Salvar consulta": a name, and whether it shows on every connection.
+    pub fn favorite_prompt(&mut self, ctx: &egui::Context) {
+        let Some(p) = &mut self.fav_prompt else { return };
+        let t = theme::tokens();
+        let (mut save, mut cancel) = (false, false);
+        let modal = egui::Modal::new(egui::Id::new("favorite_prompt"))
+            .frame(theme::modal_frame(16))
+            .show(ctx, |ui| {
+                ui.set_width(420.0);
+                ui.horizontal(|ui| {
+                    ui.label(theme::icon(icon::STAR).size(16.0).color(t.warning));
+                    ui.label(
+                        egui::RichText::new("Salvar consulta")
+                            .size(15.0)
+                            .color(t.foreground),
+                    );
+                });
+                ui.add_space(8.0);
+                let r = ui.add(
+                    TextEdit::singleline(&mut p.name)
+                        .hint_text("Nome (ex: clientes ativos)")
+                        .desired_width(f32::INFINITY),
+                );
+                if p.name.is_empty() && !r.has_focus() {
+                    r.request_focus();
+                }
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.add_space(4.0);
+                ui.checkbox(&mut p.shared, "Mostrar em todas as conexões");
+                ui.add_space(4.0);
+                egui::Frame::new()
+                    .fill(t.sidebar)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let preview: String = p.sql.lines().take(6).collect::<Vec<_>>().join("\n");
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(preview)
+                                    .monospace()
+                                    .size(12.0)
+                                    .color(t.muted_foreground),
+                            )
+                            .wrap(),
+                        );
+                    });
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let valid = !p.name.trim().is_empty();
+                    save = ui
+                        .add_enabled(valid, theme::primary_button(Some(icon::STAR), "Salvar"))
+                        .clicked()
+                        || (enter && valid);
+                    cancel = ui.add(theme::outline_button("Cancelar")).clicked();
+                });
+            });
+        if save {
+            if let Some(p) = self.fav_prompt.take() {
+                self.add_favorite(p);
+            }
+        } else if cancel || modal.should_close() {
+            self.fav_prompt = None;
+        }
+    }
 }

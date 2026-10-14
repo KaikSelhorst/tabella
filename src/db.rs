@@ -493,6 +493,29 @@ impl Conn {
 }
 
 impl Conn {
+    /// Runs row edits as one transaction. Every statement must touch exactly one row; if one
+    /// doesn't (the row changed or vanished in another session) or fails, nothing is kept.
+    pub fn run_batch(&mut self, stmts: &[Stmt]) -> DbResult<()> {
+        self.query(match self.kind() {
+            Kind::Postgres => "BEGIN",
+            Kind::MySql => "START TRANSACTION",
+        })?;
+        for (i, stmt) in stmts.iter().enumerate() {
+            let problem = match self.execute(stmt) {
+                Ok(r) if r.affected == Some(1) => continue,
+                Ok(_) => DbError::Other(format!(
+                    "A alteração {} não encontrou a linha (ela mudou ou foi excluída em outra sessão). Nada foi salvo.",
+                    i + 1
+                )),
+                Err(e) => DbError::Other(format!("Alteração {}: {e}. Nada foi salvo.", i + 1)),
+            };
+            let _ = self.query("ROLLBACK");
+            return Err(problem);
+        }
+        self.query("COMMIT")?;
+        Ok(())
+    }
+
     pub fn structure(&mut self, schema: &str, table: &str) -> DbResult<TableStructure> {
         match self.kind() {
             Kind::Postgres => self.pg_structure(schema, table),
@@ -938,6 +961,38 @@ mod tests {
         assert!(
             started.elapsed() < std::time::Duration::from_secs(3),
             "{kind:?}: timeout not applied"
+        );
+
+        // Batches are all-or-nothing: a missing row rolls back the edits before it.
+        let set = |id: &str, v: &str| {
+            crate::sql::update_cell(
+                kind,
+                s,
+                "dbl_t",
+                "name",
+                Some(v),
+                crate::sql::pk_where(kind, &["id".to_string()], &["id".to_string()], &[Some(id.into())]),
+            )
+        };
+        c.run_batch(&[set("1", "lote-1"), set("2", "lote-2")]).unwrap();
+        let names = c.query("SELECT name FROM dbl_t ORDER BY id").unwrap();
+        assert_eq!(
+            names
+                .rows
+                .iter()
+                .map(|r| r[0].clone().unwrap())
+                .collect::<Vec<_>>(),
+            ["lote-1", "lote-2"]
+        );
+        let err = c
+            .run_batch(&[set("1", "nao-salvo"), set("999", "x")])
+            .unwrap_err();
+        assert!(err.to_string().contains("Nada foi salvo"), "{err}");
+        let r = c.query("SELECT name FROM dbl_t WHERE id = 1").unwrap();
+        assert_eq!(
+            r.rows[0][0].as_deref(),
+            Some("lote-1"),
+            "{kind:?}: first edit rolled back"
         );
 
         // Read-only connections are enforced by the server.

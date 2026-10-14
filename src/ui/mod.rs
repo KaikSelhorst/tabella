@@ -50,8 +50,16 @@ impl eframe::App for App {
         self.poll();
     }
 
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        crate::session::save(&self.snapshot());
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.tick_fps();
+        self.window = ui
+            .ctx()
+            .input(|i| i.viewport().inner_rect)
+            .map(|r| [r.width(), r.height()]);
         if self.max_fps {
             // vsync paces this to the monitor's refresh rate.
             ui.ctx().request_repaint();
@@ -85,6 +93,7 @@ impl eframe::App for App {
         self.connection_form(&ctx);
         self.palette_ui(&ctx);
         self.master_prompt(&ctx);
+        self.favorite_prompt(&ctx);
     }
 }
 
@@ -379,19 +388,49 @@ mod screenshots {
             .unwrap();
         if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
             ts.bool_pick = None;
-            ts.confirm_delete = Some(2);
+        }
+        // Pending changes: two edits and a deletion, then the save summary.
+        {
+            let state = harness.state_mut();
+            let s = state.session.as_ref().unwrap();
+            let tab = &mut state.tabs[0];
+            for ev in [
+                crate::app::GridEvent::Commit(1, 1, Some("Cliente Dois".into())),
+                crate::app::GridEvent::Commit(1, 4, Some("999.90".into())),
+                crate::app::GridEvent::DeleteRow(4),
+            ] {
+                crate::app::handle_grid_event(tab, s, ev, true);
+            }
         }
         harness.run();
         harness
             .render()
             .unwrap()
-            .save(format!("{dir}/delete.png"))
+            .save(format!("{dir}/pending.png"))
             .unwrap();
         if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
-            ts.confirm_delete = None;
+            ts.confirm_save = true;
+        }
+        harness.run();
+        harness.render().unwrap().save(format!("{dir}/save.png")).unwrap();
+        if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
+            ts.confirm_save = false;
+            ts.changes.clear();
         }
 
         harness.state_mut().active = 1;
+        harness.state_mut().fav_prompt = Some(crate::app::FavPrompt {
+            name: "Clientes com mais saldo".into(),
+            sql: "SELECT id, nome, saldo\nFROM public.clientes\nWHERE ativo\nORDER BY saldo DESC;".into(),
+            shared: false,
+        });
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/favorite.png"))
+            .unwrap();
+        harness.state_mut().fav_prompt = None;
         harness.state_mut().tabs[1].confirm_run = Some("DELETE FROM clientes; DROP TABLE pedidos".into());
         harness.run();
         harness

@@ -33,6 +33,12 @@ pub enum Job {
         sql: String,
     },
     Tables,
+    /// Pending grid edits, saved in one transaction; then `refresh` is run.
+    Batch {
+        tab: u64,
+        stmts: Vec<Stmt>,
+        refresh: String,
+    },
     Structure {
         tab: u64,
         schema: String,
@@ -96,6 +102,11 @@ pub enum Reply {
     Structure {
         tab: u64,
         res: DbResult<TableStructure>,
+    },
+    /// Result of `Job::Batch`: the refreshed page, or why nothing was saved.
+    Saved {
+        tab: u64,
+        res: Box<DbResult<QueryResult>>,
     },
     /// File written and how many rows went into it.
     Exported {
@@ -175,6 +186,10 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     send(Reply::AllColumns(conn.all_columns()));
                     Reply::Tables(tables)
                 }
+                Job::Batch { tab, stmts, refresh } => Reply::Saved {
+                    tab,
+                    res: Box::new(conn.run_batch(&stmts).and_then(|()| conn.query(&refresh))),
+                },
                 Job::Structure { tab, schema, table } => Reply::Structure {
                     tab,
                     res: conn.structure(&schema, &table),
