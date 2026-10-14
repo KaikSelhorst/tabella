@@ -245,6 +245,104 @@ fn statement_words(script: &str) -> Vec<Vec<String>> {
     statements
 }
 
+/// Char ranges of the statements in `script`, trimmed of surrounding whitespace and without the
+/// `;`. Quotes, comments and Postgres `$tag$` bodies are skipped over, so a `;` inside them
+/// doesn't split. With `blank_lines`, an empty line also ends a statement (handy for scratch
+/// files without semicolons; a statement under the cursor rarely spans blank lines).
+pub fn statement_ranges(script: &str, blank_lines: bool) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = script.chars().collect();
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let push = |a: usize, b: usize, ranges: &mut Vec<(usize, usize)>| {
+        let mut a = a;
+        let mut b = b;
+        while a < b && chars[a].is_whitespace() {
+            a += 1;
+        }
+        while b > a && chars[b - 1].is_whitespace() {
+            b -= 1;
+        }
+        if a < b {
+            ranges.push((a, b));
+        }
+    };
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '-' && chars.get(i + 1) == Some(&'-') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        if matches!(c, '\'' | '"' | '`') {
+            i += 1;
+            while i < chars.len() && chars[i] != c {
+                if chars[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '$' {
+            // $tag$ ... $tag$ (tag may be empty); a lone `$1` parameter isn't one.
+            let tag_end = (i + 1..chars.len()).find(|&j| !(chars[j].is_alphanumeric() || chars[j] == '_'));
+            if let Some(e) = tag_end
+                && chars[e] == '$'
+                && !chars.get(i + 1).is_some_and(|d| d.is_ascii_digit())
+            {
+                let tag: Vec<char> = chars[i..=e].to_vec();
+                let mut j = e + 1;
+                while j < chars.len() && chars[j..].iter().take(tag.len()).ne(tag.iter()) {
+                    j += 1;
+                }
+                i = (j + tag.len()).min(chars.len());
+                continue;
+            }
+        }
+        if c == ';' {
+            push(start, i, &mut ranges);
+            start = i + 1;
+        } else if blank_lines && c == '\n' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '\n' && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if chars.get(j) == Some(&'\n') {
+                push(start, i, &mut ranges);
+                start = j;
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    push(start, chars.len(), &mut ranges);
+    ranges
+}
+
+/// The statement the cursor (a char index) is in or right after; the next one when the cursor
+/// is before the first.
+pub fn statement_at(script: &str, cursor: usize) -> Option<(usize, usize)> {
+    let ranges = statement_ranges(script, true);
+    ranges
+        .iter()
+        .rev()
+        .find(|(a, _)| *a <= cursor)
+        .or(ranges.first())
+        .copied()
+}
+
 /// What running a script would do, for read-only connections and the "are you sure" prompt.
 #[derive(Debug, Default, PartialEq)]
 pub struct ScriptRisk {
@@ -567,6 +665,49 @@ mod tests {
         // Same statements, only whitespace and keyword case differ.
         let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
         assert_eq!(squash(&out), squash(raw));
+    }
+
+    #[test]
+    fn statements_under_the_cursor() {
+        let text = |s: &str, r: Option<(usize, usize)>| {
+            r.map(|(a, b)| s.chars().skip(a).take(b - a).collect::<String>())
+        };
+        let script = "SELECT 1;\nSELECT ';' -- ;\n  , 2;\n\nUPDATE t SET a = $$x;y$$ WHERE id = $1";
+        let parts: Vec<String> = statement_ranges(script, false)
+            .into_iter()
+            .map(|r| text(script, Some(r)).unwrap())
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                "SELECT 1",
+                "SELECT ';' -- ;\n  , 2",
+                "UPDATE t SET a = $$x;y$$ WHERE id = $1"
+            ]
+        );
+        // Cursor inside, right after the `;`, and on the blank line after a statement.
+        assert_eq!(text(script, statement_at(script, 3)).as_deref(), Some("SELECT 1"));
+        assert_eq!(text(script, statement_at(script, 9)).as_deref(), Some("SELECT 1"));
+        let upd = script.chars().count() - 3;
+        assert_eq!(
+            text(script, statement_at(script, upd)).as_deref(),
+            Some("UPDATE t SET a = $$x;y$$ WHERE id = $1")
+        );
+        // Without semicolons, blank lines separate statements.
+        let scratch = "SELECT a\nFROM t\n\n  \nSELECT b";
+        assert_eq!(
+            text(scratch, statement_at(scratch, 2)).as_deref(),
+            Some("SELECT a\nFROM t")
+        );
+        assert_eq!(
+            text(scratch, statement_at(scratch, 20)).as_deref(),
+            Some("SELECT b")
+        );
+        assert_eq!(statement_at("  ", 1), None);
+        assert_eq!(
+            text("x $tag$ a;b $tag$ y", statement_at("x $tag$ a;b $tag$ y", 0)).as_deref(),
+            Some("x $tag$ a;b $tag$ y")
+        );
     }
 
     #[test]

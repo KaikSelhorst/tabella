@@ -7,6 +7,8 @@ mod error;
 mod export;
 mod favorites;
 mod history;
+mod import;
+mod plan;
 mod secrets;
 mod session;
 mod sql;

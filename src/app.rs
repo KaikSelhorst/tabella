@@ -14,10 +14,12 @@ use crate::db::{Canceller, ColumnInfo, ConnConfig, Kind, QueryResult, TableRef, 
 use crate::export::{self, Format};
 use crate::favorites::{self, Favorite};
 use crate::history::{self, Entry};
+use crate::import;
+use crate::plan::Plan;
 use crate::secrets::{Derived, SecretStore};
 use crate::session::{self, SavedTab};
 use crate::sql::{self, FilterOp, PageQuery, Stmt};
-use crate::values::{self, ValueKind};
+use crate::values::{self, CellRange, ValueKind};
 use crate::worker::{self, ExportSource, ExportSpec, Job, Reply};
 
 /// A message for the user, outside any tab (connection status, save problems).
@@ -105,6 +107,20 @@ pub struct TableState {
     pub bool_pick: Option<(usize, usize)>,
     /// The "new row" form, while open.
     pub insert: Option<Vec<InsertField>>,
+    /// The CSV import dialog, while open.
+    pub import: Option<ImportForm>,
+}
+
+/// "Importar CSV" dialog: a file, how to read it, and where each of its columns goes.
+#[derive(Default)]
+pub struct ImportForm {
+    pub path: String,
+    pub has_header: bool,
+    pub empty_is_null: bool,
+    /// Preview of `path` as last read (path and header flag it was read with).
+    pub preview: Option<(String, bool, Result<import::Preview, String>)>,
+    /// For each file column, the table column it goes into.
+    pub mapping: Vec<Option<String>>,
 }
 
 /// A pending grid change. Rows are identified by their primary key values, so changes survive
@@ -158,6 +174,7 @@ impl TableState {
             confirm_save: false,
             bool_pick: None,
             insert: None,
+            import: None,
         }
     }
 
@@ -274,6 +291,8 @@ pub struct ActivityState {
     pub last_refresh: Option<Instant>,
     /// Session waiting for the user to confirm `(id, terminate)`.
     pub confirm_kill: Option<(i64, bool)>,
+    /// Why the last cancel/terminate had no effect (kept until the next one).
+    pub kill_error: Option<String>,
 }
 
 /// "Estrutura" tab: columns, indexes, foreign keys and DDL of one table.
@@ -311,6 +330,9 @@ pub struct Tab {
     pending: u32,
     /// Selected cell `(row, column)` in the result grid.
     pub selected: Option<(usize, usize)>,
+    /// Other corner of a range selection (Shift+click, drag, Shift+arrows); `selected` is the
+    /// corner that moves.
+    pub anchor: Option<(usize, usize)>,
     /// SQL sent from an editor tab, recorded in the history once its result arrives.
     pub pending_sql: Option<String>,
     /// Row whose detail panel was closed with its X; the panel comes back on the next click.
@@ -319,6 +341,12 @@ pub struct Tab {
     pub confirm_run: Option<String>,
     /// Last export of this tab: file and row count, shown until dismissed.
     pub exported: Option<(PathBuf, u64)>,
+    /// A script's result sets when it returned more than one, in order. The one on screen lives
+    /// in `result`; its slot here is an empty placeholder.
+    pub sets: Vec<QueryResult>,
+    pub set_shown: usize,
+    /// EXPLAIN of an editor statement, shown in place of the result until closed.
+    pub plan: Option<Plan>,
 }
 
 impl Tab {
@@ -331,11 +359,37 @@ impl Tab {
             error: None,
             pending: 0,
             selected: None,
+            anchor: None,
             pending_sql: None,
             detail_hidden: None,
             confirm_run: None,
             exported: None,
+            sets: Vec::new(),
+            set_shown: 0,
+            plan: None,
         }
+    }
+
+    /// The selected rectangle, when more than one cell is selected.
+    pub fn range(&self) -> Option<CellRange> {
+        let ((ar, ac), (sr, sc)) = (self.anchor?, self.selected?);
+        ((ar, ac) != (sr, sc)).then(|| (ar.min(sr), ac.min(sc), ar.max(sr), ac.max(sc)))
+    }
+
+    /// Puts result set `i` of a multi-statement script on screen.
+    pub fn show_set(&mut self, i: usize) {
+        let Some(current) = self.result.as_mut() else {
+            return;
+        };
+        if i == self.set_shown || i >= self.sets.len() {
+            return;
+        }
+        std::mem::swap(current, &mut self.sets[self.set_shown]);
+        std::mem::swap(current, &mut self.sets[i]);
+        self.set_shown = i;
+        self.selected = None;
+        self.anchor = None;
+        self.detail_hidden = None;
     }
 
     pub fn busy(&self) -> bool {
@@ -414,6 +468,15 @@ pub enum GridEvent {
     Filter(usize, usize, FilterOp),
     /// Open the row a foreign-key cell points to.
     FollowFk(usize, usize),
+    /// Move the selection's moving corner here, keeping the other one (range selection).
+    Extend(usize, usize),
+    SelectAll,
+    /// Copy the selected cells as tab-separated text, optionally with the column names.
+    CopyCells {
+        headers: bool,
+    },
+    /// Spreadsheet text pasted at the selection: each cell becomes a pending edit.
+    Paste(String),
 }
 
 /// What `handle_grid_event` needs the app (or the clipboard) to do.
@@ -840,10 +903,27 @@ impl App {
                         _ => None,
                     };
                     t.selected = keep;
+                    t.anchor = None;
                     match *res {
-                        Ok(r) => {
+                        Ok(mut r) => {
+                            let earlier = std::mem::take(&mut r.previous);
+                            t.sets.clear();
+                            if !earlier.is_empty() {
+                                t.sets = earlier;
+                                t.sets.push(QueryResult::default());
+                                t.set_shown = t.sets.len() - 1;
+                            }
                             t.result = Some(r);
-                            t.error = notice;
+                            match &mut t.kind {
+                                // Refreshes every 2 s must not wipe the outcome of a kill.
+                                TabKind::Activity(st) => {
+                                    t.error = None;
+                                    if notice.is_some() {
+                                        st.kill_error = notice;
+                                    }
+                                }
+                                _ => t.error = notice,
+                            }
                         }
                         Err(e) => t.error = Some(e.to_string()),
                     }
@@ -872,6 +952,37 @@ impl App {
                             t.error = None;
                         }
                         // Nothing was saved: the changes stay, so the user can fix and retry.
+                        Err(e) => t.error = Some(e.to_string()),
+                    }
+                }
+                Reply::Imported { tab, res } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    t.pending = t.pending.saturating_sub(1);
+                    match res {
+                        Ok(n) => {
+                            self.notice = Notice::info(format!("{n} linha(s) importada(s)"));
+                            if let TabKind::Table(ts) = &mut t.kind {
+                                ts.import = None;
+                            }
+                            reload(t, s);
+                            let id = t.id;
+                            if let TabKind::Table(ts) = &mut t.kind {
+                                request_count(id, ts, s);
+                            }
+                        }
+                        // The dialog stays open to fix the mapping and retry.
+                        Err(e) => t.error = Some(format!("Importação falhou: {e}")),
+                    }
+                }
+                Reply::Plan { tab, res } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    t.pending = t.pending.saturating_sub(1);
+                    match res {
+                        Ok(p) => t.plan = Some(p),
                         Err(e) => t.error = Some(e.to_string()),
                     }
                 }
@@ -969,6 +1080,7 @@ impl App {
             auto_refresh: true,
             last_refresh: None,
             confirm_kill: None,
+            kill_error: None,
         };
         let i = self.push_tab("Atividade".into(), TabKind::Activity(state));
         if let Some(s) = &self.session {
@@ -1189,6 +1301,7 @@ pub fn kill_session(tab: &mut Tab, s: &Session) {
     let Some((id, terminate)) = st.confirm_kill.take() else {
         return;
     };
+    st.kill_error = None;
     st.last_refresh = Some(Instant::now());
     let tab_id = tab.id;
     tab.send_rows_job(
@@ -1266,9 +1379,118 @@ pub fn exec(tab: &mut Tab, s: &Session, stmt: Stmt, expect_one: bool) {
 /// Starts a query from an SQL editor tab; its result is recorded in the history.
 pub fn run_sql(tab: &mut Tab, s: &Session, sql: String) {
     tab.error = None;
+    tab.plan = None;
     tab.pending_sql = Some(sql.clone());
     let id = tab.id;
     tab.send_rows_job(s, Job::Query { tab: id, sql });
+}
+
+/// Opens the CSV import dialog, with `path` already chosen when a file was dropped on the window.
+pub fn open_import(tab: &mut Tab, path: Option<String>) {
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let mut form = ts.import.take().unwrap_or(ImportForm {
+        has_header: true,
+        empty_is_null: true,
+        ..Default::default()
+    });
+    if let Some(p) = path {
+        form.path = p;
+    }
+    ts.import = Some(form);
+}
+
+/// Re-reads the file preview when the path or the header option changed, and guesses the
+/// mapping from the column names.
+pub fn refresh_import_preview(ts: &mut TableState) {
+    let Some(form) = &mut ts.import else { return };
+    let path = form.path.trim().trim_matches('"').to_string();
+    if path.is_empty() {
+        form.preview = None;
+        form.mapping.clear();
+        return;
+    }
+    if form
+        .preview
+        .as_ref()
+        .is_some_and(|(p, h, _)| *p == path && *h == form.has_header)
+    {
+        return;
+    }
+    let pv = import::preview(std::path::Path::new(&path), form.has_header);
+    let names: Vec<String> = ts.cols.iter().map(|c| c.name.clone()).collect();
+    form.mapping = match &pv {
+        Ok(p) => import::auto_mapping(&p.headers, &names),
+        Err(_) => Vec::new(),
+    };
+    form.preview = Some((path, form.has_header, pv));
+}
+
+/// Starts the import as set up in the dialog.
+pub fn submit_import(tab: &mut Tab, s: &Session) {
+    if s.cfg.read_only {
+        tab.error = Some("Conexão somente leitura: não é possível importar.".into());
+        return;
+    }
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let Some(form) = &ts.import else { return };
+    let Some((path, _, Ok(pv))) = &form.preview else {
+        return;
+    };
+    if form.mapping.iter().all(Option::is_none) {
+        tab.error = Some("Associe pelo menos uma coluna do arquivo a uma coluna da tabela.".into());
+        return;
+    }
+    let cols_of = |kind| {
+        ts.cols
+            .iter()
+            .filter(|c| values::value_kind(Some(&c.data_type), std::iter::empty()) == kind)
+            .map(|c| c.name.clone())
+            .collect()
+    };
+    let (bool_cols, number_cols) = (cols_of(ValueKind::Bool), cols_of(ValueKind::Number));
+    let spec = import::ImportSpec {
+        path: path.into(),
+        kind: s.cfg.kind,
+        schema: ts.schema.clone(),
+        table: ts.table.clone(),
+        delimiter: pv.delimiter,
+        has_header: form.has_header,
+        mapping: form.mapping.clone(),
+        bool_cols,
+        number_cols,
+        empty_is_null: form.empty_is_null,
+    };
+    tab.error = None;
+    tab.pending += 1;
+    s.send(Job::Import {
+        tab: tab.id,
+        spec: Box::new(spec),
+    });
+}
+
+/// Asks for the plan of one statement. ANALYZE runs it, so it is refused for anything but reads.
+pub fn explain(tab: &mut Tab, s: &Session, sql: &str, analyze: bool) {
+    let parts = sql::statement_ranges(sql, false);
+    let [(a, b)] = parts[..] else {
+        tab.error =
+            Some("Explicar funciona com um comando por vez: coloque o cursor nele ou selecione-o.".into());
+        return;
+    };
+    let one: String = sql.chars().skip(a).take(b - a).collect();
+    if analyze && sql::script_risk(&one).writes {
+        tab.error = Some(
+            "EXPLAIN ANALYZE executa o comando de verdade: aqui ele só é usado em consultas de leitura."
+                .into(),
+        );
+        return;
+    }
+    tab.error = None;
+    tab.pending += 1;
+    s.send(Job::Explain {
+        tab: tab.id,
+        sql: one,
+        analyze,
+    });
 }
 
 /// Carries out what the grid asked for. Returns text to put on the clipboard, if any.
@@ -1286,6 +1508,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
     match &event {
         GridEvent::Select(row, col) => {
             tab.selected = Some((*row, *col));
+            tab.anchor = None;
             tab.detail_hidden = None;
             if let TabKind::Table(ts) = &mut tab.kind {
                 ts.bool_pick = None;
@@ -1301,6 +1524,29 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
                 CopyAs::Json => values::row_json(res, cols, *row),
                 CopyAs::Insert => sql::insert_row(k, &table, &res.columns, &res.rows[*row]),
             }));
+        }
+        GridEvent::Extend(row, col) => {
+            tab.anchor = tab.anchor.or(tab.selected).or(Some((*row, *col)));
+            tab.selected = Some((*row, *col));
+            return None;
+        }
+        GridEvent::SelectAll => {
+            if !res.rows.is_empty() {
+                tab.anchor = Some((0, 0));
+                tab.selected = Some((res.rows.len() - 1, res.columns.len() - 1));
+            }
+            return None;
+        }
+        GridEvent::CopyCells { headers } => {
+            let (r, c) = tab.selected?;
+            let range = tab.range().unwrap_or((r, c, r, c));
+            // Copy what the grid shows, pending edits included.
+            let overlay = match &tab.kind {
+                TabKind::Table(ts) => ts.overlay(res),
+                _ => None,
+            };
+            let shown = overlay.as_ref().map_or(res, |o| &o.result);
+            return Some(Effect::Copy(values::to_tsv(shown, range, *headers)));
         }
         GridEvent::FollowFk(row, col) => {
             let info = cols.iter().find(|c| c.name == res.columns[*col])?;
@@ -1326,6 +1572,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         _ => {}
     }
 
+    let selection = tab.selected.map(|(r, c)| tab.range().unwrap_or((r, c, r, c)));
     let TabKind::Table(ts) = &mut tab.kind else {
         return None;
     };
@@ -1365,38 +1612,43 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         GridEvent::Commit(row, col, val) => {
             ts.edit = None;
             ts.bool_pick = None;
-            // Typed booleans ("true", "sim", "0"...) are normalized for the engine.
-            let val = match (kinds[col], val) {
-                (ValueKind::Bool, Some(v)) => match sql::parse_bool(&v) {
-                    Some(b) => Some(sql::bool_value(k, b).to_string()),
-                    None => {
-                        tab.error = Some(format!("\"{v}\" não é um booleano (use true ou false)"));
+            if let Err(e) = set_cell(ts, res, &kinds, k, (row, col), val) {
+                tab.error = Some(e);
+            }
+        }
+        // Fills from the selection's top-left corner; whatever falls outside the page is left out.
+        GridEvent::Paste(text) => {
+            let (top, left, ..) = selection?;
+            let cells = values::parse_tsv(&text);
+            let mut skipped = 0;
+            for (dr, line) in cells.iter().enumerate() {
+                for (dc, v) in line.iter().enumerate() {
+                    let (row, col) = (top + dr, left + dc);
+                    if row >= res.rows.len() || col >= res.columns.len() {
+                        skipped += 1;
+                        continue;
+                    }
+                    // Spreadsheets have no NULL: the word itself stands for it, as the grid shows it.
+                    let val = (v != "NULL").then(|| v.clone());
+                    if let Err(e) = set_cell(ts, res, &kinds, k, (row, col), val) {
+                        tab.error = Some(e);
                         return None;
                     }
-                },
-                (_, v) => v,
-            };
-            // Not written yet: it joins the pending changes (saved together with Ctrl+S).
-            let key = ts.row_key(res, row);
-            let col_name = res.columns[col].clone();
-            let before = res.rows[row][col].clone();
-            ts.changes.retain(
-                |c| !matches!(c, Change::Set { key: k2, col: c2, .. } if *k2 == key && *c2 == col_name),
-            );
-            let same = match kinds[col] {
-                ValueKind::Bool => {
-                    before.as_deref().and_then(sql::parse_bool) == val.as_deref().and_then(sql::parse_bool)
                 }
-                _ => before == val,
-            };
-            if !same {
-                ts.changes.push(Change::Set {
-                    key,
-                    col: col_name,
-                    value: val,
-                    before,
-                });
             }
+            let rows = cells.len().min(res.rows.len().saturating_sub(top));
+            let cols = cells
+                .iter()
+                .map(Vec::len)
+                .max()
+                .unwrap_or(0)
+                .min(res.columns.len().saturating_sub(left));
+            if rows > 0 && cols > 0 {
+                tab.anchor = Some((top, left));
+                tab.selected = Some((top + rows - 1, left + cols - 1));
+            }
+            tab.error = (skipped > 0)
+                .then(|| format!("{skipped} célula(s) coladas ficaram fora da página e foram ignoradas."));
         }
         // Toggles: deleting an already-deleted row restores it.
         GridEvent::DeleteRow(row) => {
@@ -1408,9 +1660,54 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
                 ts.changes.push(Change::Delete { key });
             }
         }
-        GridEvent::Select(..) | GridEvent::Copy(..) | GridEvent::Filter(..) | GridEvent::FollowFk(..) => {}
+        GridEvent::Select(..)
+        | GridEvent::Extend(..)
+        | GridEvent::SelectAll
+        | GridEvent::CopyCells { .. }
+        | GridEvent::Copy(..)
+        | GridEvent::Filter(..)
+        | GridEvent::FollowFk(..) => {}
     }
     None
+}
+
+/// Records a new value for a cell as a pending change (saved together with Ctrl+S). Typed
+/// booleans ("true", "sim", "0"...) are normalized for the engine.
+fn set_cell(
+    ts: &mut TableState,
+    res: &QueryResult,
+    kinds: &[ValueKind],
+    k: Kind,
+    (row, col): (usize, usize),
+    val: Option<String>,
+) -> Result<(), String> {
+    let val = match (kinds[col], val) {
+        (ValueKind::Bool, Some(v)) => match sql::parse_bool(&v) {
+            Some(b) => Some(sql::bool_value(k, b).to_string()),
+            None => return Err(format!("\"{v}\" não é um booleano (use true ou false)")),
+        },
+        (_, v) => v,
+    };
+    let key = ts.row_key(res, row);
+    let col_name = res.columns[col].clone();
+    let before = res.rows[row][col].clone();
+    ts.changes
+        .retain(|c| !matches!(c, Change::Set { key: k2, col: c2, .. } if *k2 == key && *c2 == col_name));
+    let same = match kinds[col] {
+        ValueKind::Bool => {
+            before.as_deref().and_then(sql::parse_bool) == val.as_deref().and_then(sql::parse_bool)
+        }
+        _ => before == val,
+    };
+    if !same {
+        ts.changes.push(Change::Set {
+            key,
+            col: col_name,
+            value: val,
+            before,
+        });
+    }
+    Ok(())
 }
 
 /// Undoes the most recent pending change.
@@ -1543,6 +1840,55 @@ pub mod tests {
         );
         handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 1, Some("talvez".into())), true);
         assert!(tab.error.is_some());
+    }
+
+    #[test]
+    fn paste_fills_cells_from_the_selection_and_copy_takes_the_range() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut tab = table_tab();
+        if let Some(r) = &mut tab.result {
+            r.rows
+                .push(vec![Some("8".into()), Some("t".into()), Some("bia".into())]);
+        }
+        handle_grid_event(&mut tab, &s, GridEvent::Select(0, 1), true);
+        // Two rows of (ativo, nome) from a spreadsheet; the third column overflows the page.
+        let text = "sim\tcarla\textra\r\nNULL\tdani\r\n".to_string();
+        handle_grid_event(&mut tab, &s, GridEvent::Paste(text), true);
+        let TabKind::Table(ts) = &tab.kind else { panic!() };
+        let sets: Vec<(String, Option<String>)> = ts
+            .changes
+            .iter()
+            .map(|c| match c {
+                Change::Set { col, value, .. } => (col.clone(), value.clone()),
+                Change::Delete { .. } => panic!(),
+            })
+            .collect();
+        assert_eq!(
+            sets,
+            [
+                ("ativo".into(), Some("true".into())),
+                ("nome".into(), Some("carla".into())),
+                ("ativo".into(), None),
+                ("nome".into(), Some("dani".into())),
+            ]
+        );
+        assert!(tab.error.as_deref().is_some_and(|e| e.contains("1 célula")));
+        assert_eq!(
+            tab.range(),
+            Some((0, 1, 1, 2)),
+            "the pasted block ends up selected"
+        );
+        // Copy shows what the grid shows: the pasted (unsaved) values.
+        let Some(Effect::Copy(tsv)) =
+            handle_grid_event(&mut tab, &s, GridEvent::CopyCells { headers: true }, true)
+        else {
+            panic!()
+        };
+        assert_eq!(tsv, "ativo\tnome\ntrue\tcarla\n\tdani\n");
+        handle_grid_event(&mut tab, &s, GridEvent::SelectAll, true);
+        assert_eq!(tab.range(), Some((0, 0, 1, 2)));
+        handle_grid_event(&mut tab, &s, GridEvent::Select(1, 1), true);
+        assert_eq!(tab.range(), None);
     }
 
     #[test]

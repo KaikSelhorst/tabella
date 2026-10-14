@@ -6,6 +6,7 @@ use postgres::SimpleQueryMessage;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DbError, DbResult};
+use crate::plan::{self, Plan};
 use crate::sql::Stmt;
 use crate::tls;
 
@@ -184,6 +185,25 @@ pub struct QueryResult {
     pub affected: Option<u64>,
     pub truncated: bool,
     pub elapsed: Duration,
+    /// Result sets of earlier statements in the same script (oldest first); this one is the last.
+    pub previous: Vec<QueryResult>,
+}
+
+/// Most result sets kept from one script (each up to `MAX_ROWS` rows).
+const MAX_SETS: usize = 20;
+
+impl QueryResult {
+    /// Called when another result set starts: files the current one under `previous`.
+    fn next_set(&mut self) {
+        if self.columns.is_empty() {
+            return;
+        }
+        let mut done = std::mem::take(self);
+        self.previous = std::mem::take(&mut done.previous);
+        if self.previous.len() < MAX_SETS {
+            self.previous.push(done);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -572,6 +592,28 @@ impl Conn {
         })
     }
 
+    /// Plan of one statement. Postgres: `EXPLAIN (FORMAT JSON)`; MySQL: `EXPLAIN FORMAT=TREE`, or
+    /// `EXPLAIN ANALYZE` (8.0.18+). With `analyze` the statement really runs: callers only allow
+    /// it for reads.
+    pub fn explain(&mut self, sql: &str, analyze: bool) -> DbResult<Plan> {
+        let sql = sql.trim().trim_end_matches(';');
+        let (q, kind) = match (self.kind(), analyze) {
+            (Kind::Postgres, false) => (format!("EXPLAIN (FORMAT JSON) {sql}"), Kind::Postgres),
+            (Kind::Postgres, true) => (format!("EXPLAIN (ANALYZE, FORMAT JSON) {sql}"), Kind::Postgres),
+            (Kind::MySql, false) => (format!("EXPLAIN FORMAT=TREE {sql}"), Kind::MySql),
+            (Kind::MySql, true) => (format!("EXPLAIN ANALYZE {sql}"), Kind::MySql),
+        };
+        let r = self.query(&q)?;
+        // Postgres returns one JSON cell; MySQL one text cell (or one line per row on old servers).
+        let text: Vec<&str> = r.rows.iter().filter_map(|row| row.first()?.as_deref()).collect();
+        let text = text.join("\n");
+        match kind {
+            Kind::Postgres => plan::from_pg_json(&text),
+            Kind::MySql => plan::from_mysql_tree(&text),
+        }
+        .map_err(DbError::Other)
+    }
+
     /// Stops another session's statement (`terminate` = close that whole connection).
     pub fn kill(&mut self, id: i64, terminate: bool) -> DbResult<()> {
         let sql = match (self.kind(), terminate) {
@@ -580,7 +622,21 @@ impl Conn {
             (Kind::MySql, false) => format!("KILL QUERY {id}"),
             (Kind::MySql, true) => format!("KILL {id}"),
         };
-        self.query(&sql).map(|_| ())
+        let r = self.query(&sql)?;
+        // Postgres answers `false` instead of failing when the session is gone or belongs to
+        // someone this user may not signal.
+        if r.rows
+            .first()
+            .and_then(|row| row.first())
+            .is_some_and(|v| v.as_deref() == Some("f"))
+        {
+            return Err(DbError::Other(format!(
+                "a sessão {id} não foi {} (já terminou, ou falta permissão: é preciso ser o mesmo \
+                 usuário, superusuário ou ter a role pg_signal_backend)",
+                if terminate { "encerrada" } else { "cancelada" }
+            )));
+        }
+        Ok(())
     }
 
     /// Runs row edits as one transaction. Every statement must touch exactly one row; if one
@@ -778,6 +834,7 @@ fn pg_query(c: &mut postgres::Client, sql: &str, limit: usize) -> DbResult<Query
     for m in msgs {
         match m {
             SimpleQueryMessage::RowDescription(cols) => {
+                out.next_set();
                 out.columns = cols.iter().map(|c| c.name().to_string()).collect();
                 out.rows.clear();
                 out.truncated = false;
@@ -830,6 +887,7 @@ fn my_collect<P: mysql::prelude::Protocol>(
         if cols.is_empty() {
             continue;
         }
+        out.next_set();
         out.columns = cols;
         out.rows.clear();
         out.truncated = false;
@@ -1066,6 +1124,23 @@ mod tests {
         assert!(t.size.is_some_and(|b| b > 0), "{kind:?}: table size");
         c.query("DROP TABLE dbl_child").unwrap();
 
+        // Plans come back as a tree, estimated or measured.
+        let p = c.explain("SELECT * FROM dbl_t WHERE id > 0;", false).unwrap();
+        assert!(!p.analyzed && p.root.cost.is_some(), "{kind:?}: {p:?}");
+        let p = c.explain("SELECT count(*) FROM dbl_t", true).unwrap();
+        assert!(p.analyzed, "{kind:?}: {p:?}");
+        let mut labels = Vec::new();
+        p.root.walk(0, &mut |n, _| labels.push(n.label.to_lowercase()));
+        assert!(labels.iter().any(|l| l.contains("dbl_t")), "{kind:?}: {labels:?}");
+
+        // A script keeps the result set of each query, not only the last one.
+        let r = c
+            .query("SELECT 1 AS a; SELECT 2 AS b, 3 AS c; SELECT 4 AS d")
+            .unwrap();
+        assert_eq!(r.columns, ["d"], "{kind:?}");
+        let earlier: Vec<_> = r.previous.iter().map(|p| p.columns.join(",")).collect();
+        assert_eq!(earlier, ["a", "b,c"], "{kind:?}");
+
         // The activity monitor sees another session, and can stop its statement.
         let mut other = Conn::connect(&cfg, None).unwrap();
         let canceller_target = std::thread::spawn(move || {
@@ -1089,6 +1164,11 @@ mod tests {
             .unwrap_or_else(|| panic!("{kind:?}: sleeping session not listed: {act:?}"));
         let id: i64 = sleeper[0].as_deref().unwrap().parse().unwrap();
         c.kill(id, false).unwrap();
+        // A session that doesn't exist is reported, not silently ignored.
+        assert!(
+            c.kill(999_999, false).is_err(),
+            "{kind:?}: kill of a missing session"
+        );
         assert!(
             canceller_target.join().unwrap() < std::time::Duration::from_secs(5),
             "{kind:?}: kill"
@@ -1154,6 +1234,37 @@ mod tests {
             "write must fail on a read-only session"
         );
         assert_eq!(c.count("SELECT COUNT(*) FROM dbl_t").unwrap(), 2);
+        // CSV import: all rows in one transaction, or none when one fails.
+        {
+            use crate::import::{ImportSpec, run};
+            let path =
+                std::env::temp_dir().join(format!("dblite-import-{kind:?}-{}.csv", std::process::id()));
+            std::fs::write(&path, "codigo;nome\n10;dez\n11;\n").unwrap();
+            let schema = if kind == Kind::MySql { db } else { "public" };
+            let mut spec = ImportSpec {
+                path: path.clone(),
+                kind,
+                schema: schema.into(),
+                table: "dbl_t".into(),
+                delimiter: b';',
+                has_header: true,
+                mapping: vec![Some("id".into()), Some("name".into())],
+                bool_cols: vec![],
+                number_cols: vec!["id".into()],
+                empty_is_null: true,
+            };
+            assert_eq!(run(&mut c, &spec).unwrap(), 2, "{kind:?}");
+            let r = c.query("SELECT name FROM dbl_t WHERE id = 11").unwrap();
+            assert_eq!(r.rows[0][0], None, "{kind:?}: empty cell is NULL");
+            std::fs::write(&path, "codigo;nome\n12;doze\n10;repetido\n").unwrap();
+            let err = run(&mut c, &spec).unwrap_err().to_string();
+            assert!(err.contains("Nada foi importado"), "{kind:?}: {err}");
+            let r = c.query("SELECT count(*) FROM dbl_t WHERE id = 12").unwrap();
+            assert_eq!(r.rows[0][0].as_deref(), Some("0"), "{kind:?}: rolled back");
+            spec.mapping = vec![None, None];
+            assert!(run(&mut c, &spec).is_err());
+            let _ = std::fs::remove_file(path);
+        }
         c.query("DROP TABLE dbl_t").unwrap();
     }
 

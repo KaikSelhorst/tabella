@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use crate::db::{Canceller, ColumnInfo, Conn, ConnConfig, QueryResult, TableRef, TableStructure};
 use crate::error::{DbError, DbResult};
 use crate::export::{Format, Writer};
+use crate::import::ImportSpec;
+use crate::plan::Plan;
 use crate::sql::{PageQuery, Stmt, select_range};
 use crate::tunnel::Tunnel;
 
@@ -43,6 +45,17 @@ pub enum Job {
         tab: u64,
         schema: String,
         table: String,
+    },
+    /// CSV file into a table, all or nothing.
+    Import {
+        tab: u64,
+        spec: Box<ImportSpec>,
+    },
+    /// Query plan of one statement; `analyze` runs it to get real times.
+    Explain {
+        tab: u64,
+        sql: String,
+        analyze: bool,
     },
     /// Sessions on the server (answers with `Reply::Rows`).
     Activity {
@@ -112,6 +125,15 @@ pub enum Reply {
     Structure {
         tab: u64,
         res: DbResult<TableStructure>,
+    },
+    Plan {
+        tab: u64,
+        res: DbResult<Plan>,
+    },
+    /// Rows inserted by `Job::Import`.
+    Imported {
+        tab: u64,
+        res: DbResult<u64>,
     },
     /// Result of `Job::Batch`: the refreshed page, or why nothing was saved.
     Saved {
@@ -206,13 +228,22 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     notice: None,
                 },
                 Job::Kill { tab, id, terminate } => {
-                    let res = conn.kill(id, terminate).and_then(|()| conn.activity());
+                    // A refused kill still refreshes the list; the reason comes as the notice.
+                    let notice = conn.kill(id, terminate).err().map(|e| e.to_string());
                     Reply::Rows {
                         tab,
-                        res: Box::new(res),
-                        notice: None,
+                        res: Box::new(conn.activity()),
+                        notice,
                     }
                 }
+                Job::Import { tab, spec } => Reply::Imported {
+                    tab,
+                    res: crate::import::run(&mut conn, &spec),
+                },
+                Job::Explain { tab, sql, analyze } => Reply::Plan {
+                    tab,
+                    res: conn.explain(&sql, analyze),
+                },
                 Job::Structure { tab, schema, table } => Reply::Structure {
                     tab,
                     res: conn.structure(&schema, &table),

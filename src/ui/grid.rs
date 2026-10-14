@@ -8,7 +8,7 @@ use crate::app::CopyAs;
 use crate::app::{Edit, GridEvent};
 use crate::db::{ColumnInfo, QueryResult};
 use crate::sql::FilterOp;
-use crate::values::{SAMPLE_ROWS, ValueKind, column_info};
+use crate::values::{CellRange, SAMPLE_ROWS, ValueKind, column_info};
 
 const HEADER_HEIGHT: f32 = 28.0;
 const ROW_HEIGHT: f32 = 24.0;
@@ -210,6 +210,8 @@ pub struct GridOpts<'a> {
     pub deleted: Option<&'a HashSet<usize>>,
     /// Table tabs: offer "filter by this value" in the cell menu.
     pub can_filter: bool,
+    /// Range selection, when more than one cell is selected.
+    pub range: Option<CellRange>,
 }
 
 /// Result grid. Returns at most one user action per frame.
@@ -232,7 +234,17 @@ pub fn grid(
         changed,
         deleted,
         can_filter,
+        range,
     } = *opts;
+    let in_range = |ri: usize, ci: usize| {
+        range.is_some_and(|(r0, c0, r1, c1)| (r0..=r1).contains(&ri) && (c0..=c1).contains(&ci))
+    };
+    // Dragging across cells selects a range: set when a drag starts on a cell, until release.
+    let drag_id = egui::Id::new(("grid_drag", id));
+    let dragging = ui.ctx().data(|d| d.get_temp::<bool>(drag_id)).unwrap_or(false);
+    if dragging && !ui.input(|i| i.pointer.primary_down()) {
+        ui.ctx().data_mut(|d| d.remove::<bool>(drag_id));
+    }
     let mut event = None;
     let t = theme::tokens();
     let cell_font = FontId::monospace(CELL_FONT);
@@ -382,6 +394,13 @@ pub fn grid(
                                 theme::mix(t.warning, 0.18, t.background),
                             );
                         }
+                        if selected != Some((ri, ci)) && in_range(ri, ci) {
+                            gap_painter(ui, table_rect).rect_filled(
+                                full_cell(ui),
+                                0.0,
+                                theme::mix(t.selection, 0.6, t.background),
+                            );
+                        }
                         if selected == Some((ri, ci)) {
                             let rect = full_cell(ui);
                             let painter = gap_painter(ui, table_rect);
@@ -427,7 +446,7 @@ pub fn grid(
                         } else {
                             text
                         };
-                        let label = egui::Label::new(text).truncate().sense(Sense::click());
+                        let label = egui::Label::new(text).truncate().sense(Sense::click_and_drag());
                         let r = if kind == ValueKind::Number {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.add(label))
                                 .inner
@@ -451,11 +470,24 @@ pub fn grid(
                                 .on_hover_cursor(egui::CursorIcon::PointingHand),
                             None => r,
                         };
+                        let shift = ui.input(|i| i.modifiers.shift);
                         if fk.is_some() && r.clicked() && ui.input(|i| i.modifiers.command) {
                             event = Some(GridEvent::FollowFk(ri, ci));
                         } else if can_edit && r.double_clicked() {
                             event = Some(GridEvent::StartEdit(ri, ci));
-                        } else if r.clicked() || r.secondary_clicked() {
+                        } else if r.clicked() && shift {
+                            event = Some(GridEvent::Extend(ri, ci));
+                        } else if r.drag_started() {
+                            ui.ctx().data_mut(|d| d.insert_temp(drag_id, true));
+                            event = Some(if shift {
+                                GridEvent::Extend(ri, ci)
+                            } else {
+                                GridEvent::Select(ri, ci)
+                            });
+                        } else if dragging && selected != Some((ri, ci)) && r.contains_pointer() {
+                            event = Some(GridEvent::Extend(ri, ci));
+                        } else if r.clicked() || (r.secondary_clicked() && !in_range(ri, ci)) {
+                            // Right-clicking inside the range keeps it, for "Copiar seleção".
                             event = Some(GridEvent::Select(ri, ci));
                         }
                         r.context_menu(|ui| {
@@ -479,6 +511,21 @@ pub fn grid(
                                 }
                                 if ui.button(ne).clicked() {
                                     event = Some(GridEvent::Filter(ri, ci, FilterOp::Ne));
+                                    ui.close();
+                                }
+                                ui.separator();
+                            }
+                            if range.is_some() {
+                                if ui
+                                    .button("Copiar seleção")
+                                    .on_hover_text("Ctrl+C · texto separado por tabs, cola no Excel")
+                                    .clicked()
+                                {
+                                    event = Some(GridEvent::CopyCells { headers: false });
+                                    ui.close();
+                                }
+                                if ui.button("Copiar seleção com cabeçalho").clicked() {
+                                    event = Some(GridEvent::CopyCells { headers: true });
                                     ui.close();
                                 }
                                 ui.separator();
@@ -574,6 +621,7 @@ mod tests {
                     changed: None,
                     deleted: None,
                     can_filter: false,
+                    range: None,
                 },
             );
         });
@@ -604,6 +652,7 @@ mod tests {
                     changed: None,
                     deleted: None,
                     can_filter: false,
+                    range: None,
                 },
             ) {
                 got = Some(e);

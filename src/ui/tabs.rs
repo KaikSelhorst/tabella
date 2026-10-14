@@ -5,8 +5,9 @@ use eframe::egui::{self, Align, Key, Layout, TextEdit};
 
 use super::detail::{self, DetailAction};
 use super::grid::{GridOpts, grid};
+use super::import_form::{self, ImportAction};
 use super::structure::{self, InsertAction, StructAction};
-use super::{complete, icon, palette, syntax, theme};
+use super::{complete, icon, palette, plan_view, syntax, theme};
 use crate::app::{self, App, Effect, FavPrompt, GridEvent, Session, Tab, TabKind};
 use crate::db::QueryResult;
 use crate::export::{self, Format};
@@ -245,6 +246,7 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         return;
     };
     let mut run: Option<String> = None;
+    let mut explain: Option<(String, bool)> = None;
     let t = theme::tokens();
     let f5 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
     egui::Panel::top(egui::Id::new(("editor", tab.id)))
@@ -258,26 +260,55 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         .show(ui, |ui| {
             let editor_id = egui::Id::new(("sql", tab.id));
             // Selection survives losing focus (e.g. clicking Executar), so read it from the stored state.
-            let selected_range = TextEdit::load_state(ui.ctx(), editor_id)
-                .and_then(|st| st.cursor.char_range())
+            let cursor = TextEdit::load_state(ui.ctx(), editor_id).and_then(|st| st.cursor.char_range());
+            let selected_range = cursor
                 .map(|r| r.as_sorted_char_range())
                 .map(|r| (usize::from(r.start), usize::from(r.end)))
                 .filter(|(a, b)| a < b);
-            let selection = selected_range.map(|(a, b)| text.chars().skip(a).take(b - a).collect::<String>());
+            let chars = |(a, b): (usize, usize)| text.chars().skip(a).take(b - a).collect::<String>();
+            let selection = selected_range.map(chars);
+            // With several statements, Ctrl+Enter runs the one under the cursor and F5 runs all.
+            let several = sql::statement_ranges(text, true).len() > 1;
+            let current = if several && selection.is_none() {
+                cursor.and_then(|c| sql::statement_at(text, usize::from(c.primary.index)))
+            } else {
+                None
+            };
+            let statement = current.map(chars);
+            // What Ctrl+Enter / the main button runs, and what F5 / "Executar tudo" runs.
+            let one = selection
+                .clone()
+                .or_else(|| statement.clone())
+                .unwrap_or_else(|| text.clone());
+            let all = selection.clone().unwrap_or_else(|| text.clone());
             let format_key =
                 ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT | egui::Modifiers::ALT, Key::F));
             ui.horizontal(|ui| {
                 let label = if selection.is_some() {
                     "Executar seleção"
+                } else if statement.is_some() {
+                    "Executar comando"
                 } else {
                     "Executar"
                 };
                 if ui
                     .add_enabled(!busy, theme::primary_button(Some(icon::PLAY), label))
-                    .on_hover_text("Ctrl+Enter ou F5")
+                    .on_hover_text(if statement.is_some() {
+                        "Ctrl+Enter · o comando sob o cursor"
+                    } else {
+                        "Ctrl+Enter ou F5"
+                    })
                     .clicked()
                 {
-                    run = Some(selection.clone().unwrap_or_else(|| text.clone()));
+                    run = Some(one.clone());
+                }
+                if statement.is_some()
+                    && ui
+                        .add_enabled(!busy, theme::outline_button("Executar tudo"))
+                        .on_hover_text("F5 · todos os comandos, um resultado para cada consulta")
+                        .clicked()
+                {
+                    run = Some(all.clone());
                 }
                 if busy {
                     busy_indicator(ui, s);
@@ -295,6 +326,26 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     None => {}
                 }
                 export = export_menu(ui, false, can_export);
+                let explain_label =
+                    theme::icon_text(icon::TREE_VIEW, "Explicar", t.muted_foreground, t.foreground);
+                ui.menu_button(explain_label, |ui| {
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("Plano estimado").shortcut_text("Ctrl+E"))
+                        .on_hover_text("EXPLAIN: como o banco pretende executar, sem executar")
+                        .clicked()
+                    {
+                        explain = Some((one.clone(), false));
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("Plano executado (ANALYZE)"))
+                        .on_hover_text("EXPLAIN ANALYZE: executa a consulta e mede cada etapa (só leitura)")
+                        .clicked()
+                    {
+                        explain = Some((one.clone(), true));
+                        ui.close();
+                    }
+                });
                 let format = theme::icon_text(
                     icon::TEXT_ALIGN_LEFT,
                     "Formatar",
@@ -311,7 +362,12 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     detail_toggle(ui, cx.show_detail);
-                    ui.label(egui::RichText::new("Ctrl+Enter / F5").size(11.0).color(t.subtle));
+                    let keys = if several {
+                        "Ctrl+Enter comando · F5 tudo"
+                    } else {
+                        "Ctrl+Enter / F5"
+                    };
+                    ui.label(egui::RichText::new(keys).size(11.0).color(t.subtle));
                 });
             });
             ui.add_space(4.0);
@@ -328,14 +384,34 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         .lock_focus(true)
                         .layouter(&mut syntax::sql_layouter(13.0))
                         .show(ui);
+                    // Lime bar in the gutter beside the statement Ctrl+Enter would run.
+                    if let Some((a, b)) = current {
+                        let top = out.galley.pos_from_cursor(egui::text::CCursor::new(a));
+                        let bottom = out.galley.pos_from_cursor(egui::text::CCursor::new(b));
+                        let x = out.galley_pos.x - 5.0;
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(x, out.galley_pos.y + top.min.y),
+                                egui::pos2(x, out.galley_pos.y + bottom.max.y),
+                            ],
+                            egui::Stroke::new(2.0, t.lime),
+                        );
+                    }
                     if let (Some((sugg, selected)), Some(range)) = (popup, out.cursor_range) {
                         let at = out.galley.pos_from_cursor(range.primary);
                         let anchor = out.galley_pos + at.left_bottom().to_vec2() + egui::vec2(0.0, 2.0);
                         complete::popup(ui.ctx(), editor_id, anchor, &sugg, selected);
                     }
                     let ctrl_enter = ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter));
-                    if (out.response.has_focus() && ctrl_enter) || f5 {
-                        run = Some(selection.clone().unwrap_or_else(|| text.clone()));
+                    let ctrl_e = out.response.has_focus()
+                        && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::E));
+                    if ctrl_e {
+                        explain = Some((one.clone(), false));
+                    }
+                    if out.response.has_focus() && ctrl_enter {
+                        run = Some(one.clone());
+                    } else if f5 {
+                        run = Some(all.clone());
                     }
                 });
         });
@@ -352,11 +428,25 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             app::run_sql(tab, s, sql);
         }
     }
+    if let Some((sql, analyze)) = explain.filter(|(q, _)| !q.trim().is_empty())
+        && !busy
+    {
+        app::explain(tab, s, &sql, analyze);
+    }
     if let Some((format, _)) = export {
         app::start_export(tab, s, format, false);
     }
     confirm_run(ui.ctx(), tab, s);
     export_banner(ui, tab);
+    if let Some(plan) = &tab.plan {
+        if let Some(e) = &tab.error {
+            error_banner(ui, e);
+        }
+        if plan_view::plan_view(ui, plan) {
+            tab.plan = None;
+        }
+        return;
+    }
     result_area(ui, tab, cx, false);
 }
 
@@ -522,6 +612,11 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     } else if refresh {
         app::refresh_activity(tab, s);
     }
+    if let TabKind::Activity(st) = &tab.kind
+        && let Some(e) = &st.kill_error
+    {
+        error_banner(ui, e);
+    }
     result_area(ui, tab, cx, false);
 }
 
@@ -601,6 +696,7 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let can_export = !busy && tab.result.as_ref().is_some_and(|r| !r.columns.is_empty());
     let mut export = None;
     let mut show_structure = false;
+    let mut import_csv = false;
     let TabKind::Table(ts) = &mut tab.kind else {
         return;
     };
@@ -712,6 +808,14 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     }
                     detail_toggle(ui, cx.show_detail);
                     export = export_menu(ui, true, can_export);
+                    import_csv = ui
+                        .add_enabled(
+                            !s.cfg.read_only,
+                            egui::Button::new(theme::icon(icon::UPLOAD_SIMPLE).color(t.muted_foreground)),
+                        )
+                        .on_hover_text("Importar CSV (ou arraste um arquivo .csv para a janela)")
+                        .on_disabled_hover_text("Conexão somente leitura")
+                        .clicked();
                     let structure = theme::icon_text(
                         icon::TREE_STRUCTURE,
                         "Estrutura",
@@ -736,6 +840,18 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     if let Some((format, whole)) = export {
         app::start_export(tab, s, format, whole);
     }
+    // A .csv dropped on the window opens the import dialog with it.
+    let dropped = ui.ctx().input(|i| {
+        i.raw
+            .dropped_files
+            .iter()
+            .map(|f| f.path())
+            .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")))
+            .map(|p| p.display().to_string())
+    });
+    if (import_csv || dropped.is_some()) && !s.cfg.read_only {
+        app::open_import(tab, dropped);
+    }
     if add_record {
         app::open_insert_form(tab);
     } else if reload_now {
@@ -746,6 +862,24 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     result_area(ui, tab, cx, true);
     confirm_save(ui.ctx(), tab, s);
     insert_form(ui.ctx(), tab, s);
+    import_dialog(ui.ctx(), tab, s);
+}
+
+fn import_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
+    let (id, busy) = (tab.id, tab.busy());
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    if ts.import.is_none() {
+        return;
+    }
+    app::refresh_import_preview(ts);
+    let name = format!("{}.{}", ts.schema, ts.table);
+    let cols: Vec<String> = ts.cols.iter().map(|c| c.name.clone()).collect();
+    let Some(form) = &mut ts.import else { return };
+    match import_form::import_form(ctx, id, &name, &cols, form, busy) {
+        Some(ImportAction::Submit) => app::submit_import(tab, s),
+        Some(ImportAction::Cancel) => ts.import = None,
+        None => {}
+    }
 }
 
 fn insert_form(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
@@ -891,6 +1025,49 @@ fn status_text(tab: &Tab, read_only: bool) -> String {
     format!("{}{hint}", summary(res))
 }
 
+/// "Resultado 1 · 2 · 3" above the grid when a script returned several result sets.
+fn result_sets_strip(ui: &mut egui::Ui, tab: &Tab) -> Option<usize> {
+    let t = theme::tokens();
+    let mut pick = None;
+    egui::Frame::new()
+        .fill(t.sidebar)
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::horizontal()
+                .id_salt(("sets", tab.id))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(egui::RichText::new("RESULTADOS").size(11.0).color(t.subtle));
+                        for (i, set) in tab.sets.iter().enumerate() {
+                            let shown = i == tab.set_shown;
+                            let set = if shown {
+                                tab.result.as_ref().unwrap_or(set)
+                            } else {
+                                set
+                            };
+                            let n = set.rows.len();
+                            let label = if set.columns.is_empty() {
+                                format!("#{} · {} afetada(s)", i + 1, set.affected.unwrap_or(0))
+                            } else {
+                                let unit = if n == 1 { "linha" } else { "linhas" };
+                                format!("#{} · {} {unit}", i + 1, palette::compact_count(n as i64))
+                            };
+                            let color = if shown { t.foreground } else { t.muted_foreground };
+                            let b = egui::Button::new(egui::RichText::new(label).size(12.0).color(color))
+                                .selected(shown);
+                            let tip = format!("{} coluna(s): {}", set.columns.len(), set.columns.join(", "));
+                            if ui.add(b).on_hover_text(tip).clicked() {
+                                pick = Some(i);
+                            }
+                        }
+                    });
+                });
+        });
+    pick
+}
+
 fn summary(res: &QueryResult) -> String {
     if res.columns.is_empty() {
         format!(
@@ -917,6 +1094,11 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     let t = theme::tokens();
     if let Some(e) = &tab.error {
         error_banner(ui, e);
+    }
+    if !tab.sets.is_empty()
+        && let Some(i) = result_sets_strip(ui, tab)
+    {
+        tab.show_set(i);
     }
     let Some(res) = &tab.result else {
         if tab.busy() {
@@ -957,6 +1139,9 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         _ => None,
     };
     let shown = overlay.as_ref().map_or(res, |o| &o.result);
+    let range = tab
+        .range()
+        .filter(|&(_, _, r1, c1)| r1 < shown.rows.len() && c1 < shown.columns.len());
     let no_cols = Vec::new();
     let (cols, edit, order, bool_pick, row_offset, has_pk) = match &mut tab.kind {
         TabKind::Table(ts) if editable => {
@@ -1016,9 +1201,12 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         None
     };
     let scroll_to = match key_event {
-        Some(GridEvent::Select(row, _)) => Some(row),
+        Some(GridEvent::Select(row, _) | GridEvent::Extend(row, _)) => Some(row),
         _ => None,
     };
+    if let Some(range) = range {
+        selection_stats(ui, tab.id, shown, &kinds, range);
+    }
     let opts = GridOpts {
         can_edit,
         selected,
@@ -1030,6 +1218,7 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         changed: overlay.as_ref().map(|o| &o.changed),
         deleted: overlay.as_ref().map(|o| &o.deleted),
         can_filter: editable,
+        range,
     };
     // Wide results scroll sideways instead of running under the detail panel.
     let mut event = egui::ScrollArea::horizontal()
@@ -1075,25 +1264,89 @@ fn keyboard_event(
     can_edit: bool,
 ) -> Option<GridEvent> {
     let (last_row, last_col) = (res.rows.len().checked_sub(1)?, res.columns.len().checked_sub(1)?);
-    if ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
-        ui.ctx().copy_text(res.rows[row][col].clone().unwrap_or_default());
-        return None;
+    let clipboard = ui.input(|i| {
+        i.events.iter().find_map(|e| match e {
+            egui::Event::Copy => Some(GridEvent::CopyCells { headers: false }),
+            egui::Event::Paste(text) if can_edit => Some(GridEvent::Paste(text.clone())),
+            _ => None,
+        })
+    });
+    if clipboard.is_some() {
+        return clipboard;
     }
     ui.input(|i| {
-        if can_edit && (i.key_pressed(Key::Enter) || i.key_pressed(Key::F2)) {
+        // Shift+arrows grow the selection instead of moving it.
+        let to = |r, c| {
+            if i.modifiers.shift {
+                GridEvent::Extend(r, c)
+            } else {
+                GridEvent::Select(r, c)
+            }
+        };
+        if i.modifiers.command && i.key_pressed(Key::A) {
+            Some(GridEvent::SelectAll)
+        } else if can_edit && (i.key_pressed(Key::Enter) || i.key_pressed(Key::F2)) {
             Some(GridEvent::StartEdit(row, col))
         } else if i.key_pressed(Key::ArrowDown) {
-            Some(GridEvent::Select((row + 1).min(last_row), col))
+            Some(to((row + 1).min(last_row), col))
         } else if i.key_pressed(Key::ArrowUp) {
-            Some(GridEvent::Select(row.saturating_sub(1), col))
+            Some(to(row.saturating_sub(1), col))
         } else if i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::Tab) {
-            Some(GridEvent::Select(row, (col + 1).min(last_col)))
+            Some(to(row, (col + 1).min(last_col)))
         } else if i.key_pressed(Key::ArrowLeft) {
-            Some(GridEvent::Select(row, col.saturating_sub(1)))
+            Some(to(row, col.saturating_sub(1)))
         } else {
             None
         }
     })
+}
+
+/// "6 células · 4 valores · soma 5,5 · média 2,75 · mín 1,5 · máx 4" under a range selection.
+fn selection_stats(
+    ui: &mut egui::Ui,
+    tab_id: u64,
+    shown: &QueryResult,
+    kinds: &[values::ValueKind],
+    range: values::CellRange,
+) {
+    let t = theme::tokens();
+    let st = values::stats(shown, kinds, range);
+    let mut parts = vec![format!("{} células", st.cells), format!("{} valores", st.values)];
+    if let Some((n, sum, lo, hi)) = st.numbers {
+        let f = values::format_number;
+        parts.push(format!("soma {}", f(sum)));
+        parts.push(format!("média {}", f(sum / n as f64)));
+        parts.push(format!("mín {}", f(lo)));
+        parts.push(format!("máx {}", f(hi)));
+    }
+    let text = parts.join("  ·  ");
+    egui::Panel::bottom(egui::Id::new(("stats", tab_id)))
+        .frame(
+            egui::Frame::new()
+                .fill(t.sidebar)
+                .inner_margin(egui::Margin::symmetric(8, 4)),
+        )
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(&text)
+                        .size(12.0)
+                        .monospace()
+                        .color(t.muted_foreground),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(theme::icon(icon::COPY).color(t.muted_foreground)).frame(false),
+                        )
+                        .on_hover_text("Copiar resumo")
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(text.clone());
+                    }
+                });
+            });
+        });
 }
 
 /// Icon toggle for the row detail panel.

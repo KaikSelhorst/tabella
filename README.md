@@ -26,6 +26,16 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Tamanho em disco das tabelas na sidebar, com opção de ordenar por tamanho
 - Monitor de atividade: sessões do servidor, atualização automática, cancelar consulta ou
   encerrar conexão (com confirmação)
+- Editor: `Ctrl+Enter` executa o comando sob o cursor (marcado na margem), `F5` executa tudo;
+  um script com várias consultas mostra um resultado para cada
+- Plano de execução visual (`Ctrl+E`, ou EXPLAIN ANALYZE só para leituras): tempo/custo de cada
+  etapa, varreduras completas em tabelas grandes e estimativas erradas destacadas
+- Seleção de várias células (arrastar, `Shift`+clique/setas, `Ctrl+A`): copia como texto
+  separado por tabs (cola no Excel) e mostra contagem, soma, média, mínimo e máximo
+- Colar do Excel na grade (`Ctrl+V`): cada célula vira uma alteração pendente
+- Importar CSV para uma tabela (botão ou arrastar o arquivo): separador e codificação detectados,
+  colunas associadas pelo nome, números como `1.520,30` e `sim`/`não` convertidos, tudo numa
+  transação
 
 ## Segurança
 

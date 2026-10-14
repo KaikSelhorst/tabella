@@ -2,7 +2,9 @@ mod complete;
 mod detail;
 mod form;
 mod grid;
+mod import_form;
 mod palette;
+mod plan_view;
 mod sidebar;
 mod structure;
 mod syntax;
@@ -234,6 +236,7 @@ mod screenshots {
             affected: None,
             truncated: false,
             elapsed: Duration::from_millis(3),
+            previous: Vec::new(),
         };
         let mut ts = TableState::new("public", "clientes", Some(40));
         ts.cols = cols;
@@ -289,6 +292,26 @@ mod screenshots {
             .unwrap();
         if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
             ts.insert = None;
+        }
+        // CSV import dialog with a semicolon file from a spreadsheet.
+        {
+            let csv = std::env::temp_dir().join("dblite-shot-clientes.csv");
+            std::fs::write(
+                &csv,
+                "Nome;Email;Ativo;Saldo;Observação\nMaria Souza;maria@exemplo.com;sim;1520,30;cliente antiga\nJoão Lima;joao@exemplo.com;não;;\nAna Prado;ana@exemplo.com;sim;88,00;indicação\n",
+            )
+            .unwrap();
+            crate::app::open_import(&mut harness.state_mut().tabs[0], Some(csv.display().to_string()));
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/import.png"))
+                .unwrap();
+            if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
+                ts.import = None;
+            }
+            let _ = std::fs::remove_file(csv);
         }
         harness.state_mut().session.as_mut().unwrap().cfg.color = None;
         {
@@ -377,11 +400,13 @@ mod screenshots {
                 affected: None,
                 truncated: false,
                 elapsed: Duration::from_millis(2),
+                previous: Vec::new(),
             };
             let st = crate::app::ActivityState {
                 auto_refresh: false,
                 last_refresh: None,
                 confirm_kill: None,
+                kill_error: None,
             };
             let mut tab = Tab::new(4, "Atividade".into(), TabKind::Activity(st));
             tab.result = Some(res);
@@ -413,6 +438,60 @@ mod screenshots {
         harness.state_mut().active = 1;
         harness.run();
         harness.render().unwrap().save(format!("{dir}/sql.png")).unwrap();
+
+        // EXPLAIN ANALYZE of a join with a big full scan.
+        {
+            let json = r#"[{"Plan": {"Node Type": "Aggregate", "Total Cost": 98000, "Plan Rows": 1, "Actual Total Time": 812.0, "Actual Rows": 1, "Actual Loops": 1,
+              "Plans": [{"Node Type": "Hash Join", "Total Cost": 97000, "Plan Rows": 1200, "Actual Total Time": 790.0, "Actual Rows": 41000, "Actual Loops": 1,
+                "Hash Cond": "(p.cliente_id = c.id)",
+                "Plans": [
+                  {"Node Type": "Seq Scan", "Relation Name": "pedidos", "Alias": "p", "Total Cost": 91000, "Plan Rows": 5000000, "Actual Total Time": 610.0, "Actual Rows": 5000000, "Actual Loops": 1, "Filter": "(status = 'pago'::text)", "Rows Removed by Filter": 4170000},
+                  {"Node Type": "Hash", "Total Cost": 3100, "Plan Rows": 900, "Actual Total Time": 21.0, "Actual Rows": 900, "Actual Loops": 1,
+                    "Plans": [{"Node Type": "Index Scan", "Index Name": "clientes_pkey", "Relation Name": "clientes", "Alias": "c", "Total Cost": 3000, "Plan Rows": 900, "Actual Total Time": 18.0, "Actual Rows": 900, "Actual Loops": 1, "Index Cond": "(id < 1000)"}]}
+                ]}]},
+              "Planning Time": 0.4, "Execution Time": 812.5}]"#;
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.plan = Some(crate::plan::from_pg_json(json).unwrap());
+            harness.run();
+            harness.render().unwrap().save(format!("{dir}/plan.png")).unwrap();
+            harness.state_mut().tabs[1].plan = None;
+        }
+
+        // Several statements: the one under the cursor is marked, and each query has a result.
+        {
+            let editor = egui::Id::new(("sql", 2u64));
+            let script = "SELECT count(*) FROM clientes;\n\nSELECT id, nome, saldo\nFROM clientes\nWHERE ativo;\n\nSELECT * FROM pedidos LIMIT 5;";
+            let state = harness.state_mut();
+            let tab = &mut state.tabs[1];
+            let mut old = script.to_string();
+            if let TabKind::Sql { text } = &mut tab.kind {
+                std::mem::swap(text, &mut old);
+            }
+            let main = tab.result.clone().unwrap();
+            let small = |col: &str, n: usize| QueryResult {
+                columns: vec![col.into()],
+                rows: (0..n).map(|i| vec![Some(i.to_string())]).collect(),
+                ..Default::default()
+            };
+            tab.sets = vec![small("count", 1), QueryResult::default(), small("id", 5)];
+            tab.set_shown = 1;
+            tab.result = Some(main);
+            let mut st = egui::TextEdit::load_state(&harness.ctx, editor).unwrap_or_default();
+            st.cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(45))));
+            st.store(&harness.ctx, editor);
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/sql-multi.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.sets.clear();
+            if let TabKind::Sql { text } = &mut tab.kind {
+                *text = old;
+            }
+        }
 
         // Autocomplete: type a partial word and put the cursor after it.
         let editor = egui::Id::new(("sql", 2u64));
@@ -457,6 +536,21 @@ mod screenshots {
             .unwrap();
         if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
             ts.bool_pick = None;
+        }
+        // Range selection with its totals.
+        {
+            let tab = &mut harness.state_mut().tabs[0];
+            tab.anchor = Some((1, 3));
+            tab.selected = Some((6, 4));
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/range.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[0];
+            tab.anchor = None;
+            tab.selected = Some((2, 2));
         }
         // Pending changes: two edits and a deletion, then the save summary.
         {

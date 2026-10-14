@@ -95,8 +95,177 @@ pub fn json_object(
     map
 }
 
+/// A rectangle of cells, inclusive: `(first_row, first_col, last_row, last_col)`.
+pub type CellRange = (usize, usize, usize, usize);
+
+/// The cells as tab-separated text, the format spreadsheets copy and paste. NULL becomes an
+/// empty cell; values with tabs, line breaks or quotes are quoted ("" for a quote).
+pub fn to_tsv(res: &QueryResult, (r0, c0, r1, c1): CellRange, headers: bool) -> String {
+    let field = |v: &str| {
+        if v.contains(['\t', '\n', '\r', '"']) {
+            format!("\"{}\"", v.replace('"', "\"\""))
+        } else {
+            v.to_string()
+        }
+    };
+    let mut out = String::new();
+    if headers {
+        let names: Vec<String> = res.columns[c0..=c1].iter().map(|c| field(c)).collect();
+        out.push_str(&names.join("\t"));
+        out.push('\n');
+    }
+    for row in &res.rows[r0..=r1] {
+        let cells: Vec<String> = row[c0..=c1]
+            .iter()
+            .map(|v| v.as_deref().map(field).unwrap_or_default())
+            .collect();
+        out.push_str(&cells.join("\t"));
+        out.push('\n');
+    }
+    // A single value copies bare, like before ranges existed.
+    if r0 == r1 && c0 == c1 && !headers {
+        out.pop();
+    }
+    out
+}
+
+/// Parses spreadsheet clipboard text back into rows of cells (inverse of `to_tsv`).
+pub fn parse_tsv(text: &str) -> Vec<Vec<String>> {
+    let text = text.strip_suffix('\n').unwrap_or(text);
+    let text = text.strip_suffix('\r').unwrap_or(text);
+    let mut rows = vec![Vec::new()];
+    let mut cell = String::new();
+    let mut chars = text.chars().peekable();
+    let mut at_start = true;
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if at_start => {
+                // Quoted cell: runs to the closing quote; "" is a literal quote.
+                while let Some(q) = chars.next() {
+                    if q == '"' {
+                        if chars.peek() == Some(&'"') {
+                            chars.next();
+                            cell.push('"');
+                        } else {
+                            break;
+                        }
+                    } else {
+                        cell.push(q);
+                    }
+                }
+                at_start = false;
+            }
+            '\t' => {
+                rows.last_mut().unwrap().push(std::mem::take(&mut cell));
+                at_start = true;
+            }
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\n' => {
+                rows.last_mut().unwrap().push(std::mem::take(&mut cell));
+                rows.push(Vec::new());
+                at_start = true;
+            }
+            c => {
+                cell.push(c);
+                at_start = false;
+            }
+        }
+    }
+    rows.last_mut().unwrap().push(cell);
+    rows
+}
+
+/// Count, sum, average, min and max of the numbers in a selection.
+#[derive(Debug, PartialEq)]
+pub struct Stats {
+    pub cells: usize,
+    /// Non-NULL cells.
+    pub values: usize,
+    /// `(count, sum, min, max)` of the cells that are numbers.
+    pub numbers: Option<(usize, f64, f64, f64)>,
+}
+
+pub fn stats(res: &QueryResult, kinds: &[ValueKind], (r0, c0, r1, c1): CellRange) -> Stats {
+    let mut st = Stats {
+        cells: 0,
+        values: 0,
+        numbers: None,
+    };
+    for row in &res.rows[r0..=r1] {
+        for (ci, v) in row.iter().enumerate().take(c1 + 1).skip(c0) {
+            st.cells += 1;
+            let Some(v) = v else { continue };
+            st.values += 1;
+            if kinds.get(ci) != Some(&ValueKind::Number) {
+                continue;
+            }
+            if let Ok(n) = v.trim().parse::<f64>() {
+                let (c, s, lo, hi) = st.numbers.unwrap_or((0, 0.0, f64::INFINITY, f64::NEG_INFINITY));
+                st.numbers = Some((c + 1, s + n, lo.min(n), hi.max(n)));
+            }
+        }
+    }
+    st
+}
+
+/// A number for the status line: whole numbers without decimals, others with up to 4.
+pub fn format_number(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        format!("{n:.0}")
+    } else {
+        let s = format!("{n:.4}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tsv_round_trip() {
+        let res = QueryResult {
+            columns: vec!["id".into(), "obs".into()],
+            rows: vec![
+                vec![Some("1".into()), Some("a\tb \"c\"".into())],
+                vec![Some("2".into()), None],
+            ],
+            ..Default::default()
+        };
+        let all = to_tsv(&res, (0, 0, 1, 1), true);
+        assert_eq!(all, "id\tobs\n1\t\"a\tb \"\"c\"\"\"\n2\t\n");
+        assert_eq!(parse_tsv(&all), [["id", "obs"], ["1", "a\tb \"c\""], ["2", ""]]);
+        assert_eq!(to_tsv(&res, (1, 0, 1, 0), false), "2");
+        // Excel ends with \r\n and quotes cells with line breaks.
+        assert_eq!(
+            parse_tsv("x\t\"l1\nl2\"\r\ny\tz\r\n"),
+            [["x", "l1\nl2"], ["y", "z"]]
+        );
+    }
+
+    #[test]
+    fn selection_stats() {
+        let res = QueryResult {
+            columns: vec!["n".into(), "t".into()],
+            rows: vec![
+                vec![Some("1.5".into()), Some("a".into())],
+                vec![Some("4".into()), None],
+                vec![None, Some("b".into())],
+            ],
+            ..Default::default()
+        };
+        let st = stats(&res, &[ValueKind::Number, ValueKind::Text], (0, 0, 2, 1));
+        assert_eq!(
+            st,
+            Stats {
+                cells: 6,
+                values: 4,
+                numbers: Some((2, 5.5, 1.5, 4.0))
+            }
+        );
+        assert_eq!(format_number(5.5), "5.5");
+        assert_eq!(format_number(12.0), "12");
+        assert_eq!(format_number(1.0 / 3.0), "0.3333");
+    }
+
     use super::*;
 
     #[test]
