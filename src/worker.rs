@@ -304,6 +304,41 @@ pub enum Reply {
     },
 }
 
+impl Reply {
+    /// The tab a reply answers and whether it ends that tab's job (progress reports and the
+    /// row count, which runs beside the page, don't); `None` for the connection's own.
+    pub fn tab(&self) -> Option<(u64, bool)> {
+        match self {
+            Reply::Rows { tab, .. }
+            | Reply::Columns { tab, .. }
+            | Reply::ScriptDone { tab, .. }
+            | Reply::Source { tab, .. }
+            | Reply::Structure { tab, .. }
+            | Reply::Plan { tab, .. }
+            | Reply::Imported { tab, .. }
+            | Reply::Saved { tab, .. }
+            | Reply::Exported { tab, .. }
+            | Reply::ColumnStats { tab, .. }
+            | Reply::Preview { tab, .. }
+            | Reply::ServerInfo { tab, .. }
+            | Reply::SearchDone { tab, .. }
+            | Reply::Fks { tab, .. } => Some((*tab, true)),
+            Reply::Count { tab, .. }
+            | Reply::ScriptProgress { tab, .. }
+            | Reply::SearchProgress { tab, .. } => Some((*tab, false)),
+            Reply::Connected(_)
+            | Reply::Tables(_)
+            | Reply::AllColumns(_)
+            | Reply::AllFks(_)
+            | Reply::Objects(_)
+            | Reply::Location(_)
+            | Reply::Admin { .. }
+            | Reply::Tx(_)
+            | Reply::TxEnded { .. } => None,
+        }
+    }
+}
+
 /// Runs a script file. Progress is reported at most every 150 ms.
 fn run_script(
     conn: &mut Conn,
