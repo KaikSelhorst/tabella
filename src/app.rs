@@ -11,8 +11,8 @@ use eframe::egui;
 
 use crate::config;
 use crate::db::{
-    ActivityView, Canceller, ColumnInfo, ConnConfig, IncomingFk, Kind, PreviewData, QueryResult, TableRef,
-    TableStructure,
+    ActivityView, Canceller, ColumnInfo, ConnConfig, IncomingFk, Kind, PreviewData, QueryResult, ServerInfo,
+    TableRef, TableStructure,
 };
 use crate::design::Design;
 use crate::export::{self, Format};
@@ -294,7 +294,7 @@ pub enum TabKind {
     },
     Table(Box<TableState>),
     Structure(Box<StructState>),
-    Activity(ActivityState),
+    Activity(Box<ActivityState>),
     /// "Nova tabela" / "Editar estrutura".
     Design(Box<Design>),
 }
@@ -302,6 +302,8 @@ pub enum TabKind {
 /// "Atividade" tab: sessions on the server, optionally refreshed every few seconds.
 pub struct ActivityState {
     pub view: ActivityView,
+    /// The "Servidor" view's data (`None` until it first arrives).
+    pub server: Option<Result<ServerInfo, String>>,
     pub auto_refresh: bool,
     pub last_refresh: Option<Instant>,
     /// Session waiting for the user to confirm `(id, terminate)`.
@@ -343,6 +345,8 @@ pub struct Tab {
     pub error: Option<String>,
     /// Jobs sent and not answered yet. The tab is busy while this is above zero.
     pending: u32,
+    /// When the tab became busy, to tell the user about long ones finishing in the background.
+    started: Option<Instant>,
     /// Selected cell `(row, column)` in the result grid.
     pub selected: Option<(usize, usize)>,
     /// Other corner of a range selection (Shift+click, drag, Shift+arrows); `selected` is the
@@ -372,6 +376,11 @@ pub struct Tab {
     /// survive reloads and paging).
     pub hidden_cols: Vec<String>,
     pub pinned_cols: Vec<String>,
+    /// Editor tabs: the table a simple single-table SELECT read from, when its rows can be
+    /// edited in place (columns and keys arrive with `Reply::Columns`).
+    pub source: Option<Box<TableState>>,
+    /// The SELECT behind `source`, re-run after saving.
+    pub source_query: String,
 }
 
 /// "Estatísticas da coluna" dialog.
@@ -418,6 +427,7 @@ impl Tab {
             result: None,
             error: None,
             pending: 0,
+            started: None,
             selected: None,
             anchor: None,
             pending_sql: None,
@@ -433,6 +443,8 @@ impl Tab {
             preview: None,
             hidden_cols: Vec::new(),
             pinned_cols: Vec::new(),
+            source: None,
+            source_query: String::new(),
         }
     }
 
@@ -514,8 +526,25 @@ impl Tab {
 
     /// Sends a job that answers with `Reply::Rows`; the tab stays busy until it does.
     fn send_rows_job(&mut self, s: &Session, job: Job) {
-        self.pending += 1;
+        self.begin_job();
         s.send(job);
+    }
+
+    /// Counts a job sent for this tab; the first of a batch starts the clock.
+    fn begin_job(&mut self) {
+        if self.pending == 0 {
+            self.started = Some(Instant::now());
+        }
+        self.pending += 1;
+    }
+
+    /// Counts a reply. Returns how long the tab was busy when this was the last one.
+    fn end_job(&mut self) -> Option<std::time::Duration> {
+        self.pending = self.pending.saturating_sub(1);
+        if self.pending > 0 {
+            return None;
+        }
+        self.started.take().map(|at| at.elapsed())
     }
 }
 
@@ -655,6 +684,8 @@ pub struct App {
     pub quit_prompt: bool,
     /// F1 shortcuts screen.
     pub help: bool,
+    /// The window title announces a finished job (cleared when the window is focused).
+    title_changed: bool,
     /// Close the window once the transaction has been ended.
     pub quit_after_tx: bool,
     frames: u32,
@@ -690,6 +721,7 @@ impl App {
             sort_by_size: false,
             quit_prompt: false,
             help: false,
+            title_changed: false,
             quit_after_tx: false,
             frames: 0,
             fps_since: Instant::now(),
@@ -1033,6 +1065,8 @@ impl App {
         let mut restore = None;
         // Design tabs whose DDL ran: (tab, schema, table).
         let mut designed: Vec<(u64, String, String)> = Vec::new();
+        // Tabs that just stopped being busy, and for how long they were.
+        let mut finished: Vec<(String, std::time::Duration)> = Vec::new();
         loop {
             let reply = match s.rx.try_recv() {
                 Ok(r) => r,
@@ -1051,11 +1085,24 @@ impl App {
             };
             match reply {
                 Reply::Tx(state) => s.txn = state,
+                Reply::ServerInfo { tab, res } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
+                    if let TabKind::Activity(st) = &mut t.kind {
+                        st.server = Some(res.map_err(|e| e.to_string()));
+                    }
+                }
                 Reply::Preview { tab, res } => {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
-                    t.pending = t.pending.saturating_sub(1);
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
                     if let Some(p) = &mut t.preview {
                         p.data = Some(res.map_err(|e| e.to_string()));
                     }
@@ -1064,7 +1111,9 @@ impl App {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
-                    t.pending = t.pending.saturating_sub(1);
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
                     if let Some(v) = &mut t.col_stats {
                         v.data = Some(
                             res.map_err(|e| e.to_string())
@@ -1115,8 +1164,29 @@ impl App {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
-                    t.pending = t.pending.saturating_sub(1);
-                    if let Some(sql) = t.pending_sql.take() {
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
+                    let ran = t.pending_sql.take();
+                    // A plain SELECT of one table from the editor: its rows can be edited in place.
+                    let source = match (&t.kind, &ran, &*res) {
+                        (TabKind::Sql { .. }, Some(sql), Ok(r))
+                            if r.previous.is_empty() && !r.rows.is_empty() =>
+                        {
+                            sql::editable_select(sql).and_then(|(schema, table)| {
+                                resolve_table(s, schema.as_deref(), &table)
+                                    .map(|(sc, tb)| (sc, tb, sql.clone()))
+                            })
+                        }
+                        _ => None,
+                    };
+                    if let Some((schema, table, query)) = source {
+                        t.source = Some(Box::new(TableState::new(&schema, &table, None)));
+                        t.source_query = query;
+                        t.begin_job();
+                        s.send(Job::Columns { tab, schema, table });
+                    }
+                    if let Some(sql) = ran {
                         let (ok, ms) = match &*res {
                             Ok(r) => (true, r.elapsed.as_millis() as u64),
                             Err(_) => (false, 0),
@@ -1188,10 +1258,12 @@ impl App {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
-                    t.pending = t.pending.saturating_sub(1);
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
                     match *res {
                         Ok(r) => {
-                            if let TabKind::Table(ts) = &mut t.kind {
+                            if let Some(ts) = editable_mut(&mut t.kind, &mut t.source) {
                                 ts.changes.clear();
                             }
                             t.result = Some(r);
@@ -1206,7 +1278,9 @@ impl App {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
-                    t.pending = t.pending.saturating_sub(1);
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
                     match res {
                         Ok(n) => {
                             self.notice = Notice::info(format!("{n} linha(s) importada(s)"));
@@ -1227,7 +1301,9 @@ impl App {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
-                    t.pending = t.pending.saturating_sub(1);
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
                     match res {
                         Ok(p) => t.plan = Some(p),
                         Err(e) => t.error = Some(e.to_string()),
@@ -1237,7 +1313,9 @@ impl App {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
-                    t.pending = t.pending.saturating_sub(1);
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
                     match (res, &mut t.kind) {
                         (Ok(d), TabKind::Structure(st)) => st.data = Some(d),
                         (Err(e), _) => t.error = Some(e.to_string()),
@@ -1248,7 +1326,9 @@ impl App {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
-                    t.pending = t.pending.saturating_sub(1);
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
                     match res {
                         Ok(done) => t.exported = Some(done),
                         Err(e) => t.error = Some(format!("Exportação falhou: {e}")),
@@ -1258,11 +1338,19 @@ impl App {
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
-                    t.pending = t.pending.saturating_sub(1);
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
                     match (res, &mut t.kind) {
                         (Ok(c), TabKind::Table(ts)) => {
                             ts.cols = c;
                             ts.incoming = incoming;
+                        }
+                        (Ok(c), TabKind::Sql { .. }) => {
+                            if let Some(src) = &mut t.source {
+                                src.cols = c;
+                                src.incoming = incoming;
+                            }
                         }
                         (Err(e), _) => t.error = Some(e.to_string()),
                         _ => {}
@@ -1281,6 +1369,40 @@ impl App {
         for (tab, schema, table) in designed {
             self.after_design(tab, &schema, &table);
         }
+        self.notify_finished(&finished);
+    }
+
+    /// Something slow finished while the window was in the background: flash the taskbar
+    /// button and say so in the title until the window is focused again.
+    fn notify_finished(&mut self, finished: &[(String, std::time::Duration)]) {
+        let Some((title, took)) = finished
+            .iter()
+            .filter(|(_, d)| *d >= LONG_JOB)
+            .max_by_key(|(_, d)| *d)
+        else {
+            return;
+        };
+        if self.ctx.input(|i| i.viewport().focused) != Some(false) {
+            return;
+        }
+        self.ctx
+            .send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        self.ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+            "✓ {title} terminou ({} s) · dblite",
+            took.as_secs()
+        )));
+        self.title_changed = true;
+    }
+
+    /// Back in the window: the plain title again.
+    pub fn clear_finished_notice(&mut self) {
+        if self.title_changed && self.ctx.input(|i| i.viewport().focused) == Some(true) {
+            self.title_changed = false;
+            self.ctx
+                .send_viewport_cmd(egui::ViewportCommand::Title("dblite".into()));
+        }
     }
 
     /// The table was created or altered: refresh the sidebar and the tabs showing it, and swap
@@ -1292,7 +1414,7 @@ impl App {
         for t in &mut self.tabs {
             match &mut t.kind {
                 TabKind::Structure(st) if st.schema == schema && st.table == table => {
-                    t.pending += 1;
+                    t.begin_job();
                     s.send(Job::Structure {
                         tab: t.id,
                         schema: schema.into(),
@@ -1301,7 +1423,7 @@ impl App {
                 }
                 TabKind::Table(ts) if ts.schema == schema && ts.table == table && ts.changes.is_empty() => {
                     // New columns: their info first, then the page (SELECT * picks them up).
-                    t.pending += 1;
+                    t.begin_job();
                     s.send(Job::Columns {
                         tab: t.id,
                         schema: schema.into(),
@@ -1413,12 +1535,13 @@ impl App {
         }
         let state = ActivityState {
             view: ActivityView::Sessions,
+            server: None,
             auto_refresh: true,
             last_refresh: None,
             confirm_kill: None,
             kill_error: None,
         };
-        let i = self.push_tab("Atividade".into(), TabKind::Activity(state));
+        let i = self.push_tab("Atividade".into(), TabKind::Activity(Box::new(state)));
         if let Some(s) = &self.session {
             refresh_activity(&mut self.tabs[i], s);
         }
@@ -1477,7 +1600,7 @@ impl App {
         let Some(s) = &self.session else { return };
         // The first page is requested when the columns arrive (see `poll`); spinner until then.
         let tab = &mut self.tabs[i];
-        tab.pending += 1;
+        tab.begin_job();
         s.send(Job::Columns {
             tab: tab.id,
             schema: schema.into(),
@@ -1506,7 +1629,7 @@ impl App {
         let i = self.push_tab(format!("{table} · estrutura"), TabKind::Structure(Box::new(st)));
         let Some(s) = &self.session else { return };
         let tab = &mut self.tabs[i];
-        tab.pending += 1;
+        tab.begin_job();
         s.send(Job::Structure {
             tab: tab.id,
             schema: schema.into(),
@@ -1562,7 +1685,7 @@ pub fn start_export(tab: &mut Tab, s: &Session, format: Format, whole_table: boo
         source,
     };
     let id = tab.id;
-    tab.pending += 1;
+    tab.begin_job();
     s.send(Job::Export { tab: id, spec });
 }
 
@@ -1661,6 +1784,11 @@ pub fn refresh_activity(tab: &mut Tab, s: &Session) {
     };
     st.last_refresh = Some(Instant::now());
     let (id, view) = (tab.id, st.view);
+    if view == ActivityView::Server {
+        tab.begin_job();
+        s.send(Job::ServerInfo { tab: id });
+        return;
+    }
     tab.send_rows_job(s, Job::Activity { tab: id, view });
 }
 
@@ -1695,6 +1823,31 @@ pub fn kill_session(tab: &mut Tab, s: &Session) {
         },
     );
 }
+
+/// The sidebar's table for a name from a query: exact first, then ignoring case (unquoted
+/// names fold in Postgres). Without a schema, the name must be unambiguous.
+fn resolve_table(s: &Session, schema: Option<&str>, table: &str) -> Option<(String, String)> {
+    let pick = |exact: bool| {
+        let same = |a: &str, b: &str| if exact { a == b } else { a.eq_ignore_ascii_case(b) };
+        let found: Vec<&TableRef> = s
+            .tables
+            .iter()
+            .filter(|t| !t.is_view && same(&t.name, table) && schema.is_none_or(|sc| same(&t.schema, sc)))
+            .collect();
+        match found[..] {
+            [one] => Some((one.schema.clone(), one.name.clone())),
+            // MySQL: the connection's database wins among same-named tables.
+            _ => found
+                .iter()
+                .find(|t| schema.is_none() && t.schema == s.cfg.database)
+                .map(|t| (t.schema.clone(), t.name.clone())),
+        }
+    };
+    pick(true).or_else(|| pick(false))
+}
+
+/// Jobs at least this long announce themselves when they finish in the background.
+const LONG_JOB: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Copies the settings that don't need a new connection (name, color, preview) from an edited
 /// copy of the open connection. Returns false when other changes wait for a reconnect.
@@ -1771,6 +1924,16 @@ pub fn exec(tab: &mut Tab, s: &Session, stmt: Stmt, expect_one: bool) {
 
 /// Starts a query from an SQL editor tab; its result is recorded in the history.
 pub fn run_sql(tab: &mut Tab, s: &Session, sql: String) {
+    if let Some(src) = &tab.source
+        && !src.changes.is_empty()
+    {
+        tab.error = Some(format!(
+            "Salve (Ctrl+S) ou descarte as {} alteração(ões) pendentes no resultado antes de executar outra consulta.",
+            src.changes.len()
+        ));
+        return;
+    }
+    tab.source = None;
     tab.error = None;
     tab.plan = None;
     tab.pending_sql = Some(sql.clone());
@@ -1854,7 +2017,7 @@ pub fn submit_import(tab: &mut Tab, s: &Session) {
         empty_is_null: form.empty_is_null,
     };
     tab.error = None;
-    tab.pending += 1;
+    tab.begin_job();
     s.send(Job::Import {
         tab: tab.id,
         spec: Box::new(spec),
@@ -1883,7 +2046,7 @@ pub fn preview(tab: &mut Tab, s: &Session, sql: String) {
         sql: sql.clone(),
         data: None,
     });
-    tab.pending += 1;
+    tab.begin_job();
     s.send(Job::Preview { tab: tab.id, sql });
 }
 
@@ -1904,7 +2067,7 @@ pub fn explain(tab: &mut Tab, s: &Session, sql: &str, analyze: bool) {
         return;
     }
     tab.error = None;
-    tab.pending += 1;
+    tab.begin_job();
     s.send(Job::Explain {
         tab: tab.id,
         sql: one,
@@ -1917,10 +2080,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
     let k = s.cfg.kind;
     let Some(res) = &tab.result else { return None };
     let no_cols = Vec::new();
-    let cols = match &tab.kind {
-        TabKind::Table(ts) => &ts.cols,
-        TabKind::Sql { .. } | TabKind::Structure(_) | TabKind::Activity(_) | TabKind::Design(_) => &no_cols,
-    };
+    let cols = editable_ref(&tab.kind, &tab.source).map_or(&no_cols, |ts| &ts.cols);
     let kinds = values::column_kinds(res, cols);
 
     // Things that work on any result, editable or not.
@@ -2005,7 +2165,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
                         scope,
                         data: None,
                     });
-                    tab.pending += 1;
+                    tab.begin_job();
                     s.send(Job::ColumnStats {
                         tab: tab.id,
                         summary,
@@ -2027,10 +2187,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         GridEvent::CopyCells { headers } => {
             let range = tab.selection()?;
             // Copy what the grid shows, pending edits included.
-            let overlay = match &tab.kind {
-                TabKind::Table(ts) => ts.overlay(res),
-                _ => None,
-            };
+            let overlay = editable_ref(&tab.kind, &tab.source).and_then(|ts| ts.overlay(res));
             let shown = overlay.as_ref().map_or(res, |o| &o.result);
             return Some(Effect::Copy(values::to_tsv(shown, &range, *headers)));
         }
@@ -2074,13 +2231,21 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
 
     let selection = tab.selection();
     let view = tab.view();
-    let TabKind::Table(ts) = &mut tab.kind else {
-        return None;
-    };
+    let is_table = matches!(tab.kind, TabKind::Table(_));
+    let ts = editable_mut(&mut tab.kind, &mut tab.source)?;
     if !editable {
         return None;
     }
     match event {
+        // Editor results keep the order their query asked for.
+        GridEvent::Sort(_) if !is_table => {}
+        // Expressions and aliases in an editor's SELECT aren't columns of the table.
+        GridEvent::StartEdit(_, col) if !ts.cols.iter().any(|c| c.name == res.columns[col]) => {
+            tab.error = Some(format!(
+                "\"{}\" não é uma coluna de {}: não dá para editar",
+                res.columns[col], ts.table
+            ));
+        }
         GridEvent::Sort(col) => {
             ts.order = match &ts.order {
                 Some((c, true)) if *c == col => Some((col, false)),
@@ -2193,6 +2358,12 @@ fn set_cell(
     (row, col): (usize, usize),
     val: Option<String>,
 ) -> Result<(), String> {
+    if !ts.cols.iter().any(|c| c.name == res.columns[col]) {
+        return Err(format!(
+            "\"{}\" não é uma coluna de {}: não dá para editar",
+            res.columns[col], ts.table
+        ));
+    }
     let val = match (kinds[col], val) {
         (ValueKind::Bool, Some(v)) => match sql::parse_bool(&v) {
             Some(b) => Some(sql::bool_value(k, b).to_string()),
@@ -2222,29 +2393,55 @@ fn set_cell(
     Ok(())
 }
 
+/// The table state behind a tab's grid edits: a table tab's own, or the source table of an
+/// editable editor result (once its columns are known).
+pub fn editable_mut<'a>(
+    kind: &'a mut TabKind,
+    source: &'a mut Option<Box<TableState>>,
+) -> Option<&'a mut TableState> {
+    match kind {
+        TabKind::Table(ts) => Some(ts),
+        TabKind::Sql { .. } => source.as_deref_mut().filter(|s| !s.cols.is_empty()),
+        _ => None,
+    }
+}
+
+pub fn editable_ref<'a>(kind: &'a TabKind, source: &'a Option<Box<TableState>>) -> Option<&'a TableState> {
+    match kind {
+        TabKind::Table(ts) => Some(ts),
+        TabKind::Sql { .. } => source.as_deref().filter(|s| !s.cols.is_empty()),
+        _ => None,
+    }
+}
+
 /// Undoes the most recent pending change.
 pub fn undo_change(tab: &mut Tab) {
-    if let TabKind::Table(ts) = &mut tab.kind {
+    if let Some(ts) = editable_mut(&mut tab.kind, &mut tab.source) {
         ts.changes.pop();
     }
 }
 
 pub fn discard_changes(tab: &mut Tab) {
-    if let TabKind::Table(ts) = &mut tab.kind {
+    if let Some(ts) = editable_mut(&mut tab.kind, &mut tab.source) {
         ts.changes.clear();
         ts.confirm_save = false;
     }
 }
 
-/// Writes every pending change in one transaction, then reloads the page.
+/// Writes every pending change in one transaction, then reloads the page (or re-runs the
+/// editor's SELECT).
 pub fn save_changes(tab: &mut Tab, s: &Session) {
-    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let is_table = matches!(tab.kind, TabKind::Table(_));
+    let query = tab.source_query.clone();
+    let Some(ts) = editable_mut(&mut tab.kind, &mut tab.source) else {
+        return;
+    };
     ts.confirm_save = false;
     if ts.changes.is_empty() {
         return;
     }
     let stmts = ts.change_statements(s.cfg.kind);
-    let refresh = ts.page_sql(s.cfg.kind);
+    let refresh = if is_table { ts.page_sql(s.cfg.kind) } else { query };
     let id = tab.id;
     tab.error = None;
     tab.send_rows_job(
@@ -2258,7 +2455,7 @@ pub fn save_changes(tab: &mut Tab, s: &Session) {
 }
 
 pub fn has_unsaved(tab: &Tab) -> bool {
-    matches!(&tab.kind, TabKind::Table(ts) if !ts.changes.is_empty())
+    editable_ref(&tab.kind, &tab.source).is_some_and(|ts| !ts.changes.is_empty())
 }
 
 #[cfg(test)]
@@ -2599,6 +2796,86 @@ mod poll_tests {
             .map(|j| matches!(j, Job::Columns { .. } | Job::Structure { .. }))
             .collect();
         assert_eq!(kinds, [true, true]);
+    }
+
+    #[test]
+    fn a_tab_is_timed_from_its_first_job_to_its_last_reply() {
+        let mut tab = Tab::new(1, "t".into(), TabKind::Sql { text: String::new() });
+        tab.begin_job();
+        tab.begin_job();
+        assert_eq!(tab.end_job(), None, "still waiting for one");
+        assert!(tab.end_job().is_some(), "the last reply reports how long it took");
+        assert_eq!(tab.end_job(), None, "a stray reply measures nothing");
+        assert!(!tab.busy());
+    }
+
+    #[test]
+    fn editor_results_of_one_table_become_editable() {
+        let (mut s, jobs, replies) = fake_session(Kind::Postgres);
+        s.tables = vec![TableRef {
+            schema: "public".into(),
+            name: "clientes".into(),
+            is_view: false,
+            estimate: None,
+            search_key: "clientes".into(),
+            size: None,
+        }];
+        let mut app = app_with(s);
+        app.open_sql(String::new());
+        let sql = "SELECT id, nome, upper(nome) AS grito FROM Clientes WHERE ativo".to_string();
+        run_sql(&mut app.tabs[0], app.session.as_ref().unwrap(), sql.clone());
+        let tab = app.tabs[0].id;
+        let rows = QueryResult {
+            columns: vec!["id".into(), "nome".into(), "grito".into()],
+            rows: vec![vec![Some("7".into()), Some("ana".into()), Some("ANA".into())]],
+            ..Default::default()
+        };
+        replies
+            .send(Reply::Rows {
+                tab,
+                res: Box::new(Ok(rows)),
+                notice: None,
+            })
+            .unwrap();
+        app.poll();
+        // The unquoted name resolves to the sidebar's table and its columns are asked for.
+        let asked = jobs.try_iter().any(|j| matches!(j, Job::Columns { ref schema, ref table, .. } if schema == "public" && table == "clientes"));
+        assert!(asked);
+        let col = |name: &str, pk| ColumnInfo {
+            name: name.into(),
+            data_type: "text".into(),
+            pk,
+            nullable: true,
+            has_default: false,
+            references: None,
+        };
+        replies
+            .send(Reply::Columns {
+                tab,
+                res: Ok(vec![col("id", true), col("nome", false)]),
+                incoming: vec![],
+            })
+            .unwrap();
+        app.poll();
+        let s = app.session.as_ref().unwrap();
+        let t = &mut app.tabs[0];
+        handle_grid_event(t, s, GridEvent::Commit(0, 1, Some("bia".into())), true);
+        // An expression isn't a column of the table.
+        handle_grid_event(t, s, GridEvent::Commit(0, 2, Some("X".into())), true);
+        assert!(t.error.as_deref().is_some_and(|e| e.contains("grito")));
+        assert!(has_unsaved(t));
+        // Running something else first would lose the edit: refused.
+        run_sql(t, s, "SELECT 1".into());
+        assert!(t.error.as_deref().is_some_and(|e| e.contains("pendentes")));
+        save_changes(t, s);
+        let Some(Job::Batch { stmts, refresh, .. }) = jobs.try_iter().last() else {
+            panic!("expected a batch")
+        };
+        assert_eq!(
+            stmts[0].render(Kind::Postgres),
+            "UPDATE \"public\".\"clientes\" SET \"nome\" = 'bia' WHERE \"id\" = '7'"
+        );
+        assert_eq!(refresh, sql, "then the same SELECT runs again");
     }
 
     #[test]

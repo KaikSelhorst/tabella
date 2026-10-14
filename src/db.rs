@@ -265,6 +265,16 @@ pub struct ColumnInfo {
     pub references: Option<FkRef>,
 }
 
+/// Outcome of `Conn::server_info`.
+#[derive(Clone, Debug, Default)]
+pub struct ServerInfo {
+    /// `(label, value)`: version, uptime, size, connections, cache hit rate.
+    pub facts: Vec<(String, String)>,
+    pub largest: QueryResult,
+    /// Indexes never used since the statistics started (server start or reset).
+    pub unused: QueryResult,
+}
+
 /// What the activity monitor shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ActivityView {
@@ -274,6 +284,8 @@ pub enum ActivityView {
     Locks,
     /// Statements that took the most time overall (pg_stat_statements / performance_schema).
     Slow,
+    /// Server overview (`Conn::server_info`), not a list of rows.
+    Server,
 }
 
 /// A foreign key elsewhere pointing at this table: `schema.table.column` references our
@@ -675,7 +687,7 @@ impl Conn {
     /// the first column is the session id to act on.
     pub fn activity_view(&mut self, view: ActivityView) -> DbResult<QueryResult> {
         match view {
-            ActivityView::Sessions => self.activity(),
+            ActivityView::Sessions | ActivityView::Server => self.activity(),
             ActivityView::Locks => self.query(match self.kind() {
                 // Who waits for whom: the blocking session first (that's the one to stop).
                 Kind::Postgres => {
@@ -721,6 +733,77 @@ impl Conn {
                 })
             }
         }
+    }
+
+    /// The "Servidor" panel: headline numbers, biggest tables, indexes nobody uses.
+    pub fn server_info(&mut self) -> DbResult<ServerInfo> {
+        let (facts_sql, largest, unused) = match self.kind() {
+            Kind::Postgres => (
+                "SELECT current_setting('server_version'), \
+                 date_trunc('second', now() - pg_postmaster_start_time())::text, \
+                 pg_size_pretty(pg_database_size(current_database())), \
+                 (SELECT count(*) FROM pg_stat_activity)::text || ' de ' || current_setting('max_connections'), \
+                 (SELECT round(100.0 * sum(blks_hit) / nullif(sum(blks_hit) + sum(blks_read), 0), 2)::text || '%' \
+                  FROM pg_stat_database)",
+                "SELECT n.nspname || '.' || c.relname AS tabela, pg_size_pretty(pg_total_relation_size(c.oid)) AS total, \
+                 pg_size_pretty(pg_relation_size(c.oid)) AS dados, pg_size_pretty(pg_indexes_size(c.oid)) AS indices, \
+                 c.reltuples::bigint AS linhas_est \
+                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE c.relkind IN ('r', 'p', 'm') AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+                 AND n.nspname NOT LIKE 'pg_toast%' \
+                 ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 10",
+                "SELECT s.schemaname || '.' || s.relname AS tabela, s.indexrelname AS indice, \
+                 pg_size_pretty(pg_relation_size(s.indexrelid)) AS tamanho \
+                 FROM pg_stat_user_indexes s JOIN pg_index i ON i.indexrelid = s.indexrelid \
+                 WHERE s.idx_scan = 0 AND NOT i.indisunique AND NOT i.indisprimary \
+                 ORDER BY pg_relation_size(s.indexrelid) DESC LIMIT 20",
+            ),
+            Kind::MySql => (
+                "SELECT VERSION(), \
+                 (SELECT CONCAT(FLOOR(VARIABLE_VALUE / 86400), 'd ', SEC_TO_TIME(VARIABLE_VALUE % 86400)) \
+                  FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime'), \
+                 (SELECT CONCAT(ROUND(SUM(data_length + index_length) / 1048576, 1), ' MB') \
+                  FROM information_schema.tables WHERE table_schema = DATABASE()), \
+                 CONCAT((SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Threads_connected'), \
+                  ' de ', @@max_connections), \
+                 (SELECT CONCAT(ROUND(100 * (1 - r.VARIABLE_VALUE / NULLIF(q.VARIABLE_VALUE, 0)), 2), '%') \
+                  FROM performance_schema.global_status r, performance_schema.global_status q \
+                  WHERE r.VARIABLE_NAME = 'Innodb_buffer_pool_reads' AND q.VARIABLE_NAME = 'Innodb_buffer_pool_read_requests')",
+                "SELECT CONCAT(table_schema, '.', table_name) AS tabela, \
+                 CONCAT(ROUND((data_length + index_length) / 1048576, 1), ' MB') AS total, \
+                 CONCAT(ROUND(data_length / 1048576, 1), ' MB') AS dados, \
+                 CONCAT(ROUND(index_length / 1048576, 1), ' MB') AS indices, table_rows AS linhas_est \
+                 FROM information_schema.tables \
+                 WHERE table_schema NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') \
+                 AND table_type = 'BASE TABLE' \
+                 ORDER BY data_length + index_length DESC LIMIT 10",
+                "SELECT CONCAT(object_schema, '.', object_name) AS tabela, index_name AS indice \
+                 FROM sys.schema_unused_indexes \
+                 WHERE object_schema NOT IN ('mysql', 'sys', 'performance_schema') LIMIT 20",
+            ),
+        };
+        let facts = self.query(facts_sql)?;
+        let labels = [
+            "Versão",
+            "No ar há",
+            "Tamanho do banco",
+            "Conexões",
+            "Acerto do cache",
+        ];
+        let values = facts.rows.into_iter().next().unwrap_or_default();
+        Ok(ServerInfo {
+            facts: labels
+                .iter()
+                .zip(values)
+                // Postgres prints intervals in English ("3 days 04:12:09"): same form as MySQL's.
+                .map(|(l, v)| {
+                    let v = v.unwrap_or_else(|| "—".into());
+                    (l.to_string(), v.replace(" days ", "d ").replace(" day ", "d "))
+                })
+                .collect(),
+            largest: self.query(largest)?,
+            unused: self.query(unused)?,
+        })
     }
 
     /// Clears the "consultas lentas" counters.
@@ -1389,6 +1472,16 @@ mod tests {
         p.root.walk(0, &mut |n, _| labels.push(n.label.to_lowercase()));
         assert!(labels.iter().any(|l| l.contains("dbl_t")), "{kind:?}: {labels:?}");
 
+        // A filter on a column without an index: the plan's full scan suggests one.
+        let p = c
+            .explain("SELECT * FROM dbl_t WHERE at = '2024-01-02 03:04:05'", false)
+            .unwrap();
+        let hints = crate::plan::index_hints(&p);
+        assert!(
+            hints.iter().any(|h| h.table == "dbl_t" && h.columns == ["at"]),
+            "{kind:?}: {hints:?} from {p:?}"
+        );
+
         // A script keeps the result set of each query, not only the last one.
         let r = c
             .query("SELECT 1 AS a; SELECT 2 AS b, 3 AS c; SELECT 4 AS d")
@@ -1460,6 +1553,20 @@ mod tests {
             "{kind:?}"
         );
         c.reset_query_stats().unwrap();
+
+        // Server overview: every fact present, and the test table among the biggest.
+        let info = c.server_info().unwrap();
+        assert_eq!(info.facts.len(), 5, "{kind:?}: {:?}", info.facts);
+        assert!(
+            info.facts[0]
+                .1
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_digit()),
+            "{kind:?}: version {:?}",
+            info.facts
+        );
+        assert!(!info.largest.rows.is_empty(), "{kind:?}");
 
         // A per-connection timeout stops long statements on the server.
         let timed = ConnConfig {

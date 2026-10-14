@@ -21,6 +21,7 @@ const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?
 "#;
 
 fn main() {
+    println!("cargo::rerun-if-changed=assets/icon.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -29,6 +30,8 @@ fn main() {
         .set("FileDescription", "dblite - cliente leve de PostgreSQL e MySQL")
         .set("InternalName", "dblite")
         .set("OriginalFilename", "dblite.exe")
+        .set_icon("assets/icon.ico")
         .set_manifest(MANIFEST);
-    res.compile().expect("recursos do Windows (windres do MinGW instalado?)");
+    res.compile()
+        .expect("recursos do Windows (windres do MinGW instalado?)");
 }

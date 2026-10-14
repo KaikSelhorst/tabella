@@ -585,16 +585,76 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     }
     confirm_run(ui.ctx(), tab, s);
     export_banner(ui, tab);
+    // Edits on an editable result: same keys and bar as a table tab.
+    if !ui.ctx().egui_wants_keyboard_input() {
+        let (save, undo) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::COMMAND, Key::S),
+                i.consume_key(egui::Modifiers::COMMAND, Key::Z),
+            )
+        });
+        if let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source) {
+            if save && !ts.changes.is_empty() {
+                ts.confirm_save = true;
+            }
+            if undo {
+                ts.changes.pop();
+            }
+        }
+    }
+    changes_bar(ui, tab, s);
+    confirm_save(ui.ctx(), tab, s);
     if let Some(plan) = &tab.plan {
         if let Some(e) = &tab.error {
             error_banner(ui, e);
         }
-        if plan_view::plan_view(ui, plan) {
-            tab.plan = None;
+        let hints = index_suggestions(s, plan);
+        match plan_view::plan_view(ui, plan, &hints) {
+            Some(plan_view::PlanAction::Close) => tab.plan = None,
+            Some(plan_view::PlanAction::OpenSql(sql)) => cx.request = Some(Request::Sql(sql)),
+            None => {}
         }
         return;
     }
     result_area(ui, tab, cx, false);
+}
+
+/// Tables smaller than this aren't worth an index suggestion: reading them whole is cheap.
+const INDEX_HINT_ROWS: i64 = 10_000;
+
+/// `CREATE INDEX` suggestions for a plan: only for known tables of some size, and only with
+/// columns that really are in them.
+fn index_suggestions(s: &Session, plan: &crate::plan::Plan) -> Vec<(String, String)> {
+    let k = s.cfg.kind;
+    crate::plan::index_hints(plan)
+        .into_iter()
+        .filter_map(|h| {
+            let t = s.tables.iter().find(|t| !t.is_view && t.name == h.table)?;
+            if t.estimate.is_some_and(|n| n < INDEX_HINT_ROWS) {
+                return None;
+            }
+            let cols: Vec<&String> = h
+                .columns
+                .iter()
+                .filter(|c| s.columns.iter().any(|(tb, col)| *tb == t.name && col == *c))
+                .collect();
+            if cols.is_empty() {
+                return None;
+            }
+            let names: Vec<&str> = cols.iter().map(|c| c.as_str()).collect();
+            let sql = format!(
+                "CREATE INDEX {} ON {} ({});",
+                k.quote_ident(&format!("{}_{}_idx", t.name, names.join("_"))),
+                k.qualified(&t.schema, &t.name),
+                names
+                    .iter()
+                    .map(|c| k.quote_ident(c))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            Some((format!("{} ({})", t.name, names.join(", ")), sql))
+        })
+        .collect()
 }
 
 /// Runs, explains or previews editor SQL, asking for `:parameters` first.
@@ -951,6 +1011,7 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     (ActivityView::Sessions, "Sessões", "Quem está conectado e o que está executando"),
                     (ActivityView::Locks, "Bloqueios", "Sessões esperando por travas de outra (a primeira coluna é quem bloqueia)"),
                     (ActivityView::Slow, "Consultas lentas", "O que mais consumiu tempo no servidor desde a última vez que as estatísticas foram zeradas"),
+                    (ActivityView::Server, "Servidor", "Versão, tamanho, conexões, cache, maiores tabelas e índices sem uso"),
                 ] {
                     let on = st.view == view;
                     let color = if on { t.foreground } else { t.muted_foreground };
@@ -978,6 +1039,9 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     );
                     if ui.add_enabled(!busy, egui::Button::new(refresh_btn)).clicked() {
                         refresh = true;
+                    }
+                    if view == ActivityView::Server {
+                        return;
                     }
                     ui.checkbox(&mut st.auto_refresh, "a cada 2 s");
                     ui.separator();
@@ -1036,6 +1100,20 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         tab.anchor = None;
         tab.error = None;
         app::refresh_activity(tab, s);
+    }
+    // The server overview is a panel, refreshed by hand.
+    if let TabKind::Activity(st) = &tab.kind
+        && st.view == ActivityView::Server
+    {
+        if refresh && !switched {
+            app::refresh_activity(tab, s);
+        }
+        if let TabKind::Activity(st) = &tab.kind {
+            server_panel(ui, tab.id, st.server.as_ref(), tab.busy());
+        }
+        return;
+    }
+    if switched {
         result_area(ui, tab, cx, false);
         return;
     }
@@ -1074,6 +1152,77 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         error_banner(ui, e);
     }
     result_area(ui, tab, cx, false);
+}
+
+/// "Servidor": headline numbers as tiles, then the biggest tables and the unused indexes.
+fn server_panel(
+    ui: &mut egui::Ui,
+    tab_id: u64,
+    info: Option<&Result<crate::db::ServerInfo, String>>,
+    busy: bool,
+) {
+    let t = theme::tokens();
+    let info = match info {
+        None => {
+            ui.add_space(48.0);
+            ui.vertical_centered(|ui| {
+                if busy {
+                    ui.spinner();
+                }
+            });
+            return;
+        }
+        Some(Err(e)) => return error_banner(ui, e),
+        Some(Ok(i)) => i,
+    };
+    egui::ScrollArea::vertical()
+        .id_salt(("server", tab_id))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        for (label, value) in &info.facts {
+                            egui::Frame::new()
+                                .fill(t.sidebar)
+                                .stroke(egui::Stroke::new(1.0, t.border))
+                                .inner_margin(egui::Margin::symmetric(12, 8))
+                                .show(ui, |ui| {
+                                    ui.set_min_width(140.0);
+                                    ui.vertical(|ui| {
+                                        ui.label(egui::RichText::new(label).size(11.0).color(t.subtle));
+                                        // The version string can be long (MySQL adds the build).
+                                        let v: String = value.chars().take(28).collect();
+                                        ui.label(egui::RichText::new(v).size(18.0).color(t.foreground))
+                                            .on_hover_text(value);
+                                    });
+                                });
+                        }
+                    });
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("MAIORES TABELAS").size(11.0).color(t.subtle));
+                    ui.add_space(4.0);
+                    preview_rows(ui, tab_id ^ 1, &info.largest);
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("ÍNDICES SEM USO").size(11.0).color(t.subtle));
+                    ui.label(
+                        egui::RichText::new(
+                            "Nenhuma consulta os usou desde que as estatísticas começaram (início do servidor). \
+                             Ocupam espaço e deixam as escritas mais lentas; confirme antes de remover.",
+                        )
+                        .size(11.0)
+                        .color(t.subtle),
+                    );
+                    ui.add_space(4.0);
+                    if info.unused.rows.is_empty() {
+                        ui.label(egui::RichText::new("Nenhum").color(t.muted_foreground));
+                    } else {
+                        preview_rows(ui, tab_id ^ 2, &info.unused);
+                    }
+                });
+        });
 }
 
 /// `Some(true)` to go ahead, `Some(false)` to give up, `None` while the dialog stays open.
@@ -1370,7 +1519,9 @@ fn insert_form(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
 
 /// "N alterações pendentes · Desfazer · Descartar · Salvar" while there are unsaved edits.
 fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab, s: &Session) {
-    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source) else {
+        return;
+    };
     if ts.changes.is_empty() {
         return;
     }
@@ -1418,7 +1569,7 @@ fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab, s: &Session) {
         app::undo_change(tab);
     } else if discard {
         app::discard_changes(tab);
-    } else if save && let TabKind::Table(ts) = &mut tab.kind {
+    } else if save && let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source) {
         ts.confirm_save = true;
     }
 }
@@ -1426,7 +1577,9 @@ fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab, s: &Session) {
 /// Summary before saving: what will change, and the exact SQL. Deletions make the confirm
 /// button red; Enter never confirms here.
 fn confirm_save(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
-    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let Some(ts) = app::editable_mut(&mut tab.kind, &mut tab.source) else {
+        return;
+    };
     if !ts.confirm_save {
         return;
     }
@@ -1595,6 +1748,25 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     };
     // Editor results can be charted (kept in egui memory per tab).
     let is_sql = matches!(tab.kind, TabKind::Sql { .. });
+    // Editor results from one table say whether they can be edited, and why not.
+    let edit_hint = match (&tab.kind, &tab.source) {
+        (TabKind::Sql { .. }, Some(src)) if !src.cols.is_empty() => {
+            let pk = src.pk_names();
+            if s.cfg.read_only {
+                None
+            } else if pk.is_empty() {
+                Some(format!("· {} não tem chave primária: somente leitura", src.table))
+            } else if pk.iter().all(|p| res.columns.contains(p)) {
+                Some(format!(
+                    "· editável ({}) · duplo clique edita · Ctrl+S salva",
+                    src.table
+                ))
+            } else {
+                Some(format!("· inclua {} no SELECT para poder editar", pk.join(", ")))
+            }
+        }
+        _ => None,
+    };
     let chart_id = egui::Id::new(("chart", tab.id));
     let mut chart_spec: Option<chart::ChartSpec> = ui.data(|d| d.get_temp(chart_id)).flatten();
     let result_kinds = values::column_kinds(res, &[]);
@@ -1616,6 +1788,9 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
                             .small()
                             .color(t.muted_foreground),
                     );
+                    if let Some(hint) = &edit_hint {
+                        ui.label(egui::RichText::new(hint).small().color(t.subtle));
+                    }
                     let chartable =
                         is_sql && chart::default_spec(res, &result_kinds).is_some() && !res.rows.is_empty();
                     if chartable {
@@ -1669,32 +1844,33 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     ui.data_mut(|d| d.insert_temp(chart_id, chart_spec));
 
     // Pending changes are shown in place: edited values, deleted rows struck through.
-    let overlay = match &tab.kind {
-        TabKind::Table(ts) if editable => ts.overlay(res),
-        _ => None,
-    };
+    let overlay = app::editable_ref(&tab.kind, &tab.source).and_then(|ts| ts.overlay(res));
     let shown = overlay.as_ref().map_or(res, |o| &o.result);
     let view = tab.view();
     let pinned = tab.pinned_count();
     let range = tab.range().filter(|r| r.r1 < shown.rows.len());
     let no_cols = Vec::new();
     let no_incoming = Vec::new();
-    let (cols, edit, order, bool_pick, row_offset, has_pk, incoming) = match &mut tab.kind {
-        TabKind::Table(ts) if editable => {
-            let has_pk = ts.cols.iter().any(|c| c.pk);
-            (
-                &ts.cols,
-                ts.edit.as_mut(),
-                ts.order.clone(),
-                ts.bool_pick,
-                ts.page * PAGE_SIZE,
-                has_pk,
-                &ts.incoming,
-            )
-        }
-        _ => (&no_cols, None, None, None, 0, false, &no_incoming),
-    };
-    let can_edit = editable && has_pk && !s.cfg.read_only;
+    let table_tab = matches!(tab.kind, TabKind::Table(_));
+    let (cols, edit, order, bool_pick, row_offset, has_pk, incoming) =
+        match app::editable_mut(&mut tab.kind, &mut tab.source) {
+            Some(ts) => {
+                // Rows are addressed by their key: every key column must be in the result.
+                let pk = ts.pk_names();
+                let has_pk = !pk.is_empty() && pk.iter().all(|p| res.columns.contains(p));
+                (
+                    &ts.cols,
+                    ts.edit.as_mut(),
+                    ts.order.clone(),
+                    ts.bool_pick,
+                    if table_tab { ts.page * PAGE_SIZE } else { 0 },
+                    has_pk,
+                    &ts.incoming,
+                )
+            }
+            None => (&no_cols, None, None, None, 0, false, &no_incoming),
+        };
+    let can_edit = has_pk && !s.cfg.read_only;
     let kinds = values::column_kinds(res, cols);
     let selected = tab
         .selected

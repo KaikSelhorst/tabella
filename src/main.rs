@@ -26,10 +26,15 @@ use eframe::egui;
 fn main() -> eframe::Result {
     // Same size as when it was last closed.
     let size = session::load().window.unwrap_or([1100.0, 700.0]);
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size(size)
+        .with_title("dblite");
+    // Window and taskbar icon (the .exe's own comes from build.rs).
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size(size)
-            .with_title("dblite"),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(

@@ -741,10 +741,14 @@ pub fn grid(
                                 ui.close();
                             }
                             if can_edit {
-                                if ui
-                                    .button("Duplicar linha")
-                                    .on_hover_text("Abre o formulário de inserção preenchido com esta linha")
-                                    .clicked()
+                                // The insert form belongs to table tabs.
+                                if can_filter
+                                    && ui
+                                        .button("Duplicar linha")
+                                        .on_hover_text(
+                                            "Abre o formulário de inserção preenchido com esta linha",
+                                        )
+                                        .clicked()
                                 {
                                     event = Some(GridEvent::DuplicateRow(ri));
                                     ui.close();

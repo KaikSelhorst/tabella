@@ -38,7 +38,7 @@ keyring = { version = "3", default-features = false, features = ["sync-secret-se
 
 [dev-dependencies]
 egui_kittest = { version = "0.36.2", features = ["wgpu", "eframe"] }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "ico"] }
 
 
 [features]

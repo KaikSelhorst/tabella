@@ -14,9 +14,16 @@ const INDENT: f32 = 16.0;
 const BIG_SCAN: f64 = 10_000.0;
 
 /// Returns true when the user closes the plan.
-pub fn plan_view(ui: &mut egui::Ui, plan: &Plan) -> bool {
+pub enum PlanAction {
+    Close,
+    OpenSql(String),
+}
+
+/// `hints`: suggested `CREATE INDEX` statements with what they're for.
+pub fn plan_view(ui: &mut egui::Ui, plan: &Plan, hints: &[(String, String)]) -> Option<PlanAction> {
     let t = theme::tokens();
     let mut close = false;
+    let mut open_sql = None;
     // What each bar measures: real time when the statement ran, planner cost otherwise.
     let weight = |n: &Node| if plan.analyzed { n.self_ms() } else { n.self_cost() };
     let mut max = 0.0f64;
@@ -95,9 +102,41 @@ pub fn plan_view(ui: &mut egui::Ui, plan: &Plan) -> bool {
                     ui.add_space(4.0);
                     plan.root
                         .walk(0, &mut |n, depth| node_row(ui, plan, n, depth, weight(n), max));
+                    if !hints.is_empty() {
+                        ui.add_space(16.0);
+                        ui.horizontal(|ui| {
+                            ui.label(theme::icon(icon::LIGHTBULB).color(t.warning));
+                            ui.label(RichText::new("SUGESTÃO DE ÍNDICE").size(11.0).color(t.subtle));
+                        });
+                        ui.label(
+                            RichText::new(
+                                "Tabelas grandes lidas por inteiro para aplicar um filtro. Um índice nas colunas \
+                                 comparadas costuma evitar isso; confira antes de criar em produção.",
+                            )
+                            .size(11.0)
+                            .color(t.subtle),
+                        );
+                        ui.add_space(4.0);
+                        for (what, sql) in hints {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(what).color(t.muted_foreground));
+                                ui.add(egui::Label::new(RichText::new(sql).monospace().size(12.0).color(t.foreground)).truncate());
+                                if ui
+                                    .button(theme::icon_text(icon::CODE, "Abrir no editor", t.muted_foreground, t.foreground))
+                                    .clicked()
+                                {
+                                    open_sql = Some(sql.clone());
+                                }
+                            });
+                        }
+                    }
                 });
         });
-    close
+    if close {
+        Some(PlanAction::Close)
+    } else {
+        open_sql.map(PlanAction::OpenSql)
+    }
 }
 
 /// A row with free content on the left and fixed-width numbers on the right.

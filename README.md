@@ -60,6 +60,14 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Monitor de atividade com três visões: sessões, bloqueios (quem trava quem) e consultas lentas
   (`pg_stat_statements` / `performance_schema`), com "Zerar estatísticas"
 - Gráfico rápido do resultado do editor: barras ou linha, valor ao passar o mouse
+- Resultado de um SELECT simples de uma tabela (com a chave primária no SELECT) é editável no
+  próprio editor: duplo clique, colar, excluir, `Ctrl+S` salva e a consulta roda de novo
+- Sugestão de índice no plano de execução: varreduras completas com filtro em tabelas grandes
+  viram um `CREATE INDEX` pronto para abrir no editor
+- Painel "Servidor" no monitor de atividade: versão, tempo no ar, tamanho, conexões, acerto do
+  cache, maiores tabelas e índices sem uso
+- Ícone próprio, e aviso (botão piscando na barra de tarefas e título) quando algo que levou
+  10 s ou mais termina com a janela em segundo plano
 
 ## Segurança
 

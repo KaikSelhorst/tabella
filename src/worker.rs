@@ -5,8 +5,8 @@ use std::thread;
 use std::path::PathBuf;
 
 use crate::db::{
-    ActivityView, Canceller, ColumnInfo, Conn, ConnConfig, IncomingFk, PreviewData, QueryResult, TableRef,
-    TableStructure,
+    ActivityView, Canceller, ColumnInfo, Conn, ConnConfig, IncomingFk, PreviewData, QueryResult, ServerInfo,
+    TableRef, TableStructure,
 };
 use crate::error::{DbError, DbResult};
 use crate::export::{Format, Writer};
@@ -64,6 +64,10 @@ pub enum Job {
     Activity {
         tab: u64,
         view: ActivityView,
+    },
+    /// The "Servidor" panel.
+    ServerInfo {
+        tab: u64,
     },
     /// Clear the "consultas lentas" counters, then show them again.
     ResetQueryStats {
@@ -190,6 +194,10 @@ pub enum Reply {
     Preview {
         tab: u64,
         res: DbResult<PreviewData>,
+    },
+    ServerInfo {
+        tab: u64,
+        res: DbResult<ServerInfo>,
     },
     Tx(TxState),
     /// Outcome of `Job::EndTx`.
@@ -384,6 +392,10 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     tab,
                     res: Box::new(conn.activity_view(view)),
                     notice: None,
+                },
+                Job::ServerInfo { tab } => Reply::ServerInfo {
+                    tab,
+                    res: conn.server_info(),
                 },
                 Job::ResetQueryStats { tab } => {
                     let notice = conn.reset_query_stats().err().map(|e| e.to_string());

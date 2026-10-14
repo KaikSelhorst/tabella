@@ -62,6 +62,7 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.tick_fps();
+        self.clear_finished_notice();
         self.window = ui
             .ctx()
             .input(|i| i.viewport().inner_rect)
@@ -575,12 +576,13 @@ mod screenshots {
             };
             let st = crate::app::ActivityState {
                 view: crate::db::ActivityView::Sessions,
+                server: None,
                 auto_refresh: false,
                 last_refresh: None,
                 confirm_kill: None,
                 kill_error: None,
             };
-            let mut tab = Tab::new(4, "Atividade".into(), TabKind::Activity(st));
+            let mut tab = Tab::new(4, "Atividade".into(), TabKind::Activity(Box::new(st)));
             tab.result = Some(res);
             tab.selected = Some((1, 0));
             let state = harness.state_mut();
@@ -974,6 +976,130 @@ mod screenshots {
             tab.result = saved;
         }
 
+        // Editable editor result (one table, key selected) with a pending edit; then a plan
+        // with an index suggestion; then the server panel.
+        {
+            let state = harness.state_mut();
+            state.active = 1;
+            let tab = &mut state.tabs[1];
+            let saved = tab.result.take();
+            tab.result = Some(QueryResult {
+                columns: vec!["id".into(), "nome".into(), "saldo".into()],
+                rows: (1..=12)
+                    .map(|i| {
+                        vec![
+                            Some(i.to_string()),
+                            Some(format!("Cliente {i}")),
+                            Some(format!("{}.00", i * 120)),
+                        ]
+                    })
+                    .collect(),
+                ..Default::default()
+            });
+            let mut src = crate::app::TableState::new("public", "clientes", None);
+            let col = |name: &str, ty: &str, pk| ColumnInfo {
+                name: name.into(),
+                data_type: ty.into(),
+                pk,
+                nullable: !pk,
+                has_default: false,
+                references: None,
+            };
+            src.cols = vec![
+                col("id", "integer", true),
+                col("nome", "text", false),
+                col("saldo", "numeric", false),
+            ];
+            src.changes.push(crate::app::Change::Set {
+                key: vec![Some("3".into())],
+                col: "nome".into(),
+                value: Some("Cliente Três".into()),
+                before: Some("Cliente 3".into()),
+            });
+            tab.source = Some(Box::new(src));
+            tab.source_query = "SELECT id, nome, saldo FROM clientes WHERE ativo".into();
+            tab.selected = Some((2, 1));
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/sql-edit.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.source = None;
+            tab.selected = None;
+
+            let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "clientes", "Alias": "clientes", "Total Cost": 21000, "Plan Rows": 31000, "Filter": "((saldo > '1000'::numeric) AND (ativo = true))"}}]"#;
+            tab.plan = Some(crate::plan::from_pg_json(json).unwrap());
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/plan-index.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.plan = None;
+            tab.result = saved;
+
+            let info = crate::db::ServerInfo {
+                facts: [
+                    ("Versão", "16.4"),
+                    ("No ar há", "3 days 04:12:09"),
+                    ("Tamanho do banco", "1873 MB"),
+                    ("Conexões", "7 de 100"),
+                    ("Acerto do cache", "99.21%"),
+                ]
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
+                largest: QueryResult {
+                    columns: ["tabela", "total", "dados", "indices", "linhas_est"]
+                        .map(String::from)
+                        .to_vec(),
+                    rows: [
+                        ["public.pedidos", "1012 MB", "652 MB", "360 MB", "5000000"],
+                        ["public.clientes", "186 MB", "141 MB", "45 MB", "1000000"],
+                        ["public.eventos", "171 MB", "140 MB", "31 MB", "300000"],
+                    ]
+                    .iter()
+                    .map(|r| r.iter().map(|v| Some(v.to_string())).collect())
+                    .collect(),
+                    ..Default::default()
+                },
+                unused: QueryResult {
+                    columns: ["tabela", "indice", "tamanho"].map(String::from).to_vec(),
+                    rows: vec![vec![
+                        Some("public.pedidos".into()),
+                        Some("pedidos_criado_idx".into()),
+                        Some("107 MB".into()),
+                    ]],
+                    ..Default::default()
+                },
+            };
+            let st = crate::app::ActivityState {
+                view: crate::db::ActivityView::Server,
+                server: Some(Ok(info)),
+                auto_refresh: false,
+                last_refresh: None,
+                confirm_kill: None,
+                kill_error: None,
+            };
+            let state = harness.state_mut();
+            state
+                .tabs
+                .push(Tab::new(9, "Atividade".into(), TabKind::Activity(Box::new(st))));
+            state.active = 2;
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/server.png"))
+                .unwrap();
+            let state = harness.state_mut();
+            state.tabs.pop();
+            state.active = 1;
+        }
+
         // Autocomplete: type a partial word and put the cursor after it.
         let editor = egui::Id::new(("sql", 2u64));
         if let TabKind::Sql { text } = &mut harness.state_mut().tabs[1].kind {
@@ -1178,5 +1304,86 @@ mod layout_tests {
         let first = width(&harness);
         harness.run_steps(30);
         assert_eq!(width(&harness), first, "sidebar width changed between frames");
+    }
+}
+
+/// Draws the app icon (a database cylinder in the theme's lime on its dark background, square
+/// corners like the rest of the UI) and writes `assets/icon.png` and `assets/icon.ico`.
+/// Run with `cargo test make_icon -- --ignored` after changing it.
+#[cfg(test)]
+mod icon_asset {
+    use eframe::egui::Color32;
+    use image::codecs::ico::{IcoEncoder, IcoFrame};
+    use image::{ImageBuffer, Rgba, imageops::FilterType};
+
+    use super::theme;
+
+    /// The icon at `size` px, 4x4 supersampled.
+    fn draw(size: u32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+        let t = theme::tokens();
+        let bg = t.background;
+        let top = theme::oklch(0.95, 0.19, 117.0);
+        let body = theme::oklch(0.84, 0.18, 117.0);
+        // Geometry on a 0..1 canvas.
+        let (cx, rx, ry) = (0.5f32, 0.30f32, 0.095f32);
+        let (y_top, y_bot) = (0.30f32, 0.72f32);
+        let bands = [0.44f32, 0.58];
+        let band_w = 0.028f32;
+        let color_at = |x: f32, y: f32| -> Color32 {
+            let dx = (x - cx) / rx;
+            let in_x = dx.abs() <= 1.0;
+            let arc = |y0: f32| y0 + ry * (1.0 - dx * dx).max(0.0).sqrt();
+            let in_ellipse = |y0: f32| dx * dx + ((y - y0) / ry).powi(2) <= 1.0;
+            if in_ellipse(y_top) {
+                // The lid, with a thin dark rim near its edge.
+                let r = dx * dx + ((y - y_top) / ry).powi(2);
+                return if r > 0.78 && y > y_top { body } else { top };
+            }
+            let in_body = in_x && ((y >= y_top && y <= y_bot) || in_ellipse(y_bot));
+            if !in_body {
+                return bg;
+            }
+            if bands.iter().any(|&b| y >= arc(b) && y < arc(b) + band_w) {
+                return bg;
+            }
+            body
+        };
+        let ss = 4;
+        ImageBuffer::from_fn(size, size, |px, py| {
+            let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
+            for sy in 0..ss {
+                for sx in 0..ss {
+                    let x = (px as f32 + (sx as f32 + 0.5) / ss as f32) / size as f32;
+                    let y = (py as f32 + (sy as f32 + 0.5) / ss as f32) / size as f32;
+                    let c = color_at(x, y);
+                    r += c.r() as u32;
+                    g += c.g() as u32;
+                    b += c.b() as u32;
+                }
+            }
+            let n = (ss * ss) as u32;
+            Rgba([(r / n) as u8, (g / n) as u8, (b / n) as u8, 255])
+        })
+    }
+
+    #[test]
+    #[ignore]
+    fn make_icon() {
+        let big = draw(256);
+        big.save("assets/icon.png").unwrap();
+        let frames: Vec<IcoFrame> = [16u32, 24, 32, 48, 64, 128, 256]
+            .iter()
+            .map(|&s| {
+                // Small sizes drawn directly stay crisper than a downscale of the big one.
+                let img = if s >= 64 {
+                    image::imageops::resize(&big, s, s, FilterType::Lanczos3)
+                } else {
+                    draw(s)
+                };
+                IcoFrame::as_png(img.as_raw(), s, s, image::ExtendedColorType::Rgba8).unwrap()
+            })
+            .collect();
+        let file = std::fs::File::create("assets/icon.ico").unwrap();
+        IcoEncoder::new(file).encode_images(&frames).unwrap();
     }
 }

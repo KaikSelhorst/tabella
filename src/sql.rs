@@ -567,6 +567,95 @@ fn top_level_words(script: &str) -> Vec<(String, usize, usize)> {
     out
 }
 
+/// `(schema, table)` of a SELECT whose rows map one-to-one onto a table's rows: one table in
+/// FROM (an alias is fine), no joins, grouping, DISTINCT, set operations or CTEs. Names come
+/// unquoted.
+pub fn editable_select(statement: &str) -> Option<(Option<String>, String)> {
+    if statement_ranges(statement, false).len() != 1 {
+        return None;
+    }
+    let sql = statement.trim().trim_end_matches(';').trim_end();
+    let chars: Vec<char> = sql.chars().collect();
+    let words = top_level_words(sql);
+    if words.first()?.0 != "SELECT" {
+        return None;
+    }
+    const BLOCKERS: &[&str] = &[
+        "JOIN",
+        "UNION",
+        "INTERSECT",
+        "EXCEPT",
+        "GROUP",
+        "HAVING",
+        "DISTINCT",
+        "INTO",
+        "WINDOW",
+        "LATERAL",
+    ];
+    if words.iter().any(|(w, _, _)| BLOCKERS.contains(&w.as_str())) {
+        return None;
+    }
+    let from = words.iter().position(|(w, _, _)| w == "FROM")?;
+    let end = words[from + 1..]
+        .iter()
+        .find(|(w, _, _)| {
+            matches!(
+                w.as_str(),
+                "WHERE" | "ORDER" | "LIMIT" | "OFFSET" | "FETCH" | "FOR"
+            )
+        })
+        .map_or(chars.len(), |(_, a, _)| *a);
+    let target: String = chars[words[from].2..end].iter().collect();
+    let target = target.trim();
+    if target.is_empty() || target.contains([',', '(']) {
+        return None;
+    }
+    // The name is the first token; what follows can only be an alias.
+    let mut name = String::new();
+    let mut quote = None;
+    for c in target.chars() {
+        match (quote, c) {
+            (None, '"' | '`') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (None, c) if c.is_whitespace() => break,
+            _ => {}
+        }
+        name.push(c);
+    }
+    let rest: Vec<&str> = target[name.len()..].split_whitespace().collect();
+    match rest[..] {
+        [] | [_] => {}
+        [a, _] if a.eq_ignore_ascii_case("AS") => {}
+        _ => return None,
+    }
+    let unquote = |p: &str| p.trim_matches(|c| c == '"' || c == '`').to_string();
+    let parts = split_dotted(&name);
+    match parts.len() {
+        1 => Some((None, unquote(&parts[0]))),
+        2 => Some((Some(unquote(&parts[0])), unquote(&parts[1]))),
+        _ => None,
+    }
+}
+
+/// `a.b`, `"a.x"."b"`: splits on dots outside quotes.
+fn split_dotted(name: &str) -> Vec<String> {
+    let mut parts = vec![String::new()];
+    let mut quote = None;
+    for c in name.chars() {
+        match (quote, c) {
+            (None, '"' | '`') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (None, '.') => {
+                parts.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        parts.last_mut().unwrap().push(c);
+    }
+    parts
+}
+
 /// Reads for "prévia" of an UPDATE or DELETE, without running it: how many rows it would
 /// touch, and those rows as they are now.
 #[derive(Debug, PartialEq)]
@@ -1018,6 +1107,45 @@ mod tests {
             "a = '1.2.3'"
         );
         assert!(param_names("SELECT $$ :x $$, '10:30'").is_empty());
+    }
+
+    #[test]
+    fn finds_the_table_of_editable_selects() {
+        let t = |s: &str| editable_select(s);
+        assert_eq!(
+            t("SELECT * FROM clientes WHERE uf = 'SP' ORDER BY id LIMIT 10;"),
+            Some((None, "clientes".into()))
+        );
+        assert_eq!(
+            t("select id, nome from public.clientes c where c.ativo"),
+            Some((Some("public".into()), "clientes".into()))
+        );
+        assert_eq!(
+            t("SELECT * FROM \"Meu Esquema\".\"Tabela.X\" AS t"),
+            Some((Some("Meu Esquema".into()), "Tabela.X".into()))
+        );
+        assert_eq!(
+            t("SELECT * FROM `loja`.`produtos`"),
+            Some((Some("loja".into()), "produtos".into()))
+        );
+        // A subquery in WHERE is fine; it isn't in FROM.
+        assert!(
+            t("SELECT * FROM pedidos WHERE cliente_id IN (SELECT id FROM clientes JOIN x ON true)").is_some()
+        );
+        for no in [
+            "SELECT * FROM a JOIN b ON a.id = b.id",
+            "SELECT * FROM a, b",
+            "SELECT uf, count(*) FROM clientes GROUP BY uf",
+            "SELECT DISTINCT uf FROM clientes",
+            "SELECT * FROM (SELECT 1) x",
+            "WITH x AS (SELECT 1) SELECT * FROM x",
+            "SELECT 1 UNION SELECT 2",
+            "SELECT 1",
+            "SELECT * FROM a; SELECT * FROM b",
+            "UPDATE t SET a = 1",
+        ] {
+            assert_eq!(t(no), None, "{no}");
+        }
     }
 
     #[test]

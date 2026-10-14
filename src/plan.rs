@@ -26,6 +26,10 @@ pub struct Node {
     pub actual_ms: Option<f64>,
     pub actual_rows: Option<f64>,
     pub children: Vec<Node>,
+    /// Table a scan reads (Postgres "Relation Name"; MySQL the name after "Table scan on").
+    pub relation: Option<String>,
+    /// The scan's own filter condition (Postgres "Filter").
+    pub filter: Option<String>,
 }
 
 impl Node {
@@ -117,6 +121,8 @@ fn pg_node(v: &Value) -> Node {
     }
     let loops = n("Actual Loops").unwrap_or(1.0);
     Node {
+        relation: s("Relation Name").map(str::to_string),
+        filter: s("Filter").map(str::to_string),
         label,
         details,
         cost: n("Total Cost"),
@@ -228,6 +234,169 @@ fn mysql_node(body: &str) -> Node {
     node
 }
 
+/// "Index this": a table read in full whose filter could use an index on these columns.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IndexHint {
+    pub table: String,
+    /// Equality columns first, then range ones: the order a composite index wants.
+    pub columns: Vec<String>,
+}
+
+/// Full scans with a filter, and the columns their filter compares. MySQL puts the filter in a
+/// "Filter" node above the scan, so a parent's condition counts for its scan child.
+pub fn index_hints(plan: &Plan) -> Vec<IndexHint> {
+    fn walk(n: &Node, parent_filter: Option<&str>, out: &mut Vec<IndexHint>) {
+        let own = n.filter.as_deref().or_else(|| {
+            (n.label == "Filter")
+                .then(|| n.details.first().map(String::as_str))
+                .flatten()
+        });
+        if n.is_full_scan() {
+            let table = n.relation.clone().or_else(|| {
+                let l = n.label.as_str();
+                l.strip_prefix("Table scan on ")
+                    .map(|t| t.split_whitespace().next().unwrap_or(t).to_string())
+            });
+            if let (Some(table), Some(cond)) = (table, own.or(parent_filter)) {
+                let columns = filter_columns(cond);
+                if !columns.is_empty() && !out.iter().any(|h| h.table == table && h.columns == columns) {
+                    out.push(IndexHint { table, columns });
+                }
+            }
+        }
+        for c in &n.children {
+            walk(c, own, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&plan.root, None, &mut out);
+    out
+}
+
+/// Columns a condition compares with `=`, `<`, `>`, `<=`, `>=`, LIKE (`~~` in Postgres) or IN,
+/// equality first, at most three. `(p.status = 'pago'::text) AND (total > 100)` → status, total.
+pub fn filter_columns(cond: &str) -> Vec<String> {
+    let chars: Vec<char> = cond.chars().collect();
+    let mut eq: Vec<String> = Vec::new();
+    let mut range: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\'' {
+            // Skip string literals.
+            i += 1;
+            while i < chars.len() && chars[i] != '\'' {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        let quoted = c == '"' || c == '`';
+        if !(quoted || c.is_alphabetic() || c == '_') {
+            i += 1;
+            continue;
+        }
+        // Inside a function call (`lower(nome)`) a column isn't usable by a plain index.
+        let in_call = {
+            let mut k = i;
+            while k > 0 && chars[k - 1] == ' ' {
+                k -= 1;
+            }
+            k >= 2 && chars[k - 1] == '(' && (chars[k - 2].is_alphanumeric() || chars[k - 2] == '_')
+        };
+        // An identifier, possibly qualified (a.b, "a"."b"): keep its last part.
+        let mut last;
+        loop {
+            let mut part = String::new();
+            if i < chars.len() && (chars[i] == '"' || chars[i] == '`') {
+                let q = chars[i];
+                i += 1;
+                while i < chars.len() && chars[i] != q {
+                    part.push(chars[i]);
+                    i += 1;
+                }
+                i += 1;
+            } else {
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    part.push(chars[i]);
+                    i += 1;
+                }
+            }
+            last = part;
+            if i < chars.len() && chars[i] == '.' {
+                i += 1;
+                continue;
+            }
+            break;
+        }
+        // Function calls and casts (`lower(x)`, `::text`) aren't plain columns.
+        if chars.get(i) == Some(&'(') || (i >= 2 + last.len() && chars[i - last.len() - 1] == ':') {
+            continue;
+        }
+        // Postgres writes `(name)::text = …`: closing parens and casts sit between the column and
+        // the operator.
+        let mut j = i;
+        loop {
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if chars.get(j) == Some(&')') {
+                j += 1;
+            } else if chars.get(j) == Some(&':') && chars.get(j + 1) == Some(&':') {
+                j += 2;
+                // Type name, possibly several words (`character varying`) or with `(n)`.
+                while j < chars.len()
+                    && (chars[j].is_alphanumeric() || chars[j] == '_' || chars[j] == ' ' || chars[j] == '"')
+                    && !matches!(chars[j], '=' | '<' | '>' | '~')
+                {
+                    // Stop before a word operator (`x::text LIKE …`).
+                    let tail: String = chars[j..].iter().take(9).collect::<String>().to_uppercase();
+                    if chars[j] == ' '
+                        && [" LIKE ", " IN ", " IN(", " IS ", " BETWEEN "]
+                            .iter()
+                            .any(|w| tail.starts_with(w))
+                    {
+                        break;
+                    }
+                    j += 1;
+                }
+                if chars.get(j) == Some(&'(') {
+                    while j < chars.len() && chars[j] != ')' {
+                        j += 1;
+                    }
+                    j += 1;
+                }
+            } else {
+                break;
+            }
+        }
+        let rest: String = chars[j.min(chars.len())..].iter().collect::<String>();
+        let op = rest.trim_start();
+        let upper = op.to_uppercase();
+        let is_eq = op.starts_with('=')
+            || upper.starts_with("IN ")
+            || upper.starts_with("IN(")
+            || upper.starts_with("IS NULL");
+        let is_range = (op.starts_with('<') && !op.starts_with("<>"))
+            || op.starts_with('>')
+            || op.starts_with("~~")
+            || upper.starts_with("LIKE ")
+            || upper.starts_with("BETWEEN ");
+        const WORDS: &[&str] = &["AND", "OR", "NOT", "NULL", "TRUE", "FALSE", "ANY", "ALL"];
+        if in_call || WORDS.contains(&last.to_uppercase().as_str()) || last.is_empty() {
+            continue;
+        }
+        if is_eq && !eq.contains(&last) {
+            eq.push(last);
+        } else if is_range && !range.contains(&last) && !eq.contains(&last) {
+            range.push(last);
+        }
+    }
+    eq.extend(range);
+    eq.truncate(3);
+    eq
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +431,48 @@ mod tests {
         assert_eq!((idx.actual_ms, idx.actual_rows), (Some(0.5), Some(2.0)));
         assert_eq!(p.root.self_cost(), Some(20.5));
         assert_eq!(p.root.self_ms(), Some(1.0));
+    }
+
+    #[test]
+    fn suggests_indexes_for_filtered_full_scans() {
+        assert_eq!(
+            filter_columns(
+                "((p.status = 'pago'::text) AND (total > '100'::numeric) AND (lower(nome) = 'x'))"
+            ),
+            ["status", "total"]
+        );
+        assert_eq!(
+            filter_columns("(criado_em >= '2024-01-01' AND uf IN ('SP', 'RJ'))"),
+            ["uf", "criado_em"]
+        );
+        assert_eq!(filter_columns("(\"Nome\" ~~ 'a%'::text)"), ["Nome"]);
+        // As Postgres prints them: the column wrapped and cast before the operator.
+        assert_eq!(filter_columns("((name)::text = 'x'::text)"), ["name"]);
+        assert_eq!(
+            filter_columns("((sku)::character varying(20) = 'A'::bpchar)"),
+            ["sku"]
+        );
+        assert!(filter_columns("(a <> 1)").is_empty(), "<> rarely uses an index");
+
+        let pg = from_pg_json(r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "pedidos", "Alias": "p", "Total Cost": 1, "Plan Rows": 5, "Filter": "(status = 'pago'::text)"}}]"#).unwrap();
+        assert_eq!(
+            index_hints(&pg),
+            [IndexHint {
+                table: "pedidos".into(),
+                columns: vec!["status".into()]
+            }]
+        );
+        let my = from_mysql_tree("-> Filter: (vendas.canal = 'app')  (cost=1 rows=3)\n    -> Table scan on vendas  (cost=1 rows=30)\n").unwrap();
+        assert_eq!(
+            index_hints(&my),
+            [IndexHint {
+                table: "vendas".into(),
+                columns: vec!["canal".into()]
+            }]
+        );
+        // An index scan needs nothing.
+        let ok = from_pg_json(r#"[{"Plan": {"Node Type": "Index Scan", "Relation Name": "t", "Index Name": "i", "Total Cost": 1, "Plan Rows": 1, "Filter": "(a = 1)"}}]"#).unwrap();
+        assert!(index_hints(&ok).is_empty());
     }
 
     #[test]
