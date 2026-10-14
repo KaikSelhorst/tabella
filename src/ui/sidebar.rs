@@ -24,13 +24,20 @@ impl App {
         let mut edit = None;
         let mut delete = None;
         let mut add = false;
+        let mut manual: Option<bool> = None;
+        let session_manual = self.session.as_ref().map(|s| s.txn.manual);
 
         // Right to left inside one row: the menu button first, then the combo box fills what is
         // left. (Without the row, the layout would center itself in the whole panel height.)
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let selected: egui::WidgetText = match current {
-                    Some(i) => conn_label(&self.saved[i]).into(),
+                    // The label follows this session's mode, which can differ from the saved one.
+                    Some(i) => conn_label(&ConnConfig {
+                        manual_commit: session_manual.unwrap_or(self.saved[i].manual_commit),
+                        ..self.saved[i].clone()
+                    })
+                    .into(),
                     None => egui::RichText::new("Selecionar conexão…")
                         .color(theme::tokens().muted_foreground)
                         .into(),
@@ -48,6 +55,19 @@ impl App {
                         if ui.button("Excluir").clicked() {
                             delete = current;
                             ui.close();
+                        }
+                        if let Some(mut on) = session_manual {
+                            ui.separator();
+                            if ui
+                                .checkbox(&mut on, "Commit manual nesta sessão")
+                                .on_hover_text(
+                                    "Alterações ficam numa transação até você confirmar ou desfazer",
+                                )
+                                .changed()
+                            {
+                                manual = Some(on);
+                                ui.close();
+                            }
                         }
                     });
                 });
@@ -114,6 +134,9 @@ impl App {
         }
         if let Some(id) = delete.map(|i| self.saved[i].id.clone()) {
             self.delete_connection(&id);
+        }
+        if let Some(on) = manual {
+            self.set_manual_commit(on);
         }
     }
 
@@ -341,6 +364,9 @@ fn conn_label(c: &ConnConfig) -> egui::text::LayoutJob {
     if c.read_only {
         let fmt = TextFormat::simple(egui::FontId::proportional(10.0), t.destructive);
         job.append("somente leitura", 6.0, fmt);
+    } else if c.manual_commit {
+        let fmt = TextFormat::simple(egui::FontId::proportional(10.0), t.warning);
+        job.append("commit manual", 6.0, fmt);
     }
     job
 }

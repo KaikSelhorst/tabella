@@ -92,7 +92,7 @@ pub fn auto_mapping(headers: &[String], columns: &[String]) -> Vec<Option<String
 }
 
 /// Runs the import; returns the number of rows inserted.
-pub fn run(conn: &mut Conn, spec: &ImportSpec) -> DbResult<u64> {
+pub fn run(conn: &mut Conn, spec: &ImportSpec, nested: bool) -> DbResult<u64> {
     let targets: Vec<(usize, String)> = spec
         .mapping
         .iter()
@@ -113,11 +113,7 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec) -> DbResult<u64> {
         .from_path(&spec.path)
         .map_err(|e| DbError::Other(format!("não foi possível abrir o arquivo: {e}")))?;
 
-    conn.query(match spec.kind {
-        Kind::Postgres => "BEGIN",
-        Kind::MySql => "START TRANSACTION",
-    })?;
-    let result = (|| {
+    conn.atomically(nested, |conn| {
         let mut batch: Vec<Vec<Option<String>>> = Vec::with_capacity(per_batch);
         let mut done = 0u64;
         // Line in the file of the batch's first row, for error messages.
@@ -174,17 +170,7 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec) -> DbResult<u64> {
         }
         flush(&mut batch, &mut done)?;
         Ok(done)
-    })();
-    match result {
-        Ok(n) => {
-            conn.query("COMMIT")?;
-            Ok(n)
-        }
-        Err(e) => {
-            let _ = conn.query("ROLLBACK");
-            Err(e)
-        }
-    }
+    })
 }
 
 /// `INSERT INTO t (a, b) VALUES (...), (...)` with every value bound (see `sql::Stmt`).

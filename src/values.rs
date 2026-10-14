@@ -208,6 +208,97 @@ pub fn stats(res: &QueryResult, kinds: &[ValueKind], (r0, c0, r1, c1): CellRange
     st
 }
 
+/// Profile of one column: how full it is, how varied, its range and most common values.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColumnStats {
+    pub total: i64,
+    pub nulls: i64,
+    pub distinct: i64,
+    /// Only for numbers and dates, where the order means something.
+    pub min: Option<String>,
+    pub max: Option<String>,
+    /// Most common values (NULL included), most frequent first.
+    pub top: Vec<(Option<String>, i64)>,
+}
+
+/// Most common values kept in `ColumnStats::top`.
+pub const TOP_VALUES: usize = 10;
+
+/// Stats over the rows already loaded (editor results, which have no table to ask).
+pub fn local_column_stats(res: &QueryResult, ci: usize, kind: ValueKind) -> ColumnStats {
+    let mut counts: std::collections::HashMap<Option<&str>, i64> = std::collections::HashMap::new();
+    for row in &res.rows {
+        *counts.entry(row[ci].as_deref()).or_default() += 1;
+    }
+    let present = || res.rows.iter().filter_map(|r| r[ci].as_deref());
+    let (min, max) = match kind {
+        ValueKind::Number => {
+            let nums = || present().filter_map(|v| v.parse::<f64>().ok().map(|n| (n, v)));
+            (
+                nums()
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, v)| v.to_string()),
+                nums()
+                    .max_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, v)| v.to_string()),
+            )
+        }
+        ValueKind::Date => (
+            present().min().map(str::to_string),
+            present().max().map(str::to_string),
+        ),
+        _ => (None, None),
+    };
+    let nulls = counts.get(&None).copied().unwrap_or(0);
+    let distinct = counts.keys().filter(|k| k.is_some()).count() as i64;
+    let mut top: Vec<(Option<String>, i64)> = counts
+        .into_iter()
+        .map(|(k, n)| (k.map(str::to_string), n))
+        .collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    top.truncate(TOP_VALUES);
+    ColumnStats {
+        total: res.rows.len() as i64,
+        nulls,
+        distinct,
+        min,
+        max,
+        top,
+    }
+}
+
+/// Reads the answers to `sql::column_stats` (summary row, then the top values).
+pub fn stats_from_queries(summary: &QueryResult, top: &QueryResult) -> Result<ColumnStats, String> {
+    let row = summary.rows.first().ok_or("resposta vazia")?;
+    let num = |i: usize| -> i64 {
+        row.get(i)
+            .and_then(|v| v.as_deref())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    };
+    let total = num(0);
+    Ok(ColumnStats {
+        total,
+        nulls: total - num(1),
+        distinct: num(2),
+        min: row.get(3).cloned().flatten(),
+        max: row.get(4).cloned().flatten(),
+        top: top
+            .rows
+            .iter()
+            .map(|r| {
+                (
+                    r[0].clone(),
+                    r.get(1)
+                        .and_then(|v| v.as_deref())
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0),
+                )
+            })
+            .collect(),
+    })
+}
+
 /// A number for the status line: whole numbers without decimals, others with up to 4.
 pub fn format_number(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
@@ -239,6 +330,24 @@ mod tests {
             parse_tsv("x\t\"l1\nl2\"\r\ny\tz\r\n"),
             [["x", "l1\nl2"], ["y", "z"]]
         );
+    }
+
+    #[test]
+    fn column_profile_from_loaded_rows() {
+        let res = QueryResult {
+            columns: vec!["n".into()],
+            rows: [Some("3"), Some("10"), None, Some("3"), Some("2.5")]
+                .iter()
+                .map(|v| vec![v.map(str::to_string)])
+                .collect(),
+            ..Default::default()
+        };
+        let st = local_column_stats(&res, 0, ValueKind::Number);
+        assert_eq!((st.total, st.nulls, st.distinct), (5, 1, 3));
+        // Numeric order, not text order ("10" < "2.5" as text).
+        assert_eq!((st.min.as_deref(), st.max.as_deref()), (Some("2.5"), Some("10")));
+        assert_eq!(st.top[0], (Some("3".into()), 2));
+        assert!(st.top.contains(&(None, 1)));
     }
 
     #[test]

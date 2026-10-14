@@ -7,7 +7,7 @@ use super::detail::{self, DetailAction};
 use super::grid::{GridOpts, grid};
 use super::import_form::{self, ImportAction};
 use super::structure::{self, InsertAction, StructAction};
-use super::{complete, icon, palette, plan_view, syntax, theme};
+use super::{complete, find, icon, palette, plan_view, syntax, theme};
 use crate::app::{self, App, Effect, FavPrompt, GridEvent, Session, Tab, TabKind};
 use crate::db::QueryResult;
 use crate::export::{self, Format};
@@ -371,19 +371,93 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 });
             });
             ui.add_space(4.0);
+            // Ctrl+F / Ctrl+H: find bar above the editor (state kept in egui memory per tab).
+            let find_id = egui::Id::new(("find", tab.id));
+            let mut find: Option<find::FindState> = ui.data(|d| d.get_temp(find_id));
+            let editor_focused = ui.memory(|m| m.has_focus(editor_id));
+            if editor_focused || find.is_some() {
+                let (ctrl_f, ctrl_h) = ui.input_mut(|i| {
+                    (
+                        i.consume_key(egui::Modifiers::COMMAND, Key::F),
+                        i.consume_key(egui::Modifiers::COMMAND, Key::H),
+                    )
+                });
+                if ctrl_f || ctrl_h {
+                    let st = find.get_or_insert_with(Default::default);
+                    st.focus = true;
+                    st.show_replace |= ctrl_h;
+                    // Selected text (one line) becomes the search.
+                    if let Some(sel) = selection.as_ref().filter(|s| !s.contains('\n')) {
+                        st.query = sel.clone();
+                    }
+                }
+            }
+            let mut goto = false;
+            let mut close_find = false;
+            if let Some(st) = &mut find {
+                let ranges = find::find_all(text, &st.query, st.case_sensitive);
+                match find::find_bar(ui, st, ranges.len()) {
+                    Some(find::FindAction::Goto) => goto = true,
+                    Some(find::FindAction::ReplaceOne) => {
+                        if let Some(r) = ranges.get(st.current.min(ranges.len().saturating_sub(1))) {
+                            text.replace_range(r.clone(), &st.replace);
+                            goto = true;
+                        }
+                    }
+                    Some(find::FindAction::ReplaceAll) => {
+                        find::replace_all(text, &st.query, &st.replace, st.case_sensitive);
+                    }
+                    Some(find::FindAction::Close) => close_find = true,
+                    None => {}
+                }
+                ui.add_space(4.0);
+            }
+            if close_find {
+                find = None;
+                ui.memory_mut(|m| m.request_focus(editor_id));
+            }
+            let (query, case, current_match) = find
+                .as_ref()
+                .map(|f| (f.query.clone(), f.case_sensitive, f.current))
+                .unwrap_or_default();
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let popup = complete::before_editor(ui.ctx(), editor_id, text, &s.tables, &s.columns);
-                    let out = TextEdit::multiline(text)
+                    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                        let mut job = syntax::highlight(buf.as_str(), egui::FontId::monospace(13.0));
+                        if !query.is_empty() {
+                            let ranges = find::find_all(buf.as_str(), &query, case);
+                            find::mark(&mut job, &ranges, current_match);
+                        }
+                        job.wrap.max_width = wrap;
+                        ui.fonts_mut(|f| f.layout_job(job))
+                    };
+                    let mut out = TextEdit::multiline(text)
                         .id(editor_id)
                         .code_editor()
                         .hint_text("SELECT * FROM …")
                         .desired_width(f32::INFINITY)
                         .min_size(ui.available_size())
                         .lock_focus(true)
-                        .layouter(&mut syntax::sql_layouter(13.0))
+                        .layouter(&mut layouter)
                         .show(ui);
+                    // Selects the current match (ready for typing over when the editor gets focus
+                    // back) and scrolls to it.
+                    if goto {
+                        let ranges = find::find_all(text, &query, case);
+                        if let Some(r) = ranges.get(current_match.min(ranges.len().saturating_sub(1))) {
+                            let (a, b) = (text[..r.start].chars().count(), text[..r.end].chars().count());
+                            let sel = egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(a),
+                                egui::text::CCursor::new(b),
+                            );
+                            out.state.cursor.set_char_range(Some(sel));
+                            out.state.clone().store(ui.ctx(), editor_id);
+                            let rect = out.galley.pos_from_cursor(egui::text::CCursor::new(a));
+                            ui.scroll_to_rect(rect.translate(out.galley_pos.to_vec2()), Some(Align::Center));
+                        }
+                    }
                     // Lime bar in the gutter beside the statement Ctrl+Enter would run.
                     if let Some((a, b)) = current {
                         let top = out.galley.pos_from_cursor(egui::text::CCursor::new(a));
@@ -414,25 +488,24 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         run = Some(all.clone());
                     }
                 });
+            ui.data_mut(|d| match find {
+                Some(f) => {
+                    d.insert_temp(find_id, f);
+                }
+                None => d.remove::<find::FindState>(find_id),
+            });
         });
     if let Some(sql) = run.filter(|q| !q.trim().is_empty())
         && !busy
     {
-        let risk = sql::script_risk(&sql);
-        if s.cfg.read_only && risk.writes {
-            tab.error =
-                Some("Conexão somente leitura: só consultas (SELECT, SHOW, EXPLAIN…) podem rodar.".into());
-        } else if !risk.dangers.is_empty() {
-            tab.confirm_run = Some(sql);
-        } else {
-            app::run_sql(tab, s, sql);
-        }
+        request_run(tab, s, sql, None);
     }
     if let Some((sql, analyze)) = explain.filter(|(q, _)| !q.trim().is_empty())
         && !busy
     {
-        app::explain(tab, s, &sql, analyze);
+        request_run(tab, s, sql, Some(analyze));
     }
+    params_prompt(ui.ctx(), tab, s);
     if let Some((format, _)) = export {
         app::start_export(tab, s, format, false);
     }
@@ -448,6 +521,108 @@ fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         return;
     }
     result_area(ui, tab, cx, false);
+}
+
+/// Runs (or explains, with `Some(analyze)`) editor SQL, asking for `:parameters` first.
+fn request_run(tab: &mut Tab, s: &Session, sql: String, explain: Option<bool>) {
+    let names = sql::param_names(&sql);
+    if names.is_empty() {
+        run_now(tab, s, sql, explain);
+    } else {
+        tab.params = Some(app::ParamPrompt {
+            sql,
+            names,
+            explain,
+            focused: false,
+        });
+    }
+}
+
+fn run_now(tab: &mut Tab, s: &Session, sql: String, explain: Option<bool>) {
+    if let Some(analyze) = explain {
+        app::explain(tab, s, &sql, analyze);
+        return;
+    }
+    let risk = sql::script_risk(&sql);
+    if s.cfg.read_only && risk.writes {
+        tab.error =
+            Some("Conexão somente leitura: só consultas (SELECT, SHOW, EXPLAIN…) podem rodar.".into());
+    } else if !risk.dangers.is_empty() {
+        tab.confirm_run = Some(sql);
+    } else {
+        app::run_sql(tab, s, sql);
+    }
+}
+
+/// "Parâmetros": one field per `:name`, remembered per tab for the next run.
+fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
+    let Some(p) = &mut tab.params else { return };
+    let t = theme::tokens();
+    let (mut go, mut cancel) = (false, false);
+    let modal = egui::Modal::new(egui::Id::new(("params", tab.id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::BRACKETS_CURLY).size(16.0).color(t.lime));
+                ui.label(egui::RichText::new("Parâmetros").size(15.0).color(t.foreground));
+            });
+            ui.label(
+                egui::RichText::new("Números e NULL entram como estão; o resto vira texto entre aspas.")
+                    .size(11.0)
+                    .color(t.subtle),
+            );
+            ui.add_space(8.0);
+            egui::Grid::new(("params_grid", tab.id))
+                .num_columns(2)
+                .spacing([12.0, 8.0])
+                .show(ui, |ui| {
+                    for (i, name) in p.names.iter().enumerate() {
+                        ui.label(
+                            egui::RichText::new(format!(":{name}"))
+                                .monospace()
+                                .color(t.number),
+                        );
+                        let v = tab.param_values.entry(name.clone()).or_default();
+                        let r = ui.add(
+                            TextEdit::singleline(v)
+                                .font(egui::FontId::monospace(12.5))
+                                .desired_width(260.0),
+                        );
+                        if i == 0 && !p.focused {
+                            r.request_focus();
+                            p.focused = true;
+                        }
+                        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && i + 1 == p.names.len()
+                        {
+                            go = true;
+                        }
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(16.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let label = if p.explain.is_some() {
+                    "Explicar"
+                } else {
+                    "Executar"
+                };
+                if ui.add(theme::primary_button(Some(icon::PLAY), label)).clicked() {
+                    go = true;
+                }
+                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if go {
+        let p = tab.params.take().expect("open prompt");
+        let values = &tab.param_values;
+        let sql = sql::bind_params(s.cfg.kind, &p.sql, |n| values.get(n).cloned().unwrap_or_default());
+        run_now(tab, s, sql, p.explain);
+    } else if cancel || modal.should_close() {
+        tab.params = None;
+    }
 }
 
 /// Formats the selected chars of `text` (or all of it) as SQL.
@@ -1091,6 +1266,7 @@ fn summary(res: &QueryResult) -> String {
 
 fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     let s = cx.s;
+    stats_dialog(ui.ctx(), tab, s);
     let t = theme::tokens();
     if let Some(e) = &tab.error {
         error_banner(ui, e);
@@ -1253,6 +1429,146 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
             cx.request = Some(Request::OpenFiltered(schema, table, filter));
         }
         None => {}
+    }
+}
+
+/// "Estatísticas da coluna": fill rate, distinct values, range and the most common values, each
+/// one a click away from becoming a filter (table tabs).
+fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
+    let Some(view) = &tab.col_stats else { return };
+    let t = theme::tokens();
+    let can_filter = matches!(tab.kind, TabKind::Table(_));
+    let mut close = false;
+    let mut filter: Option<Option<String>> = None;
+    let modal = egui::Modal::new(egui::Id::new(("col_stats", tab.id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::CHART_BAR).size(16.0).color(t.lime));
+                ui.label(egui::RichText::new(&view.column).size(15.0).color(t.foreground));
+                ui.label(egui::RichText::new(&view.scope).size(11.0).color(t.subtle));
+            });
+            ui.add_space(8.0);
+            match &view.data {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new("Contando…").color(t.muted_foreground));
+                    });
+                }
+                Some(Err(e)) => {
+                    ui.label(egui::RichText::new(e).color(t.destructive));
+                }
+                Some(Ok(st)) => {
+                    let pct = |n: i64| {
+                        if st.total > 0 {
+                            format!("{:.1}%", n as f64 * 100.0 / st.total as f64).replace('.', ",")
+                        } else {
+                            "–".into()
+                        }
+                    };
+                    egui::Grid::new(("col_stats_grid", tab.id))
+                        .num_columns(2)
+                        .spacing([16.0, 4.0])
+                        .show(ui, |ui| {
+                            let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                                ui.label(egui::RichText::new(k).color(t.muted_foreground));
+                                ui.label(egui::RichText::new(v).monospace().color(t.foreground));
+                                ui.end_row();
+                            };
+                            row(ui, "Linhas", palette::format_count(st.total));
+                            row(
+                                ui,
+                                "Nulos",
+                                format!("{} · {}", palette::format_count(st.nulls), pct(st.nulls)),
+                            );
+                            row(ui, "Distintos", palette::format_count(st.distinct));
+                            if let Some(v) = &st.min {
+                                row(ui, "Mínimo", v.clone());
+                            }
+                            if let Some(v) = &st.max {
+                                row(ui, "Máximo", v.clone());
+                            }
+                        });
+                    ui.add_space(12.0);
+                    ui.label(
+                        egui::RichText::new("VALORES MAIS COMUNS")
+                            .size(11.0)
+                            .color(t.subtle),
+                    );
+                    ui.add_space(4.0);
+                    let most = st.top.first().map_or(1, |(_, n)| (*n).max(1));
+                    for (v, n) in &st.top {
+                        let r = ui
+                            .horizontal(|ui| {
+                                let (rect, _) =
+                                    ui.allocate_exact_size(egui::vec2(220.0, 20.0), egui::Sense::hover());
+                                // Bar behind the value, relative to the most common one.
+                                let mut bar = rect;
+                                bar.set_width(rect.width() * (*n as f32 / most as f32));
+                                ui.painter()
+                                    .rect_filled(bar, 0.0, theme::mix(t.lime, 0.14, t.background));
+                                let (text, color) = match v {
+                                    Some(v) => (v.clone(), t.foreground),
+                                    None => ("NULL".into(), t.subtle),
+                                };
+                                let galley = ui.painter().layout(
+                                    text,
+                                    egui::FontId::monospace(12.0),
+                                    color,
+                                    rect.width() - 8.0,
+                                );
+                                let pos =
+                                    egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0);
+                                ui.painter().with_clip_rect(rect).galley(pos, galley, color);
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} · {}",
+                                        palette::format_count(*n),
+                                        pct(*n)
+                                    ))
+                                    .monospace()
+                                    .size(12.0)
+                                    .color(t.muted_foreground),
+                                );
+                                if can_filter
+                                    && ui
+                                        .add(
+                                            egui::Button::new(
+                                                theme::icon(icon::FUNNEL).color(t.muted_foreground),
+                                            )
+                                            .frame(false),
+                                        )
+                                        .on_hover_text("Filtrar a tabela por este valor")
+                                        .clicked()
+                                {
+                                    filter = Some(v.clone());
+                                }
+                            })
+                            .response;
+                        if let Some(v) = v {
+                            r.on_hover_text(v);
+                        }
+                    }
+                    if st.top.is_empty() {
+                        ui.label(egui::RichText::new("Nenhuma linha").color(t.subtle));
+                    }
+                }
+            }
+            ui.add_space(16.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(theme::outline_button("Fechar")).clicked() {
+                    close = true;
+                }
+            });
+        });
+    let column = view.column.clone();
+    if let Some(v) = filter {
+        tab.col_stats = None;
+        app::filter_by_value(tab, s, &column, v.as_deref());
+    } else if close || modal.should_close() {
+        tab.col_stats = None;
     }
 }
 

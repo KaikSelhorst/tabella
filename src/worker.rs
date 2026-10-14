@@ -9,7 +9,7 @@ use crate::error::{DbError, DbResult};
 use crate::export::{Format, Writer};
 use crate::import::ImportSpec;
 use crate::plan::Plan;
-use crate::sql::{PageQuery, Stmt, select_range};
+use crate::sql::{self, PageQuery, Stmt, select_range};
 use crate::tunnel::Tunnel;
 
 pub enum Job {
@@ -71,6 +71,28 @@ pub enum Job {
         tab: u64,
         spec: ExportSpec,
     },
+    /// The two queries of `sql::column_stats`.
+    ColumnStats {
+        tab: u64,
+        summary: String,
+        top: String,
+    },
+    /// "Commit manual": writes open a transaction that only ends with `EndTx`.
+    SetManual(bool),
+    EndTx {
+        commit: bool,
+    },
+}
+
+/// Transaction state of the connection, reported with `Reply::Tx` whenever it changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TxState {
+    pub manual: bool,
+    pub open: bool,
+    /// Writing statements run since the transaction opened.
+    pub writes: u32,
+    /// A statement failed inside it (Postgres then refuses anything but ROLLBACK).
+    pub failed: bool,
 }
 
 /// Rows per query when exporting a whole table.
@@ -145,6 +167,22 @@ pub enum Reply {
         tab: u64,
         res: DbResult<(PathBuf, u64)>,
     },
+    ColumnStats {
+        tab: u64,
+        res: DbResult<(QueryResult, QueryResult)>,
+    },
+    Tx(TxState),
+    /// Outcome of `Job::EndTx`.
+    TxEnded {
+        commit: bool,
+        res: DbResult<()>,
+    },
+}
+
+fn send_tx(send: &impl Fn(Reply), before: TxState, now: TxState) {
+    if before != now {
+        send(Reply::Tx(now));
+    }
 }
 
 /// Spawns a thread that owns the connection. Dropping the returned sender closes it once the
@@ -175,13 +213,98 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
             conn.tables().map(|tables| Connected { tables, canceller }),
         ));
         send(Reply::AllColumns(conn.all_columns()));
+        let mut tx = TxState {
+            manual: cfg.manual_commit,
+            ..Default::default()
+        };
         while let Ok(job) = job_rx.recv() {
-            send(match job {
-                Job::Query { tab, sql } => Reply::Rows {
+            let before = tx;
+            let pg = cfg.kind == crate::db::Kind::Postgres;
+            // In manual mode, the first write opens the transaction.
+            let open_for_write = |conn: &mut Conn, tx: &mut TxState| -> DbResult<()> {
+                if tx.manual && !tx.open {
+                    conn.begin()?;
+                    tx.open = true;
+                }
+                Ok(())
+            };
+            // Bookkeeping after a user statement ran inside the transaction.
+            let note = |tx: &mut TxState, ok: bool, writes: u32| {
+                if tx.open {
+                    if ok {
+                        tx.writes += writes;
+                    } else if pg {
+                        tx.failed = true;
+                    }
+                }
+            };
+            let reply = match job {
+                Job::Query { tab, sql } => {
+                    let control = sql::tx_control(&sql);
+                    let writes = control.is_none() && sql::script_risk(&sql).writes;
+                    let res = if writes {
+                        open_for_write(&mut conn, &mut tx).and_then(|()| conn.query(&sql))
+                    } else {
+                        conn.query(&sql)
+                    };
+                    let implicit_commit = !pg && res.is_ok() && sql::mysql_implicit_commit(&sql);
+                    match control {
+                        // MySQL committed everything before running DDL.
+                        None if implicit_commit => {
+                            tx = TxState {
+                                manual: tx.manual,
+                                ..Default::default()
+                            }
+                        }
+                        // The user ended or started it by hand.
+                        Some(c) if res.is_ok() => {
+                            tx = TxState {
+                                manual: tx.manual,
+                                open: c == sql::TxControl::Begin,
+                                ..Default::default()
+                            }
+                        }
+                        _ => note(
+                            &mut tx,
+                            res.is_ok(),
+                            if writes {
+                                sql::statement_ranges(&sql, false).len() as u32
+                            } else {
+                                0
+                            },
+                        ),
+                    }
+                    Reply::Rows {
+                        tab,
+                        res: Box::new(res),
+                        notice: None,
+                    }
+                }
+                Job::ColumnStats { tab, summary, top } => Reply::ColumnStats {
                     tab,
-                    res: Box::new(conn.query(&sql)),
-                    notice: None,
+                    res: conn.query(&summary).and_then(|a| Ok((a, conn.query(&top)?))),
                 },
+                Job::SetManual(on) => {
+                    tx.manual = on;
+                    send_tx(&send, before, tx);
+                    continue;
+                }
+                Job::EndTx { commit } => {
+                    let res = if commit && tx.failed {
+                        let _ = conn.query("ROLLBACK");
+                        Err(DbError::Other(
+                            "um comando da transação falhou, então ela foi desfeita: nada foi confirmado"
+                                .into(),
+                        ))
+                    } else {
+                        conn.query(if commit { "COMMIT" } else { "ROLLBACK" }).map(|_| ())
+                    };
+                    tx = TxState {
+                        manual: tx.manual,
+                        ..Default::default()
+                    };
+                    Reply::TxEnded { commit, res }
+                }
                 Job::Exec {
                     tab,
                     stmt,
@@ -189,7 +312,9 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     expect_one,
                 } => {
                     let mut notice = None;
-                    let res = conn.execute(&stmt).and_then(|done| {
+                    let ran = open_for_write(&mut conn, &mut tx).and_then(|()| conn.execute(&stmt));
+                    note(&mut tx, ran.is_ok(), 1);
+                    let res = ran.and_then(|done| {
                         if expect_one && done.affected == Some(0) {
                             notice = Some(
                                 "Nenhuma linha foi alterada: ela mudou ou foi excluída em outra sessão. \
@@ -218,10 +343,18 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     send(Reply::AllColumns(conn.all_columns()));
                     Reply::Tables(tables)
                 }
-                Job::Batch { tab, stmts, refresh } => Reply::Saved {
-                    tab,
-                    res: Box::new(conn.run_batch(&stmts).and_then(|()| conn.query(&refresh))),
-                },
+                Job::Batch { tab, stmts, refresh } => {
+                    let res =
+                        open_for_write(&mut conn, &mut tx).and_then(|()| conn.run_batch(&stmts, tx.open));
+                    // A failed batch is rolled back to its savepoint: the transaction stays usable.
+                    if res.is_ok() {
+                        note(&mut tx, true, stmts.len() as u32);
+                    }
+                    Reply::Saved {
+                        tab,
+                        res: Box::new(res.and_then(|()| conn.query(&refresh))),
+                    }
+                }
                 Job::Activity { tab } => Reply::Rows {
                     tab,
                     res: Box::new(conn.activity()),
@@ -236,10 +369,14 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                         notice,
                     }
                 }
-                Job::Import { tab, spec } => Reply::Imported {
-                    tab,
-                    res: crate::import::run(&mut conn, &spec),
-                },
+                Job::Import { tab, spec } => {
+                    let res = open_for_write(&mut conn, &mut tx)
+                        .and_then(|()| crate::import::run(&mut conn, &spec, tx.open));
+                    if let Ok(n) = &res {
+                        note(&mut tx, true, *n as u32);
+                    }
+                    Reply::Imported { tab, res }
+                }
                 Job::Explain { tab, sql, analyze } => Reply::Plan {
                     tab,
                     res: conn.explain(&sql, analyze),
@@ -252,7 +389,9 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     tab,
                     res: export(&mut conn, spec),
                 },
-            });
+            };
+            send(reply);
+            send_tx(&send, before, tx);
         }
     });
     (job_tx, reply_rx)
@@ -378,6 +517,140 @@ mod tests {
         let r = c.query("SELECT v FROM dbl_export WHERE id = 20000").unwrap();
         assert_eq!(r.rows[0][0].as_deref(), Some("it's"));
         c.query("DROP TABLE dbl_export").unwrap();
+    }
+
+    /// Manual commit through the worker: writes stay invisible to other sessions until
+    /// confirmed, undo reverts SQL and grid edits alike, and a failed grid batch doesn't spoil
+    /// the transaction.
+    fn manual_commit(kind: Kind, port: u16, db: &str) {
+        use std::time::Duration;
+        let mut cfg = ConnConfig::new(kind);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = port;
+        cfg.password = "pw".into();
+        cfg.database = db.into();
+        let mut other = Conn::connect(&cfg, None).expect("connect");
+        other.query("DROP TABLE IF EXISTS dbl_tx").unwrap();
+        other
+            .query("CREATE TABLE dbl_tx (id INT PRIMARY KEY, v VARCHAR(20))")
+            .unwrap();
+        other.query("INSERT INTO dbl_tx VALUES (1, 'a')").unwrap();
+        let seen = |other: &mut Conn| {
+            other.query("SELECT v FROM dbl_tx WHERE id = 1").unwrap().rows[0][0]
+                .clone()
+                .unwrap()
+        };
+
+        cfg.manual_commit = true;
+        let (jobs, replies) = spawn(cfg, eframe::egui::Context::default());
+        // Next reply that `f` picks out, skipping the rest.
+        let wait = |f: &dyn Fn(Reply) -> Option<String>| -> String {
+            loop {
+                let r = replies
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("worker reply");
+                if let Some(v) = f(r) {
+                    return v;
+                }
+            }
+        };
+        let tx_state = |r: Reply| match r {
+            Reply::Tx(t) => Some(format!("{}:{}:{}", t.open, t.writes, t.failed)),
+            _ => None,
+        };
+        let saved = |r: Reply| match r {
+            Reply::Saved { res, .. } => Some(match *res {
+                Ok(_) => "ok".to_string(),
+                Err(e) => e.to_string(),
+            }),
+            _ => None,
+        };
+        let ended = |r: Reply| match r {
+            Reply::TxEnded { res, .. } => {
+                Some(res.map(|()| "ok".to_string()).unwrap_or_else(|e| e.to_string()))
+            }
+            _ => None,
+        };
+        let set = |v: &str, id: &str| {
+            Stmt::new("UPDATE dbl_tx SET v = ")
+                .value(Some(v))
+                .sql(" WHERE id = ")
+                .value(Some(id))
+        };
+
+        jobs.send(Job::Query {
+            tab: 1,
+            sql: "SELECT 1".into(),
+        })
+        .unwrap();
+        jobs.send(Job::Query {
+            tab: 1,
+            sql: "UPDATE dbl_tx SET v = 'b' WHERE id = 1".into(),
+        })
+        .unwrap();
+        assert_eq!(wait(&tx_state), "true:1:false", "{kind:?}: a write opens it");
+        assert_eq!(seen(&mut other), "a", "{kind:?}: not visible before commit");
+        jobs.send(Job::Batch {
+            tab: 1,
+            stmts: vec![set("c", "1")],
+            refresh: "SELECT 1".into(),
+        })
+        .unwrap();
+        assert_eq!(wait(&saved), "ok");
+        jobs.send(Job::Batch {
+            tab: 1,
+            stmts: vec![set("x", "999")],
+            refresh: "SELECT 1".into(),
+        })
+        .unwrap();
+        assert!(wait(&saved).contains("Nada foi salvo"));
+        jobs.send(Job::EndTx { commit: false }).unwrap();
+        assert_eq!(wait(&ended), "ok", "{kind:?}");
+        assert_eq!(seen(&mut other), "a", "{kind:?}: undo reverts SQL and grid edits");
+
+        jobs.send(Job::Query {
+            tab: 1,
+            sql: "UPDATE dbl_tx SET v = 'd' WHERE id = 1".into(),
+        })
+        .unwrap();
+        jobs.send(Job::EndTx { commit: true }).unwrap();
+        assert_eq!(wait(&ended), "ok");
+        assert_eq!(seen(&mut other), "d", "{kind:?}: committed");
+
+        if kind == Kind::Postgres {
+            // After an error Postgres only accepts ROLLBACK: "Confirmar" says so instead of
+            // pretending it worked.
+            assert_eq!(wait(&tx_state), "false:0:false", "closed after the commit");
+            jobs.send(Job::Query {
+                tab: 1,
+                sql: "UPDATE dbl_tx SET v = 'e' WHERE id = 1".into(),
+            })
+            .unwrap();
+            jobs.send(Job::Query {
+                tab: 1,
+                sql: "UPDATE dbl_tx SET nope = 1".into(),
+            })
+            .unwrap();
+            assert_eq!(wait(&tx_state), "true:1:false");
+            assert_eq!(wait(&tx_state), "true:1:true");
+            jobs.send(Job::EndTx { commit: true }).unwrap();
+            assert!(wait(&ended).contains("desfeita"));
+            assert_eq!(seen(&mut other), "d");
+        }
+        drop(jobs);
+        other.query("DROP TABLE dbl_tx").unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn manual_commit_postgres() {
+        manual_commit(Kind::Postgres, 55432, "postgres");
+    }
+
+    #[test]
+    #[ignore]
+    fn manual_commit_mysql() {
+        manual_commit(Kind::MySql, 53306, "test");
     }
 
     #[test]

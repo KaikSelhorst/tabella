@@ -1,5 +1,6 @@
 mod complete;
 mod detail;
+mod find;
 mod form;
 mod grid;
 mod import_form;
@@ -77,6 +78,8 @@ impl eframe::App for App {
                 .show_separator_line(false)
                 .show(ui, |_| {});
         }
+        self.tx_band(ui);
+        self.quit_guard(ui.ctx());
         egui::Panel::left("side")
             .frame(
                 egui::Frame::new()
@@ -100,6 +103,119 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// "Transação aberta" across the window while a manual transaction has uncommitted work.
+    fn tx_band(&mut self, ui: &mut egui::Ui) {
+        let Some(txn) = self.session.as_ref().map(|s| s.txn).filter(|t| t.open) else {
+            return;
+        };
+        let t = theme::tokens();
+        let accent = if txn.failed { t.destructive } else { t.warning };
+        let mut end = None;
+        egui::Panel::top("tx_band")
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::mix(accent, 0.16, t.background))
+                    .inner_margin(egui::Margin::symmetric(12, 4)),
+            )
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(theme::icon(icon::WARNING).color(accent));
+                    let text = if txn.failed {
+                        "Transação aberta com erro: um comando falhou, só é possível desfazer".to_string()
+                    } else if txn.writes == 0 {
+                        "Transação aberta: nada foi gravado ainda".to_string()
+                    } else {
+                        format!(
+                            "Transação aberta · {} comando(s) de escrita ainda não confirmados",
+                            txn.writes
+                        )
+                    };
+                    ui.label(egui::RichText::new(text).color(t.foreground));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(!txn.failed, theme::primary_button(Some(icon::CHECK), "Confirmar"))
+                            .on_hover_text("COMMIT: grava tudo")
+                            .clicked()
+                        {
+                            end = Some(true);
+                        }
+                        if ui
+                            .add(theme::outline_button("Desfazer"))
+                            .on_hover_text("ROLLBACK: descarta tudo desde o início da transação")
+                            .clicked()
+                        {
+                            end = Some(false);
+                        }
+                    });
+                });
+            });
+        if let Some(commit) = end {
+            self.end_tx(commit);
+        }
+    }
+
+    /// Closing the window would silently roll back an open transaction: ask first.
+    fn quit_guard(&mut self, ctx: &egui::Context) {
+        let open = self.session.as_ref().is_some_and(|s| s.txn.open);
+        if open && !self.quit_after_tx && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.quit_prompt = true;
+        }
+        if !self.quit_prompt {
+            return;
+        }
+        let t = theme::tokens();
+        let mut choice = None;
+        let modal = egui::Modal::new(egui::Id::new("quit_tx"))
+            .frame(theme::modal_frame(16))
+            .show(ctx, |ui| {
+                ui.set_width(420.0);
+                ui.horizontal(|ui| {
+                    ui.label(theme::icon(icon::WARNING).size(16.0).color(t.warning));
+                    ui.label(
+                        egui::RichText::new("Transação aberta")
+                            .size(15.0)
+                            .color(t.foreground),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Há alterações não confirmadas. Fechar sem decidir desfaz todas elas.",
+                    )
+                    .color(t.muted_foreground),
+                );
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(theme::primary_button(Some(icon::CHECK), "Confirmar e sair"))
+                        .clicked()
+                    {
+                        choice = Some(Some(true));
+                    }
+                    if ui.add(theme::outline_button("Desfazer e sair")).clicked() {
+                        choice = Some(Some(false));
+                    }
+                    if ui.add(theme::outline_button("Voltar")).clicked() {
+                        choice = Some(None);
+                    }
+                });
+            });
+        if modal.should_close() && choice.is_none() {
+            choice = Some(None);
+        }
+        match choice {
+            Some(Some(commit)) => {
+                self.quit_prompt = false;
+                self.quit_after_tx = true;
+                self.end_tx(commit);
+            }
+            Some(None) => self.quit_prompt = false,
+            None => {}
+        }
+    }
+
     /// App-wide keys. Consumed here so text fields don't also react to them.
     fn shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
@@ -490,6 +606,110 @@ mod screenshots {
             tab.sets.clear();
             if let TabKind::Sql { text } = &mut tab.kind {
                 *text = old;
+            }
+        }
+
+        // Open manual transaction + column statistics over the table tab.
+        {
+            let state = harness.state_mut();
+            state.active = 0;
+            state.session.as_mut().unwrap().txn = crate::worker::TxState {
+                manual: true,
+                open: true,
+                writes: 3,
+                failed: false,
+            };
+            state.tabs[0].col_stats = Some(crate::app::StatsView {
+                column: "cidade".into(),
+                scope: "tabela inteira".into(),
+                data: Some(Ok(crate::values::ColumnStats {
+                    total: 1_000_000,
+                    nulls: 0,
+                    distinct: 10,
+                    min: None,
+                    max: None,
+                    top: [
+                        "São Paulo",
+                        "Rio de Janeiro",
+                        "Belo Horizonte",
+                        "Curitiba",
+                        "Recife",
+                    ]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (Some(c.to_string()), 100_000 - i as i64 * 7_000))
+                    .collect(),
+                })),
+            });
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/tx-stats.png"))
+                .unwrap();
+            let state = harness.state_mut();
+            state.tabs[0].col_stats = None;
+            state.session.as_mut().unwrap().txn = Default::default();
+        }
+
+        // Editor: find bar, then the parameters prompt, then a JSON value in the detail panel.
+        {
+            let state = harness.state_mut();
+            state.active = 1;
+            if let TabKind::Sql { text } = &mut state.tabs[1].kind {
+                *text = "SELECT *\nFROM clientes\nWHERE id = :id\n  AND cidade = :cidade\n  AND id IN (SELECT cliente_id FROM pedidos);".into();
+            }
+            let saved = state.tabs[1].result.take();
+            state.tabs[1].result = Some(QueryResult {
+                columns: vec!["id".into(), "payload".into()],
+                rows: vec![vec![
+                    Some("7".into()),
+                    Some(r#"{"pagina": "/produto/42", "navegador": "firefox", "itens": [{"sku": "A-1", "preco": 19.9}, {"sku": "B-2", "preco": 5}], "cupom": null, "novo": true}"#.into()),
+                ]],
+                ..Default::default()
+            });
+            state.tabs[1].selected = Some((0, 1));
+            harness.ctx.data_mut(|d| {
+                d.insert_temp(
+                    egui::Id::new(("find", 2u64)),
+                    super::find::FindState {
+                        query: "id".into(),
+                        current: 1,
+                        show_replace: true,
+                        ..Default::default()
+                    },
+                )
+            });
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/find-json.png"))
+                .unwrap();
+            harness
+                .ctx
+                .data_mut(|d| d.remove::<super::find::FindState>(egui::Id::new(("find", 2u64))));
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.param_values.insert("id".into(), "42".into());
+            tab.params = Some(crate::app::ParamPrompt {
+                sql: String::new(),
+                names: vec!["id".into(), "cidade".into()],
+                explain: None,
+                focused: true,
+            });
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/params.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.params = None;
+            tab.result = saved;
+            tab.selected = None;
+            if let TabKind::Sql { text } = &mut tab.kind {
+                *text =
+                    "SELECT id, nome, saldo\nFROM public.clientes\nWHERE ativo\nORDER BY saldo DESC;".into();
             }
         }
 

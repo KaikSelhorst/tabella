@@ -1,7 +1,10 @@
 //! Right-hand panel showing the selected row as a vertical form: easier to read and edit
 //! than a wide grid.
 
+use std::sync::Arc;
+
 use eframe::egui::{self, FontId, RichText, TextEdit};
+use serde_json::Value;
 
 use super::grid::display_value;
 use super::{icon, theme};
@@ -28,6 +31,117 @@ pub struct DetailRow<'a> {
     /// 1-based position in the whole table (page offset included), for the title.
     pub row_number: usize,
     pub can_edit: bool,
+}
+
+/// Children shown per object/array before "… mais N".
+const JSON_CHILDREN: usize = 200;
+
+/// The value parsed as JSON when it is an object or array; cached, since this runs every frame.
+/// One entry per panel field (`slot`), replaced when the value changes, so browsing many rows
+/// doesn't pile up parsed documents.
+fn parsed_json(ctx: &egui::Context, slot: egui::Id, v: &str) -> Option<Arc<Value>> {
+    let s = v.trim_start();
+    if !(s.starts_with('{') || s.starts_with('[')) {
+        return None;
+    }
+    let hash = egui::Id::new(v);
+    if let Some((h, cached)) = ctx.data(|d| d.get_temp::<(egui::Id, Option<Arc<Value>>)>(slot))
+        && h == hash
+    {
+        return cached;
+    }
+    let parsed = serde_json::from_str::<Value>(v).ok().map(Arc::new);
+    ctx.data_mut(|d| d.insert_temp(slot, (hash, parsed.clone())));
+    parsed
+}
+
+/// Collapsible tree: objects and arrays fold, leaves are colored by type. Right-click copies a
+/// value or its path (`$.itens[2].preco`).
+fn json_tree(ui: &mut egui::Ui, id: egui::Id, key: Option<&str>, path: &str, v: &Value, depth: usize) {
+    let t = theme::tokens();
+    let key_text = |k: &str| RichText::new(k).monospace().size(12.0).color(t.muted_foreground);
+    match v {
+        Value::Object(_) | Value::Array(_) => {
+            let (open, close, n) = match v {
+                Value::Object(m) => ("{", "}", m.len()),
+                Value::Array(a) => ("[", "]", a.len()),
+                _ => unreachable!(),
+            };
+            let summary = format!("{open} {n} {close}");
+            let header = match key {
+                Some(k) => format!("{k}  {summary}"),
+                None => summary,
+            };
+            let r =
+                egui::CollapsingHeader::new(RichText::new(header).monospace().size(12.0).color(t.foreground))
+                    .id_salt(id)
+                    .default_open(depth < 2)
+                    .show(ui, |ui| {
+                        let children: Box<dyn Iterator<Item = (String, String, &Value)>> = match v {
+                            Value::Object(m) => Box::new(m.iter().map(|(k, c)| {
+                                let p = if k.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
+                                    format!("{path}.{k}")
+                                } else {
+                                    format!("{path}[{}]", serde_json::to_string(k).unwrap_or_default())
+                                };
+                                (k.clone(), p, c)
+                            })),
+                            Value::Array(a) => Box::new(
+                                a.iter()
+                                    .enumerate()
+                                    .map(|(i, c)| (i.to_string(), format!("{path}[{i}]"), c)),
+                            ),
+                            _ => unreachable!(),
+                        };
+                        for (shown, (k, p, c)) in children.enumerate() {
+                            if shown == JSON_CHILDREN {
+                                ui.label(
+                                    RichText::new(format!("… mais {}", n - shown))
+                                        .size(11.0)
+                                        .color(t.subtle),
+                                );
+                                break;
+                            }
+                            json_tree(ui, id.with(&k), Some(&k), &p, c, depth + 1);
+                        }
+                    });
+            r.header_response.context_menu(|ui| copy_menu(ui, path, v));
+        }
+        leaf => {
+            let (text, color) = match leaf {
+                Value::String(s) => (serde_json::to_string(s).unwrap_or_default(), t.foreground),
+                Value::Number(n) => (n.to_string(), t.number),
+                Value::Bool(b) => (b.to_string(), t.boolean),
+                _ => ("null".to_string(), t.subtle),
+            };
+            let r = ui
+                .horizontal_wrapped(|ui| {
+                    // Lines up with folded siblings, whose arrow takes this space.
+                    ui.add_space(ui.spacing().indent);
+                    if let Some(k) = key {
+                        ui.label(key_text(&format!("{k}:")));
+                    }
+                    ui.add(egui::Label::new(RichText::new(text).monospace().size(12.0).color(color)).wrap())
+                })
+                .inner;
+            r.context_menu(|ui| copy_menu(ui, path, leaf));
+        }
+    }
+}
+
+fn copy_menu(ui: &mut egui::Ui, path: &str, v: &Value) {
+    if ui.button("Copiar valor").clicked() {
+        let text = match v {
+            Value::String(s) => s.clone(),
+            other => serde_json::to_string_pretty(other).unwrap_or_default(),
+        };
+        ui.ctx().copy_text(text);
+        ui.close();
+    }
+    if ui.button(format!("Copiar caminho  {path}")).clicked() {
+        ui.ctx().copy_text(path.to_string());
+        ui.close();
+    }
 }
 
 pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
@@ -72,6 +186,11 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
             for (ci, name) in res.columns.iter().enumerate() {
                 let value = &res.rows[row][ci];
                 let c = info[ci];
+                // JSON objects and arrays can be read as a tree (the default) or as text.
+                let slot = egui::Id::new(("json_parsed", tab_id, ci));
+                let json = value.as_deref().and_then(|v| parsed_json(ui.ctx(), slot, v));
+                let tree_id = egui::Id::new(("json_tree", tab_id, ci));
+                let as_text = ui.data(|d| d.get_temp::<bool>(tree_id)).unwrap_or(false);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if c.is_some_and(|c| c.pk) {
@@ -88,11 +207,34 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                                 action = Some(DetailAction::Commit(ci, None));
                             }
                         }
+                        if json.is_some() {
+                            let (glyph, tip) = if as_text {
+                                (icon::TREE_VIEW, "Ver como árvore")
+                            } else {
+                                (icon::TEXT_T, "Ver como texto (para editar)")
+                            };
+                            let b =
+                                egui::Button::new(theme::icon(glyph).size(11.0).color(t.muted_foreground))
+                                    .frame(false);
+                            if ui.add(b).on_hover_text(tip).clicked() {
+                                ui.data_mut(|d| d.insert_temp(tree_id, !as_text));
+                            }
+                        }
                         if let Some(c) = c {
                             ui.label(RichText::new(&c.data_type).size(10.0).color(t.subtle));
                         }
                     });
                 });
+                if let Some(v) = json.filter(|_| !as_text) {
+                    egui::Frame::new()
+                        .fill(t.sidebar)
+                        .inner_margin(egui::Margin::symmetric(6, 4))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            json_tree(ui, egui::Id::new(("json", tab_id, row, ci)), None, "$", &v, 0);
+                        });
+                    continue;
+                }
                 if can_edit && kinds[ci] == ValueKind::Bool {
                     // Segmented true | false | NULL (NULL only when the column allows it).
                     let now = value.as_deref().and_then(crate::sql::parse_bool);

@@ -334,6 +334,16 @@ pub fn grid(
                     if can_edit && r.clicked() {
                         event = Some(GridEvent::Sort(name.clone()));
                     }
+                    r.context_menu(|ui| {
+                        if ui.button("Estatísticas da coluna").clicked() {
+                            event = Some(GridEvent::ColumnStats(ci));
+                            ui.close();
+                        }
+                        if ui.button("Copiar nome").clicked() {
+                            ui.ctx().copy_text(name.clone());
+                            ui.close();
+                        }
+                    });
                 });
             }
         })

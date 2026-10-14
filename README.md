@@ -36,6 +36,14 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Importar CSV para uma tabela (botão ou arrastar o arquivo): separador e codificação detectados,
   colunas associadas pelo nome, números como `1.520,30` e `sim`/`não` convertidos, tudo numa
   transação
+- Commit manual por conexão (ou só na sessão, pelo menu "…"): alterações ficam numa transação
+  até "Confirmar" ou "Desfazer", com faixa de aviso e confirmação ao fechar a janela. Edições
+  da grade e importações usam savepoint dentro dela. No MySQL, DDL confirma sozinho
+- Parâmetros no SQL (`WHERE id = :id`): o app pede os valores antes de executar
+- Buscar e substituir no editor (`Ctrl+F` / `Ctrl+H`)
+- JSON em árvore no painel de detalhes (copia valor ou caminho, ex.: `$.itens[0].preco`)
+- Estatísticas da coluna (clique direito no cabeçalho): nulos, distintos, mín/máx e valores
+  mais comuns, com atalho para filtrar
 
 ## Segurança
 

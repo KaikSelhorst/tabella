@@ -78,6 +78,9 @@ pub struct ConnConfig {
     pub database: String,
     #[serde(default)]
     pub ssl: bool,
+    /// Writes open a transaction that the user confirms or undoes explicitly.
+    #[serde(default)]
+    pub manual_commit: bool,
     /// Skip certificate verification (self-signed servers).
     #[serde(default)]
     pub ssl_insecure: bool,
@@ -168,6 +171,7 @@ impl ConnConfig {
             },
             password: String::new(),
             database: String::new(),
+            manual_commit: false,
             ssl: false,
             ssl_insecure: false,
             read_only: false,
@@ -641,25 +645,56 @@ impl Conn {
 
     /// Runs row edits as one transaction. Every statement must touch exactly one row; if one
     /// doesn't (the row changed or vanished in another session) or fails, nothing is kept.
-    pub fn run_batch(&mut self, stmts: &[Stmt]) -> DbResult<()> {
+    pub fn run_batch(&mut self, stmts: &[Stmt], nested: bool) -> DbResult<()> {
+        self.atomically(nested, |c| {
+            for (i, stmt) in stmts.iter().enumerate() {
+                match c.execute(stmt) {
+                    Ok(r) if r.affected == Some(1) => {}
+                    Ok(_) => {
+                        return Err(DbError::Other(format!(
+                            "A alteração {} não encontrou a linha (ela mudou ou foi excluída em outra sessão). Nada foi salvo.",
+                            i + 1
+                        )));
+                    }
+                    Err(e) => return Err(DbError::Other(format!("Alteração {}: {e}. Nada foi salvo.", i + 1))),
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Runs `f` all or nothing. Inside a transaction the user opened (`nested`), a savepoint
+    /// does that job, so a failure undoes only `f`'s work and the user's transaction goes on.
+    pub fn atomically<T>(&mut self, nested: bool, f: impl FnOnce(&mut Conn) -> DbResult<T>) -> DbResult<T> {
+        let (begin, commit, rollback) = match (nested, self.kind()) {
+            (true, _) => (
+                "SAVEPOINT dblite_batch",
+                "RELEASE SAVEPOINT dblite_batch",
+                "ROLLBACK TO SAVEPOINT dblite_batch",
+            ),
+            (false, Kind::Postgres) => ("BEGIN", "COMMIT", "ROLLBACK"),
+            (false, Kind::MySql) => ("START TRANSACTION", "COMMIT", "ROLLBACK"),
+        };
+        self.query(begin)?;
+        match f(self) {
+            Ok(v) => {
+                self.query(commit)?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.query(rollback);
+                Err(e)
+            }
+        }
+    }
+
+    /// Opens a transaction for the "commit manual" mode.
+    pub fn begin(&mut self) -> DbResult<()> {
         self.query(match self.kind() {
             Kind::Postgres => "BEGIN",
             Kind::MySql => "START TRANSACTION",
-        })?;
-        for (i, stmt) in stmts.iter().enumerate() {
-            let problem = match self.execute(stmt) {
-                Ok(r) if r.affected == Some(1) => continue,
-                Ok(_) => DbError::Other(format!(
-                    "A alteração {} não encontrou a linha (ela mudou ou foi excluída em outra sessão). Nada foi salvo.",
-                    i + 1
-                )),
-                Err(e) => DbError::Other(format!("Alteração {}: {e}. Nada foi salvo.", i + 1)),
-            };
-            let _ = self.query("ROLLBACK");
-            return Err(problem);
-        }
-        self.query("COMMIT")?;
-        Ok(())
+        })
+        .map(|_| ())
     }
 
     pub fn structure(&mut self, schema: &str, table: &str) -> DbResult<TableStructure> {
@@ -1201,7 +1236,8 @@ mod tests {
                 crate::sql::pk_where(kind, &["id".to_string()], &["id".to_string()], &[Some(id.into())]),
             )
         };
-        c.run_batch(&[set("1", "lote-1"), set("2", "lote-2")]).unwrap();
+        c.run_batch(&[set("1", "lote-1"), set("2", "lote-2")], false)
+            .unwrap();
         let names = c.query("SELECT name FROM dbl_t ORDER BY id").unwrap();
         assert_eq!(
             names
@@ -1212,7 +1248,7 @@ mod tests {
             ["lote-1", "lote-2"]
         );
         let err = c
-            .run_batch(&[set("1", "nao-salvo"), set("999", "x")])
+            .run_batch(&[set("1", "nao-salvo"), set("999", "x")], false)
             .unwrap_err();
         assert!(err.to_string().contains("Nada foi salvo"), "{err}");
         let r = c.query("SELECT name FROM dbl_t WHERE id = 1").unwrap();
@@ -1234,6 +1270,26 @@ mod tests {
             "write must fail on a read-only session"
         );
         assert_eq!(c.count("SELECT COUNT(*) FROM dbl_t").unwrap(), 2);
+        // Column profile through the database, with and without min/max.
+        {
+            let schema = if kind == Kind::MySql { db } else { "public" };
+            let (sum, top) = crate::sql::column_stats(kind, schema, "dbl_t", "id", "", true);
+            let st =
+                crate::values::stats_from_queries(&c.query(&sum).unwrap(), &c.query(&top).unwrap()).unwrap();
+            assert!(
+                st.total >= 2 && st.nulls == 0 && st.distinct == st.total,
+                "{kind:?}: {st:?}"
+            );
+            assert!(st.min.is_some() && st.max.is_some());
+            let (sum, top) = crate::sql::column_stats(kind, schema, "dbl_t", "at", "id > 0", false);
+            let st =
+                crate::values::stats_from_queries(&c.query(&sum).unwrap(), &c.query(&top).unwrap()).unwrap();
+            assert!(
+                st.nulls >= 1 && st.top.iter().any(|(v, _)| v.is_none()),
+                "{kind:?}: {st:?}"
+            );
+        }
+
         // CSV import: all rows in one transaction, or none when one fails.
         {
             use crate::import::{ImportSpec, run};
@@ -1253,16 +1309,16 @@ mod tests {
                 number_cols: vec!["id".into()],
                 empty_is_null: true,
             };
-            assert_eq!(run(&mut c, &spec).unwrap(), 2, "{kind:?}");
+            assert_eq!(run(&mut c, &spec, false).unwrap(), 2, "{kind:?}");
             let r = c.query("SELECT name FROM dbl_t WHERE id = 11").unwrap();
             assert_eq!(r.rows[0][0], None, "{kind:?}: empty cell is NULL");
             std::fs::write(&path, "codigo;nome\n12;doze\n10;repetido\n").unwrap();
-            let err = run(&mut c, &spec).unwrap_err().to_string();
+            let err = run(&mut c, &spec, false).unwrap_err().to_string();
             assert!(err.contains("Nada foi importado"), "{kind:?}: {err}");
             let r = c.query("SELECT count(*) FROM dbl_t WHERE id = 12").unwrap();
             assert_eq!(r.rows[0][0].as_deref(), Some("0"), "{kind:?}: rolled back");
             spec.mapping = vec![None, None];
-            assert!(run(&mut c, &spec).is_err());
+            assert!(run(&mut c, &spec, false).is_err());
             let _ = std::fs::remove_file(path);
         }
         c.query("DROP TABLE dbl_t").unwrap();

@@ -20,7 +20,7 @@ use crate::secrets::{Derived, SecretStore};
 use crate::session::{self, SavedTab};
 use crate::sql::{self, FilterOp, PageQuery, Stmt};
 use crate::values::{self, CellRange, ValueKind};
-use crate::worker::{self, ExportSource, ExportSpec, Job, Reply};
+use crate::worker::{self, ExportSource, ExportSpec, Job, Reply, TxState};
 
 /// A message for the user, outside any tab (connection status, save problems).
 pub struct Notice {
@@ -54,6 +54,8 @@ pub struct Session {
     pub tables: Vec<TableRef>,
     /// `(table, column)` pairs for SQL autocomplete.
     pub columns: Vec<(String, String)>,
+    /// Manual-commit mode and the open transaction, as last reported by the worker.
+    pub txn: TxState,
 }
 
 impl Session {
@@ -347,6 +349,28 @@ pub struct Tab {
     pub set_shown: usize,
     /// EXPLAIN of an editor statement, shown in place of the result until closed.
     pub plan: Option<Plan>,
+    /// Values asked for `:parameters` before running.
+    pub params: Option<ParamPrompt>,
+    /// Last value typed for each parameter name.
+    pub param_values: std::collections::HashMap<String, String>,
+    pub col_stats: Option<StatsView>,
+}
+
+/// "Estatísticas da coluna" dialog.
+pub struct StatsView {
+    pub column: String,
+    /// What the numbers cover: the whole (filtered) table or just the loaded rows.
+    pub scope: String,
+    /// `None` while the database is still counting.
+    pub data: Option<Result<values::ColumnStats, String>>,
+}
+
+pub struct ParamPrompt {
+    pub sql: String,
+    pub names: Vec<String>,
+    /// `Some(analyze)` when the prompt came from "Explicar".
+    pub explain: Option<bool>,
+    pub focused: bool,
 }
 
 impl Tab {
@@ -367,6 +391,9 @@ impl Tab {
             sets: Vec::new(),
             set_shown: 0,
             plan: None,
+            params: None,
+            param_values: Default::default(),
+            col_stats: None,
         }
     }
 
@@ -477,6 +504,8 @@ pub enum GridEvent {
     },
     /// Spreadsheet text pasted at the selection: each cell becomes a pending edit.
     Paste(String),
+    /// Profile of a column: counts, distinct values, range, most common values.
+    ColumnStats(usize),
 }
 
 /// What `handle_grid_event` needs the app (or the clipboard) to do.
@@ -523,6 +552,10 @@ pub struct App {
     pub show_detail: bool,
     /// Sidebar lists tables by size (biggest first) instead of by name.
     pub sort_by_size: bool,
+    /// The window was asked to close with a transaction open: ask what to do with it.
+    pub quit_prompt: bool,
+    /// Close the window once the transaction has been ended.
+    pub quit_after_tx: bool,
     frames: u32,
     fps_since: Instant,
     pub fps: f32,
@@ -553,6 +586,8 @@ impl App {
             fav_prompt: None,
             show_detail: true,
             sort_by_size: false,
+            quit_prompt: false,
+            quit_after_tx: false,
             frames: 0,
             fps_since: Instant::now(),
             fps: 0.0,
@@ -795,7 +830,11 @@ impl App {
         let Some(cfg) = self.find_saved(id).cloned() else {
             return;
         };
-        self.disconnect();
+        // Refused with unsaved changes or an open transaction: stay on the current connection.
+        if !self.disconnect() {
+            return;
+        }
+        let cfg_manual = cfg.manual_commit;
         let (tx, rx) = worker::spawn(cfg.clone(), self.ctx.clone());
         self.notice = Notice::info(format!("Conectando a {}…", cfg.name));
         self.session = Some(Session {
@@ -806,11 +845,20 @@ impl App {
             ready: false,
             tables: vec![],
             columns: vec![],
+            txn: TxState {
+                manual: cfg_manual,
+                ..Default::default()
+            },
         });
     }
 
     /// Closes the connection. Refused (returns false) while a tab has unsaved changes.
     pub fn disconnect(&mut self) -> bool {
+        if self.session.as_ref().is_some_and(|s| s.txn.open) {
+            self.notice =
+                Notice::error("Há uma transação aberta: confirme ou desfaça antes de trocar de conexão.");
+            return false;
+        }
         if let Some(i) = self.tabs.iter().position(has_unsaved) {
             self.active = i;
             self.notice =
@@ -848,6 +896,35 @@ impl App {
                 }
             };
             match reply {
+                Reply::Tx(state) => s.txn = state,
+                Reply::ColumnStats { tab, res } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    t.pending = t.pending.saturating_sub(1);
+                    if let Some(v) = &mut t.col_stats {
+                        v.data = Some(
+                            res.map_err(|e| e.to_string())
+                                .and_then(|(a, b)| values::stats_from_queries(&a, &b)),
+                        );
+                    }
+                }
+                Reply::TxEnded { commit, res } => {
+                    if std::mem::take(&mut self.quit_after_tx) && res.is_ok() {
+                        self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    self.notice = match res {
+                        Ok(()) if commit => Notice::info("Transação confirmada"),
+                        Ok(()) => Notice::info("Transação desfeita"),
+                        Err(e) => Notice::error(format!("Transação: {e}")),
+                    };
+                    // What's on screen may include undone changes: reload table pages.
+                    for t in &mut self.tabs {
+                        if matches!(t.kind, TabKind::Table(_)) && !t.busy() && !has_unsaved(t) {
+                            reload(t, s);
+                        }
+                    }
+                }
                 Reply::Connected(Ok(c)) => {
                     if self
                         .restore
@@ -1061,6 +1138,25 @@ impl App {
             .count()
             + 1;
         self.push_tab(format!("SQL {n}"), TabKind::Sql { text });
+    }
+
+    /// Confirms or undoes the open transaction (manual-commit mode).
+    pub fn end_tx(&mut self, commit: bool) {
+        if let Some(s) = &self.session {
+            s.send(Job::EndTx { commit });
+        }
+    }
+
+    /// Switches manual-commit mode for this session; refused while a transaction is open.
+    pub fn set_manual_commit(&mut self, on: bool) {
+        let Some(s) = &mut self.session else { return };
+        if s.txn.open && !on {
+            self.notice =
+                Notice::error("Confirme ou desfaça a transação aberta antes de voltar ao commit automático.");
+            return;
+        }
+        s.txn.manual = on;
+        s.send(Job::SetManual(on));
     }
 
     /// Opens (or focuses) the server activity monitor.
@@ -1468,6 +1564,15 @@ pub fn submit_import(tab: &mut Tab, s: &Session) {
     });
 }
 
+/// Adds `column = value` (or IS NULL) to a table tab's filter and reloads.
+pub fn filter_by_value(tab: &mut Tab, s: &Session, column: &str, value: Option<&str>) {
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    let cond = sql::filter_condition(s.cfg.kind, column, FilterOp::Eq, value);
+    ts.filter = sql::and(&ts.filter, &cond);
+    ts.page = 0;
+    reload(tab, s);
+}
+
 /// Asks for the plan of one statement. ANALYZE runs it, so it is refused for anything but reads.
 pub fn explain(tab: &mut Tab, s: &Session, sql: &str, analyze: bool) {
     let parts = sql::statement_ranges(sql, false);
@@ -1534,6 +1639,44 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             if !res.rows.is_empty() {
                 tab.anchor = Some((0, 0));
                 tab.selected = Some((res.rows.len() - 1, res.columns.len() - 1));
+            }
+            return None;
+        }
+        GridEvent::ColumnStats(col) => {
+            let name = res.columns[*col].clone();
+            let kind = kinds[*col];
+            match &mut tab.kind {
+                // Tables: the database counts every row that passes the filter.
+                TabKind::Table(ts) => {
+                    let filter = ts.effective_filter(k);
+                    let ordered = matches!(kind, ValueKind::Number | ValueKind::Date);
+                    let (summary, top) = sql::column_stats(k, &ts.schema, &ts.table, &name, &filter, ordered);
+                    let scope = if filter.is_empty() {
+                        "tabela inteira".to_string()
+                    } else {
+                        "linhas que passam no filtro".to_string()
+                    };
+                    tab.col_stats = Some(StatsView {
+                        column: name,
+                        scope,
+                        data: None,
+                    });
+                    tab.pending += 1;
+                    s.send(Job::ColumnStats {
+                        tab: tab.id,
+                        summary,
+                        top,
+                    });
+                }
+                // Editor results: only what was loaded.
+                _ => {
+                    let data = values::local_column_stats(res, *col, kind);
+                    tab.col_stats = Some(StatsView {
+                        column: name,
+                        scope: format!("{} linha(s) carregadas", res.rows.len()),
+                        data: Some(Ok(data)),
+                    });
+                }
             }
             return None;
         }
@@ -1661,6 +1804,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             }
         }
         GridEvent::Select(..)
+        | GridEvent::ColumnStats(..)
         | GridEvent::Extend(..)
         | GridEvent::SelectAll
         | GridEvent::CopyCells { .. }
@@ -1771,6 +1915,7 @@ pub mod tests {
             ready: true,
             tables: vec![],
             columns: vec![],
+            txn: TxState::default(),
         };
         (s, jobs, replies)
     }

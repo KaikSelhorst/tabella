@@ -155,6 +155,16 @@ impl App {
                                 "Bloqueia edições na grade e deixa a sessão read-only no próprio banco",
                             );
                         ui.end_row();
+                        ui.label("");
+                        ui.add_enabled(
+                            !c.read_only,
+                            egui::Checkbox::new(&mut c.manual_commit, "Commit manual"),
+                        )
+                        .on_hover_text(
+                            "Alterações (SQL, grade, importação) ficam numa transação até você clicar em \
+                                 Confirmar ou Desfazer",
+                        );
+                        ui.end_row();
                         ui.label("Cor");
                         color_picker(ui, &mut c.color);
                         ui.end_row();

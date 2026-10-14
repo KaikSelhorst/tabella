@@ -343,6 +343,183 @@ pub fn statement_at(script: &str, cursor: usize) -> Option<(usize, usize)> {
         .copied()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TxControl {
+    Begin,
+    End,
+}
+
+/// Whether a script opens or closes a transaction itself (BEGIN, COMMIT, ROLLBACK...); the
+/// last such statement wins. `ROLLBACK TO SAVEPOINT` doesn't end anything.
+pub fn tx_control(script: &str) -> Option<TxControl> {
+    statement_words(script)
+        .iter()
+        .filter_map(|w| match (w[0].as_str(), w.get(1).map(String::as_str)) {
+            ("BEGIN" | "START", _) => Some(TxControl::Begin),
+            ("ROLLBACK", Some("TO")) => None,
+            ("COMMIT" | "END" | "ROLLBACK" | "ABORT", _) => Some(TxControl::End),
+            _ => None,
+        })
+        .next_back()
+}
+
+/// The two queries behind "Estatísticas da coluna": totals (count, non-null, distinct and, with
+/// `ordered`, min/max), then the most common values. Postgres compares through text so json and
+/// other types without equality still work.
+pub fn column_stats(
+    kind: Kind,
+    schema: &str,
+    table: &str,
+    column: &str,
+    filter: &str,
+    ordered: bool,
+) -> (String, String) {
+    let t = kind.qualified(schema, table);
+    let c = kind.quote_ident(column);
+    let as_text = match kind {
+        Kind::Postgres => format!("{c}::text"),
+        Kind::MySql => c.clone(),
+    };
+    let wh = if filter.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE ({filter})")
+    };
+    let range = if ordered {
+        format!(", min({c}), max({c})")
+    } else {
+        String::new()
+    };
+    (
+        format!("SELECT count(*), count({c}), count(DISTINCT {as_text}){range} FROM {t}{wh}"),
+        format!(
+            "SELECT {as_text}, count(*) FROM {t}{wh} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {}",
+            crate::values::TOP_VALUES
+        ),
+    )
+}
+
+/// Named parameters (`:id`, `:nome`) in a script: char ranges of each occurrence (colon
+/// included) with the name. Not parameters: `::` casts, MySQL's `:=`, `a[1:2]` slices, and
+/// anything inside quotes, comments or `$$` bodies.
+pub fn param_spans(script: &str) -> Vec<(usize, usize, String)> {
+    let chars: Vec<char> = script.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '-' && chars.get(i + 1) == Some(&'-') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        if matches!(c, '\'' | '"' | '`') {
+            i += 1;
+            while i < chars.len() && chars[i] != c {
+                if chars[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '$' {
+            let tag_end = (i + 1..chars.len()).find(|&j| !(chars[j].is_alphanumeric() || chars[j] == '_'));
+            if let Some(e) = tag_end
+                && chars[e] == '$'
+                && !chars.get(i + 1).is_some_and(|d| d.is_ascii_digit())
+            {
+                let tag: Vec<char> = chars[i..=e].to_vec();
+                let mut j = e + 1;
+                while j < chars.len() && chars[j..].iter().take(tag.len()).ne(tag.iter()) {
+                    j += 1;
+                }
+                i = (j + tag.len()).min(chars.len());
+                continue;
+            }
+        }
+        if c == ':' {
+            if chars.get(i + 1) == Some(&':') {
+                i += 2;
+                continue;
+            }
+            let prev_word =
+                i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == ']');
+            let starts_name = chars.get(i + 1).is_some_and(|n| n.is_alphabetic() || *n == '_');
+            if starts_name && !prev_word {
+                let mut j = i + 1;
+                while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                    j += 1;
+                }
+                out.push((i, j, chars[i + 1..j].iter().collect()));
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Distinct parameter names in order of first use.
+pub fn param_names(script: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for (_, _, n) in param_spans(script) {
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    names
+}
+
+/// Puts the values in: numbers and NULL as typed, everything else as a quoted string.
+pub fn bind_params(kind: Kind, script: &str, value: impl Fn(&str) -> String) -> String {
+    let chars: Vec<char> = script.chars().collect();
+    let mut out = String::new();
+    let mut at = 0;
+    for (a, b, name) in param_spans(script) {
+        out.extend(&chars[at..a]);
+        let v = value(&name);
+        let t = v.trim();
+        let number = !t.is_empty()
+            && t.trim_start_matches('-')
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.')
+            && t.chars().filter(|c| *c == '.').count() <= 1
+            && t.chars().any(|c| c.is_ascii_digit());
+        if t.eq_ignore_ascii_case("null") {
+            out.push_str("NULL");
+        } else if number {
+            out.push_str(t);
+        } else {
+            out.push_str(&kind.quote_str(&v));
+        }
+        at = b;
+    }
+    out.extend(&chars[at..]);
+    out
+}
+
+/// MySQL commits the open transaction by itself before (and after) DDL statements.
+pub fn mysql_implicit_commit(script: &str) -> bool {
+    const DDL: &[&str] = &[
+        "CREATE", "ALTER", "DROP", "TRUNCATE", "RENAME", "GRANT", "REVOKE", "LOCK", "UNLOCK",
+    ];
+    statement_words(script)
+        .iter()
+        .any(|w| DDL.contains(&w[0].as_str()))
+}
+
 /// What running a script would do, for read-only connections and the "are you sure" prompt.
 #[derive(Debug, Default, PartialEq)]
 pub struct ScriptRisk {
@@ -665,6 +842,62 @@ mod tests {
         // Same statements, only whitespace and keyword case differ.
         let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
         assert_eq!(squash(&out), squash(raw));
+    }
+
+    #[test]
+    fn column_stats_queries() {
+        let (sum, top) = column_stats(Kind::Postgres, "public", "t", "pre ço", "a > 1", true);
+        assert_eq!(
+            sum,
+            "SELECT count(*), count(\"pre ço\"), count(DISTINCT \"pre ço\"::text), min(\"pre ço\"), max(\"pre ço\") FROM \"public\".\"t\" WHERE (a > 1)"
+        );
+        assert_eq!(
+            top,
+            "SELECT \"pre ço\"::text, count(*) FROM \"public\".\"t\" WHERE (a > 1) GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10"
+        );
+        let (sum, _) = column_stats(Kind::MySql, "db", "t", "c", "", false);
+        assert_eq!(
+            sum,
+            "SELECT count(*), count(`c`), count(DISTINCT `c`) FROM `db`.`t`"
+        );
+    }
+
+    #[test]
+    fn named_parameters() {
+        let q = "SELECT x::text, ':nao' AS s, a[1:2], @v := 1 -- :tambem_nao\nFROM t WHERE id = :id AND (nome = :nome OR :id IS NULL)";
+        assert_eq!(param_names(q), ["id", "nome"]);
+        let bound = bind_params(Kind::Postgres, q, |n| {
+            if n == "id" { "42".into() } else { "O'Neil".into() }
+        });
+        assert!(
+            bound.ends_with("WHERE id = 42 AND (nome = 'O''Neil' OR 42 IS NULL)"),
+            "{bound}"
+        );
+        assert!(bound.starts_with("SELECT x::text, ':nao'"));
+        assert_eq!(bind_params(Kind::MySql, "a = :v", |_| "null".into()), "a = NULL");
+        assert_eq!(bind_params(Kind::MySql, "a = :v", |_| "-1.5".into()), "a = -1.5");
+        assert_eq!(
+            bind_params(Kind::MySql, "a = :v", |_| "1.2.3".into()),
+            "a = '1.2.3'"
+        );
+        assert!(param_names("SELECT $$ :x $$, '10:30'").is_empty());
+    }
+
+    #[test]
+    fn transaction_control() {
+        assert_eq!(tx_control("UPDATE t SET a = 1"), None);
+        assert_eq!(tx_control("begin; update t set a = 1"), Some(TxControl::Begin));
+        assert_eq!(
+            tx_control("BEGIN; UPDATE t SET a = 1; COMMIT;"),
+            Some(TxControl::End)
+        );
+        assert_eq!(tx_control("START TRANSACTION"), Some(TxControl::Begin));
+        assert_eq!(tx_control("ROLLBACK TO SAVEPOINT x"), None);
+        assert_eq!(tx_control("SELECT 'commit'"), None);
+        assert!(mysql_implicit_commit(
+            "UPDATE t SET a = 1; ALTER TABLE t ADD b INT"
+        ));
+        assert!(!mysql_implicit_commit("UPDATE t SET a = 'drop'"));
     }
 
     #[test]
