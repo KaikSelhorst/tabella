@@ -1066,13 +1066,17 @@ mod screenshots {
                     .collect(),
                     ..Default::default()
                 },
-                unused: QueryResult {
-                    columns: ["tabela", "indice", "tamanho"].map(String::from).to_vec(),
-                    rows: vec![vec![
-                        Some("public.pedidos".into()),
-                        Some("pedidos_criado_idx".into()),
-                        Some("107 MB".into()),
-                    ]],
+                indexes: QueryResult {
+                    columns: ["tabela", "indice", "usos", "tamanho", "apoia_chave_estrangeira"]
+                        .map(String::from)
+                        .to_vec(),
+                    rows: [
+                        ["public.pedidos", "pedidos_criado_idx", "0", "107 MB", ""],
+                        ["public.pedidos", "pedidos_cliente_idx", "1", "107 MB", "sim"],
+                    ]
+                    .iter()
+                    .map(|r| r.iter().map(|v| Some(v.to_string())).collect())
+                    .collect(),
                     ..Default::default()
                 },
             };

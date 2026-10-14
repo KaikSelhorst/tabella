@@ -271,8 +271,8 @@ pub struct ServerInfo {
     /// `(label, value)`: version, uptime, size, connections, cache hit rate.
     pub facts: Vec<(String, String)>,
     pub largest: QueryResult,
-    /// Indexes never used since the statistics started (server start or reset).
-    pub unused: QueryResult,
+    /// Secondary indexes, least used first, with whether they back a foreign key.
+    pub indexes: QueryResult,
 }
 
 /// What the activity monitor shows.
@@ -737,7 +737,7 @@ impl Conn {
 
     /// The "Servidor" panel: headline numbers, biggest tables, indexes nobody uses.
     pub fn server_info(&mut self) -> DbResult<ServerInfo> {
-        let (facts_sql, largest, unused) = match self.kind() {
+        let (facts_sql, largest, indexes) = match self.kind() {
             Kind::Postgres => (
                 "SELECT current_setting('server_version'), \
                  date_trunc('second', now() - pg_postmaster_start_time())::text, \
@@ -753,10 +753,13 @@ impl Conn {
                  AND n.nspname NOT LIKE 'pg_toast%' \
                  ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 10",
                 "SELECT s.schemaname || '.' || s.relname AS tabela, s.indexrelname AS indice, \
-                 pg_size_pretty(pg_relation_size(s.indexrelid)) AS tamanho \
+                 s.idx_scan AS usos, pg_size_pretty(pg_relation_size(s.indexrelid)) AS tamanho, \
+                 CASE WHEN EXISTS (SELECT 1 FROM pg_constraint c WHERE c.contype = 'f' \
+                   AND c.conrelid = i.indrelid AND c.conkey[1] = i.indkey[0]) THEN 'sim' ELSE '' END \
+                   AS apoia_chave_estrangeira \
                  FROM pg_stat_user_indexes s JOIN pg_index i ON i.indexrelid = s.indexrelid \
-                 WHERE s.idx_scan = 0 AND NOT i.indisunique AND NOT i.indisprimary \
-                 ORDER BY pg_relation_size(s.indexrelid) DESC LIMIT 20",
+                 WHERE NOT i.indisunique AND NOT i.indisprimary \
+                 ORDER BY s.idx_scan, pg_relation_size(s.indexrelid) DESC LIMIT 20",
             ),
             Kind::MySql => (
                 "SELECT VERSION(), \
@@ -777,9 +780,20 @@ impl Conn {
                  WHERE table_schema NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') \
                  AND table_type = 'BASE TABLE' \
                  ORDER BY data_length + index_length DESC LIMIT 10",
-                "SELECT CONCAT(object_schema, '.', object_name) AS tabela, index_name AS indice \
-                 FROM sys.schema_unused_indexes \
-                 WHERE object_schema NOT IN ('mysql', 'sys', 'performance_schema') LIMIT 20",
+                // performance_schema only knows tables opened since its counters started: an
+                // index with no row there shows NULL ("no data"), not 0.
+                "SELECT CONCAT(s.table_schema, '.', s.table_name) AS tabela, s.index_name AS indice, \
+                 u.COUNT_READ AS usos, \
+                 IF(EXISTS (SELECT 1 FROM information_schema.key_column_usage k \
+                   WHERE k.table_schema = s.table_schema AND k.table_name = s.table_name \
+                   AND k.column_name = s.column_name AND k.referenced_table_name IS NOT NULL), 'sim', '') \
+                   AS apoia_chave_estrangeira \
+                 FROM information_schema.statistics s \
+                 LEFT JOIN performance_schema.table_io_waits_summary_by_index_usage u \
+                   ON u.OBJECT_SCHEMA = s.table_schema AND u.OBJECT_NAME = s.table_name AND u.INDEX_NAME = s.index_name \
+                 WHERE s.seq_in_index = 1 AND s.non_unique = 1 \
+                 AND s.table_schema NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') \
+                 ORDER BY u.COUNT_READ IS NOT NULL, u.COUNT_READ, s.table_name LIMIT 20",
             ),
         };
         let facts = self.query(facts_sql)?;
@@ -802,7 +816,7 @@ impl Conn {
                 })
                 .collect(),
             largest: self.query(largest)?,
-            unused: self.query(unused)?,
+            indexes: self.query(indexes)?,
         })
     }
 
@@ -1567,6 +1581,9 @@ mod tests {
             info.facts
         );
         assert!(!info.largest.rows.is_empty(), "{kind:?}");
+        // dbl_child's index backs its foreign key; it is listed, and says so.
+        let ix = &info.indexes;
+        assert!(ix.columns.contains(&"usos".to_string()), "{kind:?}: {ix:?}");
 
         // A per-connection timeout stops long statements on the server.
         let timed = ConnConfig {

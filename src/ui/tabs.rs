@@ -1154,7 +1154,7 @@ fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     result_area(ui, tab, cx, false);
 }
 
-/// "Servidor": headline numbers as tiles, then the biggest tables and the unused indexes.
+/// "Servidor": headline numbers as tiles, then the biggest tables and the least used indexes.
 fn server_panel(
     ui: &mut egui::Ui,
     tab_id: u64,
@@ -1206,20 +1206,28 @@ fn server_panel(
                     ui.add_space(4.0);
                     preview_rows(ui, tab_id ^ 1, &info.largest);
                     ui.add_space(16.0);
-                    ui.label(egui::RichText::new("ÍNDICES SEM USO").size(11.0).color(t.subtle));
+                    ui.label(
+                        egui::RichText::new("ÍNDICES MENOS USADOS")
+                            .size(11.0)
+                            .color(t.subtle),
+                    );
                     ui.label(
                         egui::RichText::new(
-                            "Nenhuma consulta os usou desde que as estatísticas começaram (início do servidor). \
-                             Ocupam espaço e deixam as escritas mais lentas; confirme antes de remover.",
+                            "Leituras desde que as estatísticas começaram (no MySQL, desde que a tabela foi \
+                             aberta; vazio = sem dados). Índice pouco usado ocupa espaço e deixa as escritas \
+                             mais lentas, mas os que apoiam chave estrangeira costumam ser necessários.",
                         )
                         .size(11.0)
                         .color(t.subtle),
                     );
                     ui.add_space(4.0);
-                    if info.unused.rows.is_empty() {
-                        ui.label(egui::RichText::new("Nenhum").color(t.muted_foreground));
+                    if info.indexes.rows.is_empty() {
+                        ui.label(
+                            egui::RichText::new("Nenhum índice além de chaves primárias e únicos")
+                                .color(t.muted_foreground),
+                        );
                     } else {
-                        preview_rows(ui, tab_id ^ 2, &info.unused);
+                        preview_rows(ui, tab_id ^ 2, &info.indexes);
                     }
                 });
         });
