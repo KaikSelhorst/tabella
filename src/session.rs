@@ -25,6 +25,10 @@ pub enum SavedTab {
         table: String,
         filter: String,
         order: Option<(String, bool)>,
+        #[serde(default)]
+        hidden: Vec<String>,
+        #[serde(default)]
+        pinned: Vec<String>,
     },
     Structure {
         schema: String,
@@ -68,6 +72,8 @@ mod tests {
                     table: "t".into(),
                     filter: "id > 1".into(),
                     order: Some(("id".into(), false)),
+                    hidden: vec!["obs".into()],
+                    pinned: vec!["id".into()],
                 },
             ],
             active: 1,

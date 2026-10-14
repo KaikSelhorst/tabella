@@ -1,8 +1,10 @@
 mod complete;
+mod design;
 mod detail;
 mod find;
 mod form;
 mod grid;
+mod help;
 mod import_form;
 mod palette;
 mod plan_view;
@@ -99,6 +101,7 @@ impl eframe::App for App {
         self.palette_ui(&ctx);
         self.master_prompt(&ctx);
         self.favorite_prompt(&ctx);
+        self.help_ui(&ctx);
     }
 }
 
@@ -219,6 +222,9 @@ impl App {
     /// App-wide keys. Consumed here so text fields don't also react to them.
     fn shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
+            self.help = !self.help;
+        }
         let (palette, new_sql, close, prev, next) = ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::COMMAND, Key::P) || i.consume_key(Modifiers::COMMAND, Key::K),
@@ -469,8 +475,56 @@ mod screenshots {
                 .unwrap()
                 .save(format!("{dir}/structure.png"))
                 .unwrap();
-            harness.state_mut().tabs.pop();
+            // Table designer from that structure, with a few edits pending.
+            let data = match &harness.state().tabs[2].kind {
+                TabKind::Structure(st) => st.data.clone().unwrap(),
+                _ => unreachable!(),
+            };
+            harness.state_mut().open_design("public", "clientes", &data);
+            if let Some(TabKind::Design(d)) = harness.state_mut().tabs.last_mut().map(|t| &mut t.kind) {
+                d.columns[1].name = "nome_completo".into();
+                d.columns[1].nullable = false;
+                d.columns[4].dropped = true;
+                d.columns.push(crate::design::ColDef {
+                    name: "uf".into(),
+                    data_type: "char(2)".into(),
+                    default: "'SP'".into(),
+                    ..crate::design::ColDef::new()
+                });
+                d.indexes.push(crate::design::IndexDef {
+                    existing: false,
+                    name: String::new(),
+                    columns: "uf, criado_em".into(),
+                    unique: false,
+                    dropped: false,
+                });
+            }
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/design.png"))
+                .unwrap();
+            harness.state_mut().tabs.truncate(2);
             harness.state_mut().active = 0;
+
+            // Keyboard shortcuts (F1).
+            harness.state_mut().help = true;
+            harness.run();
+            harness.render().unwrap().save(format!("{dir}/help.png")).unwrap();
+            harness.state_mut().help = false;
+
+            // "Duplicar linha": the insert form filled from row 3.
+            crate::app::open_duplicate_form(&mut harness.state_mut().tabs[0], 2);
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/duplicate.png"))
+                .unwrap();
+            if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
+                ts.insert = None;
+            }
         }
         // 3x zoom on the grid header's left corner, to check pixel-level alignment.
         let crop = image::imageops::crop_imm(&img, 236, 64, 420, 80).to_image();
@@ -571,6 +625,61 @@ mod screenshots {
             harness.run();
             harness.render().unwrap().save(format!("{dir}/plan.png")).unwrap();
             harness.state_mut().tabs[1].plan = None;
+        }
+
+        // Wide editor result scrolled sideways: "id" and "nome" are pinned and stay at the left.
+        {
+            let state = harness.state_mut();
+            state.active = 1;
+            let tab = &mut state.tabs[1];
+            let saved = tab.result.take();
+            let names: Vec<String> = ["id", "nome"]
+                .iter()
+                .map(|s| s.to_string())
+                .chain((1..=14).map(|i| format!("campo_{i:02}")))
+                .collect();
+            tab.result = Some(QueryResult {
+                rows: (1..=30)
+                    .map(|r| {
+                        names
+                            .iter()
+                            .enumerate()
+                            .map(|(i, _)| match i {
+                                0 => Some(r.to_string()),
+                                1 => Some(format!("Cliente {r}")),
+                                _ => Some(format!("valor {r}-{i}")),
+                            })
+                            .collect()
+                    })
+                    .collect(),
+                columns: names,
+                ..Default::default()
+            });
+            tab.pinned_cols = vec!["id".into(), "nome".into()];
+            tab.hidden_cols = vec!["campo_03".into()];
+            tab.selected = Some((4, 9));
+            harness.run();
+            harness.hover_at(egui::pos2(700.0, 500.0));
+            for _ in 0..3 {
+                harness.event(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(-400.0, 0.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                harness.step();
+            }
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/pinned.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.result = saved;
+            tab.pinned_cols.clear();
+            tab.hidden_cols.clear();
+            tab.selected = None;
         }
 
         // Several statements: the one under the cursor is marked, and each query has a result.

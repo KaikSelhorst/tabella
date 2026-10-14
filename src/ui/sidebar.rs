@@ -163,6 +163,7 @@ impl App {
         }
         let mut disconnect = false;
         let mut open_activity = false;
+        let mut new_table = false;
         let mut sort_by_size_toggle = false;
         let mut open_sql = false;
         let tk = theme::tokens();
@@ -180,6 +181,9 @@ impl App {
                 disconnect = action(ui, icon::PLUGS, "Desconectar");
                 if action(ui, icon::PULSE, "Atividade no servidor") {
                     open_activity = true;
+                }
+                if !s.cfg.read_only && action(ui, icon::PLUS, "Nova tabela") {
+                    new_table = true;
                 }
                 let sort = theme::icon(icon::SORT_DESCENDING).color(if self.sort_by_size {
                     tk.lime
@@ -213,7 +217,7 @@ impl App {
         let active_table = self.tabs.get(self.active).and_then(|t| match &t.kind {
             TabKind::Table(ts) => Some((ts.schema.as_str(), ts.table.as_str())),
             TabKind::Structure(st) => Some((st.schema.as_str(), st.table.as_str())),
-            TabKind::Sql { .. } | TabKind::Activity(_) => None,
+            TabKind::Sql { .. } | TabKind::Activity(_) | TabKind::Design(_) => None,
         });
         let needle = self.filter.to_lowercase();
         let by_size = self.sort_by_size;
@@ -318,6 +322,9 @@ impl App {
         }
         if open_activity {
             self.open_activity();
+        }
+        if new_table {
+            self.open_new_table(None);
         }
         if disconnect {
             self.disconnect();

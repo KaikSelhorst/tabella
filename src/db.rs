@@ -1270,6 +1270,55 @@ mod tests {
             "write must fail on a read-only session"
         );
         assert_eq!(c.count("SELECT COUNT(*) FROM dbl_t").unwrap(), 2);
+        // Table designer: create, then alter, through real DDL.
+        {
+            use crate::design::{ColDef, Design, IndexDef};
+            let schema = if kind == Kind::MySql { db } else { "public" };
+            c.query("DROP TABLE IF EXISTS dbl_design").unwrap();
+            let mut d = Design::new_table(kind, schema);
+            d.table = "dbl_design".into();
+            d.columns.push(ColDef {
+                name: "nome".into(),
+                data_type: "varchar(50)".into(),
+                ..ColDef::new()
+            });
+            d.indexes.push(IndexDef {
+                existing: false,
+                name: String::new(),
+                columns: "nome".into(),
+                unique: false,
+                dropped: false,
+            });
+            c.query(&d.script())
+                .unwrap_or_else(|e| panic!("{kind:?}: {e}\n{}", d.script()));
+            let st = c.structure(schema, "dbl_design").unwrap();
+            let mut d = Design::from_structure(kind, schema, "dbl_design", &st);
+            assert!(d.statements().is_empty(), "{kind:?}: {:?}", d.statements());
+            assert_eq!(
+                d.indexes.len(),
+                1,
+                "{kind:?}: only the non-key index: {:?}",
+                d.indexes
+            );
+            let nome = d.columns.iter_mut().find(|c| c.name == "nome").unwrap();
+            nome.name = "nome_completo".into();
+            nome.nullable = false;
+            nome.default = "'x'".into();
+            d.indexes[0].dropped = true;
+            d.columns.push(ColDef {
+                name: "ativo".into(),
+                data_type: "boolean".into(),
+                ..ColDef::new()
+            });
+            c.query(&d.script())
+                .unwrap_or_else(|e| panic!("{kind:?}: {e}\n{}", d.script()));
+            let st = c.structure(schema, "dbl_design").unwrap();
+            let names: Vec<&str> = st.columns.iter().map(|c| c.name.as_str()).collect();
+            assert_eq!(names, ["id", "nome_completo", "ativo"], "{kind:?}");
+            assert!(!st.columns[1].nullable, "{kind:?}");
+            c.query("DROP TABLE dbl_design").unwrap();
+        }
+
         // Column profile through the database, with and without min/max.
         {
             let schema = if kind == Kind::MySql { db } else { "public" };

@@ -95,12 +95,33 @@ pub fn json_object(
     map
 }
 
-/// A rectangle of cells, inclusive: `(first_row, first_col, last_row, last_col)`.
-pub type CellRange = (usize, usize, usize, usize);
+/// Selected cells: rows `r0..=r1` of the columns `cols`, in on-screen order (hidden and pinned
+/// columns change that order, so a range is a list, not `c0..=c1`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CellRange {
+    pub r0: usize,
+    pub r1: usize,
+    pub cols: Vec<usize>,
+}
+
+impl CellRange {
+    pub fn single(row: usize, col: usize) -> Self {
+        CellRange {
+            r0: row,
+            r1: row,
+            cols: vec![col],
+        }
+    }
+
+    pub fn contains(&self, row: usize, col: usize) -> bool {
+        (self.r0..=self.r1).contains(&row) && self.cols.contains(&col)
+    }
+}
 
 /// The cells as tab-separated text, the format spreadsheets copy and paste. NULL becomes an
 /// empty cell; values with tabs, line breaks or quotes are quoted ("" for a quote).
-pub fn to_tsv(res: &QueryResult, (r0, c0, r1, c1): CellRange, headers: bool) -> String {
+pub fn to_tsv(res: &QueryResult, range: &CellRange, headers: bool) -> String {
+    let (r0, r1) = (range.r0, range.r1);
     let field = |v: &str| {
         if v.contains(['\t', '\n', '\r', '"']) {
             format!("\"{}\"", v.replace('"', "\"\""))
@@ -110,20 +131,21 @@ pub fn to_tsv(res: &QueryResult, (r0, c0, r1, c1): CellRange, headers: bool) -> 
     };
     let mut out = String::new();
     if headers {
-        let names: Vec<String> = res.columns[c0..=c1].iter().map(|c| field(c)).collect();
+        let names: Vec<String> = range.cols.iter().map(|&c| field(&res.columns[c])).collect();
         out.push_str(&names.join("\t"));
         out.push('\n');
     }
     for row in &res.rows[r0..=r1] {
-        let cells: Vec<String> = row[c0..=c1]
+        let cells: Vec<String> = range
+            .cols
             .iter()
-            .map(|v| v.as_deref().map(field).unwrap_or_default())
+            .map(|&c| row[c].as_deref().map(field).unwrap_or_default())
             .collect();
         out.push_str(&cells.join("\t"));
         out.push('\n');
     }
     // A single value copies bare, like before ranges existed.
-    if r0 == r1 && c0 == c1 && !headers {
+    if r0 == r1 && range.cols.len() == 1 && !headers {
         out.pop();
     }
     out
@@ -185,14 +207,15 @@ pub struct Stats {
     pub numbers: Option<(usize, f64, f64, f64)>,
 }
 
-pub fn stats(res: &QueryResult, kinds: &[ValueKind], (r0, c0, r1, c1): CellRange) -> Stats {
+pub fn stats(res: &QueryResult, kinds: &[ValueKind], range: &CellRange) -> Stats {
     let mut st = Stats {
         cells: 0,
         values: 0,
         numbers: None,
     };
-    for row in &res.rows[r0..=r1] {
-        for (ci, v) in row.iter().enumerate().take(c1 + 1).skip(c0) {
+    for row in &res.rows[range.r0..=range.r1] {
+        for &ci in &range.cols {
+            let v = &row[ci];
             st.cells += 1;
             let Some(v) = v else { continue };
             st.values += 1;
@@ -299,6 +322,14 @@ pub fn stats_from_queries(summary: &QueryResult, top: &QueryResult) -> Result<Co
     })
 }
 
+/// A value as the insert form shows it: booleans as true/false (Postgres sends t/f, MySQL 1/0).
+pub fn display_bool_or(kind: ValueKind, v: &str) -> String {
+    match (kind, crate::sql::parse_bool(v)) {
+        (ValueKind::Bool, Some(b)) => b.to_string(),
+        _ => v.to_string(),
+    }
+}
+
 /// A number for the status line: whole numbers without decimals, others with up to 4.
 pub fn format_number(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
@@ -321,10 +352,31 @@ mod tests {
             ],
             ..Default::default()
         };
-        let all = to_tsv(&res, (0, 0, 1, 1), true);
+        let all = to_tsv(
+            &res,
+            &CellRange {
+                r0: 0,
+                r1: 1,
+                cols: vec![0, 1],
+            },
+            true,
+        );
         assert_eq!(all, "id\tobs\n1\t\"a\tb \"\"c\"\"\"\n2\t\n");
         assert_eq!(parse_tsv(&all), [["id", "obs"], ["1", "a\tb \"c\""], ["2", ""]]);
-        assert_eq!(to_tsv(&res, (1, 0, 1, 0), false), "2");
+        assert_eq!(to_tsv(&res, &CellRange::single(1, 0), false), "2");
+        // On-screen order, not the query's.
+        assert_eq!(
+            to_tsv(
+                &res,
+                &CellRange {
+                    r0: 0,
+                    r1: 0,
+                    cols: vec![1, 0]
+                },
+                true
+            ),
+            "obs\tid\n\"a\tb \"\"c\"\"\"\t1\n"
+        );
         // Excel ends with \r\n and quotes cells with line breaks.
         assert_eq!(
             parse_tsv("x\t\"l1\nl2\"\r\ny\tz\r\n"),
@@ -361,7 +413,15 @@ mod tests {
             ],
             ..Default::default()
         };
-        let st = stats(&res, &[ValueKind::Number, ValueKind::Text], (0, 0, 2, 1));
+        let st = stats(
+            &res,
+            &[ValueKind::Number, ValueKind::Text],
+            &CellRange {
+                r0: 0,
+                r1: 2,
+                cols: vec![0, 1],
+            },
+        );
         assert_eq!(
             st,
             Stats {

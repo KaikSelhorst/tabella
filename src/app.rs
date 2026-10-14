@@ -11,8 +11,10 @@ use eframe::egui;
 
 use crate::config;
 use crate::db::{Canceller, ColumnInfo, ConnConfig, Kind, QueryResult, TableRef, TableStructure};
+use crate::design::Design;
 use crate::export::{self, Format};
 use crate::favorites::{self, Favorite};
+use crate::filters::{self, SavedFilter};
 use crate::history::{self, Entry};
 use crate::import;
 use crate::plan::Plan;
@@ -281,10 +283,14 @@ impl TableState {
 }
 
 pub enum TabKind {
-    Sql { text: String },
+    Sql {
+        text: String,
+    },
     Table(Box<TableState>),
     Structure(Box<StructState>),
     Activity(ActivityState),
+    /// "Nova tabela" / "Editar estrutura".
+    Design(Box<Design>),
 }
 
 /// "Atividade" tab: sessions on the server, optionally refreshed every few seconds.
@@ -354,6 +360,10 @@ pub struct Tab {
     /// Last value typed for each parameter name.
     pub param_values: std::collections::HashMap<String, String>,
     pub col_stats: Option<StatsView>,
+    /// Columns hidden from the grid, and columns pinned to its left edge (by name, so they
+    /// survive reloads and paging).
+    pub hidden_cols: Vec<String>,
+    pub pinned_cols: Vec<String>,
 }
 
 /// "Estatísticas da coluna" dialog.
@@ -394,13 +404,65 @@ impl Tab {
             params: None,
             param_values: Default::default(),
             col_stats: None,
+            hidden_cols: Vec::new(),
+            pinned_cols: Vec::new(),
         }
     }
 
-    /// The selected rectangle, when more than one cell is selected.
+    /// The selected rectangle (on-screen column order), when more than one cell is selected.
     pub fn range(&self) -> Option<CellRange> {
         let ((ar, ac), (sr, sc)) = (self.anchor?, self.selected?);
-        ((ar, ac) != (sr, sc)).then(|| (ar.min(sr), ac.min(sc), ar.max(sr), ac.max(sc)))
+        if (ar, ac) == (sr, sc) {
+            return None;
+        }
+        let view = self.view();
+        let (pa, ps) = (
+            view.iter().position(|&c| c == ac)?,
+            view.iter().position(|&c| c == sc)?,
+        );
+        Some(CellRange {
+            r0: ar.min(sr),
+            r1: ar.max(sr),
+            cols: view[pa.min(ps)..=pa.max(ps)].to_vec(),
+        })
+    }
+
+    /// The range, or just the selected cell.
+    pub fn selection(&self) -> Option<CellRange> {
+        let (r, c) = self.selected?;
+        Some(self.range().unwrap_or(CellRange::single(r, c)))
+    }
+
+    /// Result columns in on-screen order: pinned first, hidden ones left out.
+    pub fn view(&self) -> Vec<usize> {
+        let Some(res) = &self.result else {
+            return Vec::new();
+        };
+        let pos = |name: &String| res.columns.iter().position(|c| c == name);
+        let mut view: Vec<usize> = self
+            .pinned_cols
+            .iter()
+            .filter(|n| !self.hidden_cols.contains(n))
+            .filter_map(pos)
+            .collect();
+        let rest: Vec<usize> = (0..res.columns.len())
+            .filter(|&i| !view.contains(&i) && !self.hidden_cols.contains(&res.columns[i]))
+            .collect();
+        view.extend(rest);
+        // Hiding everything would leave nothing to click to bring columns back.
+        if view.is_empty() {
+            view = (0..res.columns.len()).collect();
+        }
+        view
+    }
+
+    /// How many leading columns of `view()` stay in place when scrolling sideways.
+    pub fn pinned_count(&self) -> usize {
+        let Some(res) = &self.result else { return 0 };
+        self.pinned_cols
+            .iter()
+            .filter(|n| !self.hidden_cols.contains(n) && res.columns.contains(n))
+            .count()
     }
 
     /// Puts result set `i` of a multi-statement script on screen.
@@ -506,6 +568,13 @@ pub enum GridEvent {
     Paste(String),
     /// Profile of a column: counts, distinct values, range, most common values.
     ColumnStats(usize),
+    /// Hide a shown column, or show a hidden one.
+    ToggleColumn(usize),
+    ShowAllColumns,
+    /// Pin a column to the left edge, or unpin it.
+    TogglePin(usize),
+    /// Open the insert form filled with this row.
+    DuplicateRow(usize),
 }
 
 /// What `handle_grid_event` needs the app (or the clipboard) to do.
@@ -543,6 +612,7 @@ pub struct App {
     pub max_fps: bool,
     pub history: Vec<Entry>,
     pub favorites: Vec<Favorite>,
+    pub filters: Vec<SavedFilter>,
     /// Tabs from the last run, reopened once their connection is ready.
     restore: Option<session::Saved>,
     /// Current window size, saved on exit.
@@ -554,6 +624,8 @@ pub struct App {
     pub sort_by_size: bool,
     /// The window was asked to close with a transaction open: ask what to do with it.
     pub quit_prompt: bool,
+    /// F1 shortcuts screen.
+    pub help: bool,
     /// Close the window once the transaction has been ended.
     pub quit_after_tx: bool,
     frames: u32,
@@ -581,12 +653,14 @@ impl App {
             max_fps: false,
             history: history::load(),
             favorites: favorites::load(),
+            filters: filters::load(),
             restore: None,
             window: None,
             fav_prompt: None,
             show_detail: true,
             sort_by_size: false,
             quit_prompt: false,
+            help: false,
             quit_after_tx: false,
             frames: 0,
             fps_since: Instant::now(),
@@ -621,13 +695,15 @@ impl App {
             .tabs
             .iter()
             .filter_map(|t| match &t.kind {
-                TabKind::Activity(_) => None,
+                TabKind::Activity(_) | TabKind::Design(_) => None,
                 TabKind::Sql { text } => Some(SavedTab::Sql { text: text.clone() }),
                 TabKind::Table(ts) => Some(SavedTab::Table {
                     schema: ts.schema.clone(),
                     table: ts.table.clone(),
                     filter: ts.filter.clone(),
                     order: ts.order.clone(),
+                    hidden: t.hidden_cols.clone(),
+                    pinned: t.pinned_cols.clone(),
                 }),
                 TabKind::Structure(st) => Some(SavedTab::Structure {
                     schema: st.schema.clone(),
@@ -653,12 +729,18 @@ impl App {
                     table,
                     filter,
                     order,
+                    hidden,
+                    pinned,
                 } => {
                     self.open_table(&schema, &table);
                     // The first page is only requested when the columns arrive, so these apply.
-                    if let Some(TabKind::Table(ts)) = self.tabs.last_mut().map(|t| &mut t.kind) {
-                        ts.filter = filter;
-                        ts.order = order;
+                    if let Some(t) = self.tabs.last_mut() {
+                        t.hidden_cols = hidden;
+                        t.pinned_cols = pinned;
+                        if let TabKind::Table(ts) = &mut t.kind {
+                            ts.filter = filter;
+                            ts.order = order;
+                        }
                     }
                 }
             }
@@ -715,6 +797,37 @@ impl App {
             conn,
         });
         self.save_favorites();
+    }
+
+    /// Saves `filter` under `name` for a table of the current connection (replacing one with
+    /// the same name).
+    pub fn save_filter(&mut self, schema: &str, table: &str, name: &str, filter: &str) {
+        let Some(conn) = self.session.as_ref().map(|s| s.cfg.id.clone()) else {
+            return;
+        };
+        let name = name.trim();
+        self.filters
+            .retain(|f| !(f.conn == conn && f.schema == schema && f.table == table && f.name == name));
+        self.filters.push(SavedFilter {
+            id: config::new_id(),
+            name: name.to_string(),
+            filter: filter.trim().to_string(),
+            conn,
+            schema: schema.to_string(),
+            table: table.to_string(),
+        });
+        self.store_filters();
+    }
+
+    pub fn delete_filter(&mut self, id: &str) {
+        self.filters.retain(|f| f.id != id);
+        self.store_filters();
+    }
+
+    fn store_filters(&mut self) {
+        if let Err(e) = filters::save(&self.filters) {
+            self.notice = Notice::error(format!("Erro ao salvar filtros: {e}"));
+        }
     }
 
     pub fn delete_favorite(&mut self, id: &str) {
@@ -879,6 +992,8 @@ impl App {
     pub fn poll(&mut self) {
         let Some(s) = &mut self.session else { return };
         let mut restore = None;
+        // Design tabs whose DDL ran: (tab, schema, table).
+        let mut designed: Vec<(u64, String, String)> = Vec::new();
         loop {
             let reply = match s.rx.try_recv() {
                 Ok(r) => r,
@@ -991,6 +1106,13 @@ impl App {
                                 t.set_shown = t.sets.len() - 1;
                             }
                             t.result = Some(r);
+                            if let TabKind::Design(d) = &t.kind {
+                                designed.push((
+                                    t.id,
+                                    d.schema.trim().to_string(),
+                                    d.table.trim().to_string(),
+                                ));
+                            }
                             match &mut t.kind {
                                 // Refreshes every 2 s must not wipe the outcome of a kill.
                                 TabKind::Activity(st) => {
@@ -1105,6 +1227,72 @@ impl App {
         if let Some(r) = restore {
             self.restore_tabs(r);
         }
+        for (tab, schema, table) in designed {
+            self.after_design(tab, &schema, &table);
+        }
+    }
+
+    /// The table was created or altered: refresh the sidebar and the tabs showing it, and swap
+    /// the design tab for the new structure.
+    fn after_design(&mut self, tab: u64, schema: &str, table: &str) {
+        let Some(s) = &self.session else { return };
+        s.send(Job::Tables);
+        self.notice = Notice::info(format!("Estrutura de {table} aplicada"));
+        for t in &mut self.tabs {
+            match &mut t.kind {
+                TabKind::Structure(st) if st.schema == schema && st.table == table => {
+                    t.pending += 1;
+                    s.send(Job::Structure {
+                        tab: t.id,
+                        schema: schema.into(),
+                        table: table.into(),
+                    });
+                }
+                TabKind::Table(ts) if ts.schema == schema && ts.table == table && ts.changes.is_empty() => {
+                    // New columns: their info first, then the page (SELECT * picks them up).
+                    t.pending += 1;
+                    s.send(Job::Columns {
+                        tab: t.id,
+                        schema: schema.into(),
+                        table: table.into(),
+                    });
+                    reload(t, s);
+                }
+                _ => {}
+            }
+        }
+        if let Some(i) = self.tabs.iter().position(|t| t.id == tab) {
+            self.tabs.remove(i);
+            self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        }
+        self.open_structure(schema, table);
+    }
+
+    /// "Nova tabela" in the first schema of the connection (or the one given).
+    pub fn open_new_table(&mut self, schema: Option<&str>) {
+        let Some(s) = &self.session else { return };
+        let schema = schema
+            .map(str::to_string)
+            .or_else(|| s.tables.first().map(|t| t.schema.clone()))
+            .unwrap_or_else(|| match s.cfg.kind {
+                Kind::Postgres => "public".to_string(),
+                Kind::MySql => s.cfg.database.clone(),
+            });
+        let d = Design::new_table(s.cfg.kind, &schema);
+        self.push_tab("nova tabela".into(), TabKind::Design(Box::new(d)));
+    }
+
+    /// "Editar estrutura" of a table whose structure was loaded.
+    pub fn open_design(&mut self, schema: &str, table: &str, data: &TableStructure) {
+        let Some(s) = &self.session else { return };
+        if let Some(i) = self.tabs.iter().position(
+            |t| matches!(&t.kind, TabKind::Design(d) if d.existing && d.schema == schema && d.table == table),
+        ) {
+            self.active = i;
+            return;
+        }
+        let d = Design::from_structure(s.cfg.kind, schema, table, data);
+        self.push_tab(format!("{table} · editar"), TabKind::Design(Box::new(d)));
     }
 
     fn push_tab(&mut self, title: String, kind: TabKind) -> usize {
@@ -1352,6 +1540,41 @@ pub fn open_insert_form(tab: &mut Tab) {
             })
             .collect(),
     );
+}
+
+/// "Duplicar linha": the insert form filled with a row's values. Keys the database generates
+/// stay on "Padrão", so the copy gets a new one.
+pub fn open_duplicate_form(tab: &mut Tab, row: usize) {
+    open_insert_form(tab);
+    let Some(res) = &tab.result else { return };
+    let TabKind::Table(ts) = &mut tab.kind else { return };
+    // Pending edits included: the copy is of what the grid shows.
+    let overlay = ts.overlay(res);
+    let shown = overlay.as_ref().map_or(res, |o| &o.result);
+    let Some(values) = shown.rows.get(row) else { return };
+    let generated: Vec<&str> = ts
+        .cols
+        .iter()
+        .filter(|c| c.pk && c.has_default)
+        .map(|c| c.name.as_str())
+        .collect();
+    let Some(fields) = &mut ts.insert else { return };
+    for f in fields.iter_mut() {
+        if generated.contains(&f.name.as_str()) {
+            continue;
+        }
+        let Some(ci) = shown.columns.iter().position(|c| *c == f.name) else {
+            continue;
+        };
+        match &values[ci] {
+            Some(v) => {
+                f.mode = FieldMode::Value;
+                f.text = values::display_bool_or(f.kind, v);
+            }
+            None if f.nullable => f.mode = FieldMode::Null,
+            None => {}
+        }
+    }
 }
 
 /// INSERTs the form's row. Booleans are normalized per engine like grid edits.
@@ -1605,7 +1828,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
     let no_cols = Vec::new();
     let cols = match &tab.kind {
         TabKind::Table(ts) => &ts.cols,
-        TabKind::Sql { .. } | TabKind::Structure(_) | TabKind::Activity(_) => &no_cols,
+        TabKind::Sql { .. } | TabKind::Structure(_) | TabKind::Activity(_) | TabKind::Design(_) => &no_cols,
     };
     let kinds = values::column_kinds(res, cols);
 
@@ -1623,7 +1846,9 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         GridEvent::Copy(row, how) => {
             let table = match &tab.kind {
                 TabKind::Table(ts) => k.qualified(&ts.schema, &ts.table),
-                TabKind::Sql { .. } | TabKind::Structure(_) | TabKind::Activity(_) => "tabela".to_string(),
+                TabKind::Sql { .. } | TabKind::Structure(_) | TabKind::Activity(_) | TabKind::Design(_) => {
+                    "tabela".to_string()
+                }
             };
             return Some(Effect::Copy(match how {
                 CopyAs::Json => values::row_json(res, cols, *row),
@@ -1636,9 +1861,37 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             return None;
         }
         GridEvent::SelectAll => {
-            if !res.rows.is_empty() {
-                tab.anchor = Some((0, 0));
-                tab.selected = Some((res.rows.len() - 1, res.columns.len() - 1));
+            let view = tab.view();
+            if let (false, Some(&first), Some(&last)) = (res.rows.is_empty(), view.first(), view.last()) {
+                tab.anchor = Some((0, first));
+                tab.selected = Some((res.rows.len() - 1, last));
+            }
+            return None;
+        }
+        GridEvent::ToggleColumn(col) => {
+            let name = res.columns[*col].clone();
+            if let Some(i) = tab.hidden_cols.iter().position(|n| *n == name) {
+                tab.hidden_cols.remove(i);
+            } else {
+                tab.hidden_cols.push(name);
+                // A selection on a column that just went away would be invisible.
+                if tab.selected.is_some_and(|(_, c)| c == *col) {
+                    tab.selected = None;
+                    tab.anchor = None;
+                }
+            }
+            return None;
+        }
+        GridEvent::ShowAllColumns => {
+            tab.hidden_cols.clear();
+            return None;
+        }
+        GridEvent::TogglePin(col) => {
+            let name = res.columns[*col].clone();
+            if let Some(i) = tab.pinned_cols.iter().position(|n| *n == name) {
+                tab.pinned_cols.remove(i);
+            } else {
+                tab.pinned_cols.push(name);
             }
             return None;
         }
@@ -1681,15 +1934,14 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             return None;
         }
         GridEvent::CopyCells { headers } => {
-            let (r, c) = tab.selected?;
-            let range = tab.range().unwrap_or((r, c, r, c));
+            let range = tab.selection()?;
             // Copy what the grid shows, pending edits included.
             let overlay = match &tab.kind {
                 TabKind::Table(ts) => ts.overlay(res),
                 _ => None,
             };
             let shown = overlay.as_ref().map_or(res, |o| &o.result);
-            return Some(Effect::Copy(values::to_tsv(shown, range, *headers)));
+            return Some(Effect::Copy(values::to_tsv(shown, &range, *headers)));
         }
         GridEvent::FollowFk(row, col) => {
             let info = cols.iter().find(|c| c.name == res.columns[*col])?;
@@ -1715,7 +1967,8 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         _ => {}
     }
 
-    let selection = tab.selected.map(|(r, c)| tab.range().unwrap_or((r, c, r, c)));
+    let selection = tab.selection();
+    let view = tab.view();
     let TabKind::Table(ts) = &mut tab.kind else {
         return None;
     };
@@ -1761,16 +2014,19 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         }
         // Fills from the selection's top-left corner; whatever falls outside the page is left out.
         GridEvent::Paste(text) => {
-            let (top, left, ..) = selection?;
+            let sel = selection?;
+            let top = sel.r0;
+            // Columns go rightwards in on-screen order from the selection's first one.
+            let start = view.iter().position(|&c| c == sel.cols[0]).unwrap_or(0);
             let cells = values::parse_tsv(&text);
             let mut skipped = 0;
             for (dr, line) in cells.iter().enumerate() {
                 for (dc, v) in line.iter().enumerate() {
-                    let (row, col) = (top + dr, left + dc);
-                    if row >= res.rows.len() || col >= res.columns.len() {
+                    let row = top + dr;
+                    let Some(&col) = view.get(start + dc).filter(|_| row < res.rows.len()) else {
                         skipped += 1;
                         continue;
-                    }
+                    };
                     // Spreadsheets have no NULL: the word itself stands for it, as the grid shows it.
                     let val = (v != "NULL").then(|| v.clone());
                     if let Err(e) = set_cell(ts, res, &kinds, k, (row, col), val) {
@@ -1785,10 +2041,10 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
                 .map(Vec::len)
                 .max()
                 .unwrap_or(0)
-                .min(res.columns.len().saturating_sub(left));
+                .min(view.len().saturating_sub(start));
             if rows > 0 && cols > 0 {
-                tab.anchor = Some((top, left));
-                tab.selected = Some((top + rows - 1, left + cols - 1));
+                tab.anchor = Some((top, view[start]));
+                tab.selected = Some((top + rows - 1, view[start + cols - 1]));
             }
             tab.error = (skipped > 0)
                 .then(|| format!("{skipped} célula(s) coladas ficaram fora da página e foram ignoradas."));
@@ -1803,8 +2059,14 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
                 ts.changes.push(Change::Delete { key });
             }
         }
+        GridEvent::DuplicateRow(row) => {
+            open_duplicate_form(tab, row);
+        }
         GridEvent::Select(..)
         | GridEvent::ColumnStats(..)
+        | GridEvent::ToggleColumn(..)
+        | GridEvent::ShowAllColumns
+        | GridEvent::TogglePin(..)
         | GridEvent::Extend(..)
         | GridEvent::SelectAll
         | GridEvent::CopyCells { .. }
@@ -2020,7 +2282,11 @@ pub mod tests {
         assert!(tab.error.as_deref().is_some_and(|e| e.contains("1 célula")));
         assert_eq!(
             tab.range(),
-            Some((0, 1, 1, 2)),
+            Some(CellRange {
+                r0: 0,
+                r1: 1,
+                cols: vec![1, 2]
+            }),
             "the pasted block ends up selected"
         );
         // Copy shows what the grid shows: the pasted (unsaved) values.
@@ -2031,7 +2297,27 @@ pub mod tests {
         };
         assert_eq!(tsv, "ativo\tnome\ntrue\tcarla\n\tdani\n");
         handle_grid_event(&mut tab, &s, GridEvent::SelectAll, true);
-        assert_eq!(tab.range(), Some((0, 0, 1, 2)));
+        assert_eq!(
+            tab.range(),
+            Some(CellRange {
+                r0: 0,
+                r1: 1,
+                cols: vec![0, 1, 2]
+            })
+        );
+        // Hidden and pinned columns: ranges follow what's on screen.
+        tab.hidden_cols = vec!["ativo".into()];
+        tab.pinned_cols = vec!["nome".into()];
+        assert_eq!(tab.view(), [2, 0]);
+        handle_grid_event(&mut tab, &s, GridEvent::SelectAll, true);
+        assert_eq!(
+            tab.range(),
+            Some(CellRange {
+                r0: 0,
+                r1: 1,
+                cols: vec![2, 0]
+            })
+        );
         handle_grid_event(&mut tab, &s, GridEvent::Select(1, 1), true);
         assert_eq!(tab.range(), None);
     }

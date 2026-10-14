@@ -9,6 +9,8 @@ use crate::values::ValueKind;
 pub enum StructAction {
     OpenSql(String),
     OpenData,
+    /// "Editar estrutura": open the table designer.
+    Edit,
 }
 
 pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool) -> Option<StructAction> {
@@ -43,6 +45,18 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool) -> Option<
                         .clicked()
                     {
                         action = Some(StructAction::OpenData);
+                    }
+                    if st.data.is_some()
+                        && ui
+                            .button(theme::icon_text(
+                                icon::PENCIL_SIMPLE,
+                                "Editar estrutura",
+                                t.muted_foreground,
+                                t.foreground,
+                            ))
+                            .clicked()
+                    {
+                        action = Some(StructAction::Edit);
                     }
                     if let Some(d) = &st.data {
                         let open = theme::icon_text(

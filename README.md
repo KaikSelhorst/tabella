@@ -44,6 +44,15 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - JSON em árvore no painel de detalhes (copia valor ou caminho, ex.: `$.itens[0].preco`)
 - Estatísticas da coluna (clique direito no cabeçalho): nulos, distintos, mín/máx e valores
   mais comuns, com atalho para filtrar
+- Fixar colunas à esquerda (ficam visíveis ao rolar para o lado) e esconder colunas, pelo
+  clique direito no cabeçalho; lembrado por aba de tabela
+- Buscar no resultado do editor (`Ctrl+F` na grade); em tabelas, `Ctrl+F` vai para a busca no banco
+- Duplicar linha: formulário de inserção já preenchido (chaves geradas ficam no padrão)
+- Filtros salvos por tabela (funil antes do WHERE)
+- Snippets no autocomplete (`sel`, `cnt`, `grp`, `dup`, `join`, `upd`…) e `:parâmetros` destacados
+- Atalhos de teclado e snippets em uma tela (`F1`)
+- Criar e alterar tabelas por formulário: colunas (nome, tipo, nulo, padrão), chave primária e
+  índices, com o SQL gerado à vista; abre no editor ou executa (com confirmação)
 
 ## Segurança
 

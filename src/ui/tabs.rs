@@ -1,10 +1,13 @@
 //! The tab strip and the body of each tab (SQL editor or table browser). Drawing only: edits,
 //! queries and deletions are carried out by `crate::app`.
 
+use std::collections::HashSet;
+
 use eframe::egui::{self, Align, Key, Layout, TextEdit};
 
+use super::design::{self, DesignAction};
 use super::detail::{self, DetailAction};
-use super::grid::{GridOpts, grid};
+use super::grid::{self, GridOpts, grid};
 use super::import_form::{self, ImportAction};
 use super::structure::{self, InsertAction, StructAction};
 use super::{complete, find, icon, palette, plan_view, syntax, theme};
@@ -12,6 +15,7 @@ use crate::app::{self, App, Effect, FavPrompt, GridEvent, Session, Tab, TabKind}
 use crate::db::QueryResult;
 use crate::export::{self, Format};
 use crate::favorites::{self, Favorite};
+use crate::filters::{self, SavedFilter};
 use crate::history::{self, Entry};
 use crate::sql::{self, PAGE_SIZE};
 use crate::values;
@@ -22,6 +26,7 @@ struct Cx<'a> {
     show_detail: &'a mut bool,
     history: &'a [Entry],
     favorites: &'a [Favorite],
+    filters: &'a [SavedFilter],
     /// Something only the app can do (open another tab), carried out after drawing.
     request: Option<Request>,
 }
@@ -33,6 +38,11 @@ enum Request {
     OpenFiltered(String, String, String),
     SaveFavorite(String),
     DeleteFavorite(String),
+    /// "Editar estrutura" of schema.table (its Estrutura tab has the data).
+    Design(String, String),
+    /// schema, table, name, filter
+    SaveFilter(String, String, String, String),
+    DeleteFilter(String),
 }
 
 impl App {
@@ -56,6 +66,7 @@ impl App {
                             TabKind::Sql { .. } => icon::CODE,
                             TabKind::Structure(_) => icon::TREE_STRUCTURE,
                             TabKind::Activity(_) => icon::PULSE,
+                            TabKind::Design(_) => icon::PENCIL_SIMPLE,
                         };
                         if theme::tab_label(ui, glyph, &tab.title, i == self.active).clicked() {
                             self.active = i;
@@ -87,18 +98,45 @@ impl App {
             show_detail: &mut self.show_detail,
             history: &self.history,
             favorites: &self.favorites,
+            filters: &self.filters,
             request: None,
         };
         match &tab.kind {
             TabKind::Sql { .. } => sql_tab(ui, tab, &mut cx),
             TabKind::Table(_) => table_tab(ui, tab, &mut cx),
             TabKind::Activity(_) => activity_tab(ui, tab, &mut cx),
+            TabKind::Design(_) => {
+                let busy = tab.busy();
+                if let Some(e) = &tab.error {
+                    error_banner(ui, e);
+                }
+                let TabKind::Design(d) = &mut tab.kind else {
+                    unreachable!()
+                };
+                match design::design_tab(ui, tab.id, d, busy) {
+                    Some(DesignAction::Run(sql)) => {
+                        if s.cfg.read_only {
+                            tab.error =
+                                Some("Conexão somente leitura: não é possível alterar a estrutura.".into());
+                        } else if sql::script_risk(&sql).dangers.is_empty() {
+                            app::run_sql(tab, s, sql);
+                        } else {
+                            // ALTER / DROP: same confirmation as in the editor.
+                            tab.confirm_run = Some(sql);
+                        }
+                    }
+                    Some(DesignAction::OpenSql(sql)) => cx.request = Some(Request::Sql(sql)),
+                    None => {}
+                }
+                confirm_run(ui.ctx(), tab, s);
+            }
             TabKind::Structure(st) => {
                 if let Some(e) = &tab.error {
                     error_banner(ui, e);
                 }
                 cx.request = match structure::structure_tab(ui, st, tab.busy()) {
                     Some(StructAction::OpenSql(ddl)) => Some(Request::Sql(ddl)),
+                    Some(StructAction::Edit) => Some(Request::Design(st.schema.clone(), st.table.clone())),
                     Some(StructAction::OpenData) => Some(Request::Data(st.schema.clone(), st.table.clone())),
                     None => None,
                 };
@@ -119,6 +157,19 @@ impl App {
                 });
             }
             Some(Request::DeleteFavorite(id)) => self.delete_favorite(&id),
+            Some(Request::Design(schema, table)) => {
+                let data = self.tabs.iter().find_map(|t| match &t.kind {
+                    TabKind::Structure(st) if st.schema == schema && st.table == table => st.data.clone(),
+                    _ => None,
+                });
+                if let Some(data) = data {
+                    self.open_design(&schema, &table, &data);
+                }
+            }
+            Some(Request::SaveFilter(schema, table, name, filter)) => {
+                self.save_filter(&schema, &table, &name, &filter);
+            }
+            Some(Request::DeleteFilter(id)) => self.delete_filter(&id),
             None => {}
         }
     }
@@ -844,6 +895,7 @@ fn confirm_kill(ctx: &egui::Context, tab_id: u64, id: i64, terminate: bool) -> O
 
 fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
+    let search_id = egui::Id::new(("table_search", tab.id));
     // Ctrl+S / Ctrl+Z work on pending changes, unless a text field wants the keys.
     if !ui.ctx().egui_wants_keyboard_input() {
         let (save, undo) = ui.input_mut(|i| {
@@ -933,7 +985,8 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 // Search: the term in any column, on top of the WHERE filter.
                 let search = ui.add(
                     TextEdit::singleline(&mut ts.search)
-                        .hint_text("Buscar em todas as colunas")
+                        .id(search_id)
+                        .hint_text("Buscar em todas as colunas  (Ctrl+F)")
                         .margin(egui::Margin::symmetric(8, 6))
                         .desired_width(200.0),
                 );
@@ -941,7 +994,23 @@ fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     ts.page = 0;
                     reload_now = true;
                 }
-                ui.label(theme::icon(icon::FUNNEL).size(15.0).color(t.muted_foreground));
+                match filters_menu(ui, tab_id, cx.filters, &s.cfg.id, ts) {
+                    Some(FilterAction::Apply(f)) => {
+                        ts.filter = f;
+                        ts.page = 0;
+                        reload_now = true;
+                    }
+                    Some(FilterAction::Save(name)) => {
+                        cx.request = Some(Request::SaveFilter(
+                            ts.schema.clone(),
+                            ts.table.clone(),
+                            name,
+                            ts.filter.clone(),
+                        ));
+                    }
+                    Some(FilterAction::Delete(id)) => cx.request = Some(Request::DeleteFilter(id)),
+                    None => {}
+                }
                 ui.label(
                     egui::RichText::new("WHERE")
                         .monospace()
@@ -1315,9 +1384,9 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         _ => None,
     };
     let shown = overlay.as_ref().map_or(res, |o| &o.result);
-    let range = tab
-        .range()
-        .filter(|&(_, _, r1, c1)| r1 < shown.rows.len() && c1 < shown.columns.len());
+    let view = tab.view();
+    let pinned = tab.pinned_count();
+    let range = tab.range().filter(|r| r.r1 < shown.rows.len());
     let no_cols = Vec::new();
     let (cols, edit, order, bool_pick, row_offset, has_pk) = match &mut tab.kind {
         TabKind::Table(ts) if editable => {
@@ -1371,18 +1440,64 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
             });
     }
 
-    let key_event = if !editing && !ui.ctx().egui_wants_keyboard_input() {
-        selected.and_then(|sel| keyboard_event(ui, sel, shown, can_edit))
+    let typing = ui.ctx().egui_wants_keyboard_input();
+    let key_event = if !editing && !typing {
+        selected.and_then(|sel| keyboard_event(ui, sel, shown, &view, can_edit))
     } else {
         None
     };
-    let scroll_to = match key_event {
+    let mut scroll_to = match key_event {
         Some(GridEvent::Select(row, _) | GridEvent::Extend(row, _)) => Some(row),
         _ => None,
     };
-    if let Some(range) = range {
+    if let Some(range) = &range {
         selection_stats(ui, tab.id, shown, &kinds, range);
     }
+
+    // Ctrl+F: tables search the database (the toolbar box); editor results are searched here.
+    let find_id = egui::Id::new(("result_find", tab.id));
+    if !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F)) {
+        if editable {
+            ui.memory_mut(|m| m.request_focus(egui::Id::new(("table_search", tab.id))));
+        } else {
+            ui.data_mut(|d| {
+                let st = d.get_temp_mut_or_default::<Option<find::FindState>>(find_id);
+                st.get_or_insert_with(Default::default).focus = true;
+            });
+        }
+    }
+    let mut result_find: Option<find::FindState> = ui.data(|d| d.get_temp(find_id)).flatten();
+    let found = result_find
+        .as_ref()
+        .map(|f| found_cells(ui.ctx(), tab.id, shown, &kinds, &view, &f.query));
+    let mut found_current = None;
+    if let (Some(st), Some(found)) = (&mut result_find, &found) {
+        let order = found;
+        match find::find_bar(ui, st, order.len()) {
+            Some(find::FindAction::Close) => {
+                result_find = None;
+            }
+            Some(find::FindAction::Goto) => {
+                if let Some(&(r, c)) = order.get(st.current.min(order.len().saturating_sub(1))) {
+                    tab.selected = Some((r, c));
+                    tab.anchor = None;
+                    scroll_to = Some(r);
+                }
+            }
+            _ => {}
+        }
+        if let Some(st) = &result_find {
+            found_current = order.get(st.current.min(order.len().saturating_sub(1))).copied();
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(find_id, result_find.clone()));
+    let found_set: Option<HashSet<(usize, usize)>> = result_find
+        .as_ref()
+        .and(found.as_ref())
+        .map(|order| order.iter().copied().collect());
+    let selected = tab
+        .selected
+        .filter(|(r, c)| *r < res.rows.len() && *c < res.columns.len());
     let opts = GridOpts {
         can_edit,
         selected,
@@ -1394,15 +1509,30 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         changed: overlay.as_ref().map(|o| &o.changed),
         deleted: overlay.as_ref().map(|o| &o.deleted),
         can_filter: editable,
-        range,
+        range: range.as_ref(),
+        view: &view,
+        pinned,
+        found: found_set.as_ref(),
+        found_current,
     };
-    // Wide results scroll sideways instead of running under the detail panel.
-    let mut event = egui::ScrollArea::horizontal()
+    // Wide results scroll sideways instead of running under the detail panel. A pinned cell
+    // double-clicked while scrolled away scrolls back so its editor shows.
+    let home_id = egui::Id::new(("hscroll_home", tab.id));
+    let mut area = egui::ScrollArea::horizontal()
         .id_salt(("hscroll", tab.id))
-        .auto_shrink([false, false])
-        .show(ui, |ui| grid(ui, tab.id, shown, cols, edit, &opts))
-        .inner
-        .or(key_event);
+        .auto_shrink([false, false]);
+    if ui.data_mut(|d| d.remove_temp::<bool>(home_id)).is_some() {
+        area = area.horizontal_scroll_offset(0.0);
+    }
+    let mut frozen = Vec::new();
+    let out = area.show(ui, |ui| grid(ui, tab.id, shown, cols, edit, &opts, &mut frozen));
+    let mut event = out.inner.or(key_event);
+    if let Some(e) = paint_frozen(ui, tab.id, &frozen, out.state.offset.x, out.inner_rect) {
+        if matches!(e, GridEvent::StartEdit(..)) {
+            ui.data_mut(|d| d.insert_temp(home_id, true));
+        }
+        event = Some(e);
+    }
     if res.rows.is_empty() {
         ui.add_space(32.0);
         ui.vertical_centered(|ui| {
@@ -1430,6 +1560,112 @@ fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
         }
         None => {}
     }
+}
+
+/// Pinned columns (and the row numbers) drawn again at the left edge once the grid is scrolled
+/// sideways past them. Clicks on them select, double-clicks edit, like the cells underneath.
+fn paint_frozen(
+    ui: &mut egui::Ui,
+    tab_id: u64,
+    frozen: &[grid::Frozen],
+    offset: f32,
+    viewport: egui::Rect,
+) -> Option<GridEvent> {
+    if offset <= 0.0 || frozen.is_empty() {
+        return None;
+    }
+    let t = theme::tokens();
+    let mut event = None;
+    let mut right_edge = f32::MIN;
+    for f in frozen {
+        let rect = f.rect.translate(egui::vec2(offset, 0.0));
+        // Only the vertical part of the cell's clip counts (rows under the header); sideways,
+        // its own column clip is exactly what scrolled out of view.
+        let clip = egui::Rect::from_x_y_ranges(viewport.x_range(), f.clip.y_range()).intersect(viewport);
+        if !clip.intersects(rect) {
+            continue;
+        }
+        right_edge = right_edge.max(rect.right());
+        let painter = ui.painter().with_clip_rect(clip);
+        painter.rect_filled(rect, 0.0, f.bg);
+        let stroke = egui::Stroke::new(1.0, t.border);
+        painter.hline(rect.x_range(), rect.bottom() - 0.5, stroke);
+        painter.vline(rect.right() - 0.5, rect.y_range(), stroke);
+        let text_clip = painter.with_clip_rect(clip.intersect(rect.shrink2(egui::vec2(4.0, 0.0))));
+        let (pos, align) = if f.right_align {
+            (
+                rect.right_center() - egui::vec2(8.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+            )
+        } else if f.col.is_none() {
+            (rect.center(), egui::Align2::CENTER_CENTER)
+        } else {
+            (
+                rect.left_center() + egui::vec2(8.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+            )
+        };
+        text_clip.text(pos, align, &f.text, f.font.clone(), f.color);
+        if let (Some(row), Some(col)) = (f.row, f.col) {
+            let r = ui.interact(
+                rect.intersect(clip),
+                egui::Id::new(("frozen", tab_id, row, col)),
+                egui::Sense::click(),
+            );
+            if r.double_clicked() {
+                event = Some(GridEvent::StartEdit(row, col));
+            } else if r.clicked() {
+                let shift = ui.input(|i| i.modifiers.shift);
+                event = Some(if shift {
+                    GridEvent::Extend(row, col)
+                } else {
+                    GridEvent::Select(row, col)
+                });
+            }
+        }
+    }
+    // A soft edge where the pinned block ends, so it reads as floating over the rest.
+    if right_edge > f32::MIN {
+        let shadow = egui::Rect::from_x_y_ranges(right_edge..=right_edge + 6.0, viewport.y_range());
+        ui.painter()
+            .with_clip_rect(viewport)
+            .rect_filled(shadow, 0.0, egui::Color32::from_black_alpha(40));
+    }
+    event
+}
+
+/// Cells whose shown text contains `query` (any case), in reading order. Cached: it runs every
+/// frame while the find bar is open.
+fn found_cells(
+    ctx: &egui::Context,
+    tab_id: u64,
+    res: &QueryResult,
+    kinds: &[values::ValueKind],
+    view: &[usize],
+    query: &str,
+) -> Vec<(usize, usize)> {
+    let key = egui::Id::new((query, res.rows.len(), res.elapsed, view));
+    let cache = egui::Id::new(("result_find_cache", tab_id));
+    if let Some((k, v)) = ctx.data(|d| d.get_temp::<(egui::Id, Vec<(usize, usize)>)>(cache))
+        && k == key
+    {
+        return v;
+    }
+    let needle = query.to_lowercase();
+    let mut out = Vec::new();
+    if !needle.is_empty() {
+        for (ri, row) in res.rows.iter().enumerate() {
+            for &ci in view {
+                if let Some(v) = &row[ci]
+                    && grid::display_value(kinds[ci], v).to_lowercase().contains(&needle)
+                {
+                    out.push((ri, ci));
+                }
+            }
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp(cache, (key, out.clone())));
+    out
 }
 
 /// "Estatísticas da coluna": fill rate, distinct values, range and the most common values, each
@@ -1577,9 +1813,18 @@ fn keyboard_event(
     ui: &egui::Ui,
     (row, col): (usize, usize),
     res: &QueryResult,
+    view: &[usize],
     can_edit: bool,
 ) -> Option<GridEvent> {
-    let (last_row, last_col) = (res.rows.len().checked_sub(1)?, res.columns.len().checked_sub(1)?);
+    let last_row = res.rows.len().checked_sub(1)?;
+    // Left/right follow the on-screen order (pinned first, hidden skipped).
+    let pos = view.iter().position(|&c| c == col).unwrap_or(0);
+    let right = view.get(pos + 1).copied().unwrap_or(col);
+    let left = pos
+        .checked_sub(1)
+        .and_then(|p| view.get(p))
+        .copied()
+        .unwrap_or(col);
     let clipboard = ui.input(|i| {
         i.events.iter().find_map(|e| match e {
             egui::Event::Copy => Some(GridEvent::CopyCells { headers: false }),
@@ -1608,9 +1853,9 @@ fn keyboard_event(
         } else if i.key_pressed(Key::ArrowUp) {
             Some(to(row.saturating_sub(1), col))
         } else if i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::Tab) {
-            Some(to(row, (col + 1).min(last_col)))
+            Some(to(row, right))
         } else if i.key_pressed(Key::ArrowLeft) {
-            Some(to(row, col.saturating_sub(1)))
+            Some(to(row, left))
         } else {
             None
         }
@@ -1623,7 +1868,7 @@ fn selection_stats(
     tab_id: u64,
     shown: &QueryResult,
     kinds: &[values::ValueKind],
-    range: values::CellRange,
+    range: &values::CellRange,
 ) {
     let t = theme::tokens();
     let st = values::stats(shown, kinds, range);
@@ -1681,6 +1926,91 @@ fn detail_toggle(ui: &mut egui::Ui, show: &mut bool) {
     {
         *show = !*show;
     }
+}
+
+enum FilterAction {
+    Apply(String),
+    Save(String),
+    Delete(String),
+}
+
+/// The funnel before WHERE: this table's saved filters, and saving the current one by name.
+fn filters_menu(
+    ui: &mut egui::Ui,
+    tab_id: u64,
+    all: &[SavedFilter],
+    conn: &str,
+    ts: &app::TableState,
+) -> Option<FilterAction> {
+    let t = theme::tokens();
+    let mine = filters::for_table(all, conn, &ts.schema, &ts.table);
+    let color = if mine.is_empty() {
+        t.muted_foreground
+    } else {
+        t.lime
+    };
+    let mut action = None;
+    let name_id = egui::Id::new(("filter_name", tab_id));
+    ui.menu_button(theme::icon(icon::FUNNEL).size(15.0).color(color), |ui| {
+        ui.set_width(340.0);
+        ui.label(egui::RichText::new("FILTROS SALVOS").size(11.0).color(t.subtle));
+        if mine.is_empty() {
+            ui.label(egui::RichText::new("Nenhum filtro salvo para esta tabela").color(t.subtle));
+        }
+        for f in &mine {
+            ui.horizontal(|ui| {
+                let active = f.filter == ts.filter.trim();
+                let r = ui
+                    .add(
+                        egui::Button::new(egui::RichText::new(&f.name).color(t.foreground))
+                            .selected(active)
+                            .frame_when_inactive(false),
+                    )
+                    .on_hover_text(egui::RichText::new(&f.filter).monospace());
+                if r.clicked() {
+                    action = Some(FilterAction::Apply(f.filter.clone()));
+                    ui.close();
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(theme::icon(icon::X).size(11.0).color(t.subtle)).frame(false))
+                        .on_hover_text("Excluir filtro")
+                        .clicked()
+                    {
+                        action = Some(FilterAction::Delete(f.id.clone()));
+                    }
+                });
+            });
+        }
+        ui.separator();
+        let can_save = !ts.filter.trim().is_empty();
+        let mut name = ui.data(|d| d.get_temp::<String>(name_id)).unwrap_or_default();
+        ui.horizontal(|ui| {
+            let r = ui.add_enabled(
+                can_save,
+                TextEdit::singleline(&mut name)
+                    .hint_text(if can_save {
+                        "Nome do filtro atual"
+                    } else {
+                        "Escreva um WHERE para salvar"
+                    })
+                    .desired_width(220.0),
+            );
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            let ok = can_save && !name.trim().is_empty();
+            if (ui.add_enabled(ok, egui::Button::new("Salvar")).clicked() || (enter && ok))
+                && action.is_none()
+            {
+                action = Some(FilterAction::Save(name.trim().to_string()));
+                name.clear();
+                ui.close();
+            }
+        });
+        ui.data_mut(|d| d.insert_temp(name_id, name));
+    })
+    .response
+    .on_hover_text("Filtros salvos");
+    action
 }
 
 enum FavAction {

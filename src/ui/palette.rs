@@ -13,6 +13,8 @@ const MAX_RESULTS: usize = 12;
 #[derive(Clone)]
 enum Cmd {
     Activity,
+    NewTable,
+    Help,
     OpenTable(String, String),
     /// Saved connection id.
     Connect(String),
@@ -160,12 +162,26 @@ impl App {
             });
         }
         items.push(Item {
+            icon: icon::KEYBOARD,
+            label: "Atalhos de teclado".into(),
+            detail: "F1".into(),
+            cmd: Cmd::Help,
+        });
+        items.push(Item {
             icon: icon::PLUS,
             label: "Nova conexão".into(),
             detail: String::new(),
             cmd: Cmd::NewConnection,
         });
         if self.session.is_some() {
+            if !self.session.as_ref().is_some_and(|s| s.cfg.read_only) {
+                items.push(Item {
+                    icon: icon::PLUS,
+                    label: "Nova tabela".into(),
+                    detail: "colunas, chave primária e índices por formulário".into(),
+                    cmd: Cmd::NewTable,
+                });
+            }
             items.push(Item {
                 icon: icon::PULSE,
                 label: "Atividade no servidor".into(),
@@ -325,6 +341,8 @@ impl App {
                     })
                 }
                 Cmd::Activity => self.open_activity(),
+                Cmd::NewTable => self.open_new_table(None),
+                Cmd::Help => self.help = true,
                 Cmd::Disconnect => {
                     self.disconnect();
                 }

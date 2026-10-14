@@ -211,7 +211,30 @@ pub struct GridOpts<'a> {
     /// Table tabs: offer "filter by this value" in the cell menu.
     pub can_filter: bool,
     /// Range selection, when more than one cell is selected.
-    pub range: Option<CellRange>,
+    pub range: Option<&'a CellRange>,
+    /// Columns to show, in order (indices into the result).
+    pub view: &'a [usize],
+    /// How many of `view`'s first columns stay put when scrolling sideways.
+    pub pinned: usize,
+    /// Cells matching "buscar no resultado", and the one it is on.
+    pub found: Option<&'a HashSet<(usize, usize)>>,
+    pub found_current: Option<(usize, usize)>,
+}
+
+/// A cell of a pinned column (or the row-number gutter, `col: None`) as drawn this frame. The
+/// caller repaints these over the left edge when the grid is scrolled sideways.
+pub struct Frozen {
+    pub rect: egui::Rect,
+    /// Visible part of the table (rows under the header are clipped).
+    pub clip: egui::Rect,
+    pub text: String,
+    pub font: FontId,
+    pub color: egui::Color32,
+    pub bg: egui::Color32,
+    pub right_align: bool,
+    /// `None` for the header.
+    pub row: Option<usize>,
+    pub col: Option<usize>,
 }
 
 /// Result grid. Returns at most one user action per frame.
@@ -222,6 +245,7 @@ pub fn grid(
     cols: &[ColumnInfo],
     mut edit: Option<&mut Edit>,
     opts: &GridOpts,
+    frozen: &mut Vec<Frozen>,
 ) -> Option<GridEvent> {
     let GridOpts {
         can_edit,
@@ -235,10 +259,12 @@ pub fn grid(
         deleted,
         can_filter,
         range,
+        view,
+        pinned,
+        found,
+        found_current,
     } = *opts;
-    let in_range = |ri: usize, ci: usize| {
-        range.is_some_and(|(r0, c0, r1, c1)| (r0..=r1).contains(&ri) && (c0..=c1).contains(&ci))
-    };
+    let in_range = |ri: usize, ci: usize| range.is_some_and(|r| r.contains(ri, ci));
     // Dragging across cells selects a range: set when a drag starts on a cell, until release.
     let drag_id = egui::Id::new(("grid_drag", id));
     let dragging = ui.ctx().data(|d| d.get_temp::<bool>(drag_id)).unwrap_or(false);
@@ -264,7 +290,8 @@ pub fn grid(
         egui::Stroke::new(1.0, t.border),
     );
     let mut table = TableBuilder::new(ui)
-        .id_salt(("grid", id))
+        // Column widths are stored by position: a different set of columns starts afresh.
+        .id_salt(("grid", id, view))
         .striped(false)
         .resizable(true)
         .sense(Sense::click())
@@ -275,15 +302,16 @@ pub fn grid(
     // Row-number gutter sized to the largest number on the page.
     let digits = (row_offset + res.rows.len()).max(1).to_string().len() as f32;
     table = table.column(Column::exact((digits * CHAR_WIDTH + 12.0).max(32.0)));
-    let last = res.columns.len().saturating_sub(1);
-    for (ci, name) in res.columns.iter().enumerate() {
+    let last = view.len().saturating_sub(1);
+    for (vi, &ci) in view.iter().enumerate() {
+        let name = &res.columns[ci];
         let ty = info[ci].map(|c| c.data_type.as_str());
         let w = column_width(
             name,
             ty,
             sample.iter().map(|r| r[ci].as_ref().map(|v| v.chars().count())),
         );
-        table = table.column(if ci == last {
+        table = table.column(if vi == last {
             // The last column absorbs the remaining width so the grid fills the panel.
             Column::remainder().at_least(w).clip(true)
         } else {
@@ -293,10 +321,39 @@ pub fn grid(
 
     table
         .header(HEADER_HEIGHT, |mut header| {
-            header.col(|ui| cell_chrome(ui, table_rect, t));
-            for (ci, name) in res.columns.iter().enumerate() {
+            header.col(|ui| {
+                cell_chrome(ui, table_rect, t);
+                if pinned > 0 {
+                    frozen.push(Frozen {
+                        rect: full_cell(ui),
+                        clip: ui.clip_rect(),
+                        text: String::new(),
+                        font: cell_font.clone(),
+                        color: t.subtle,
+                        bg: t.card,
+                        right_align: false,
+                        row: None,
+                        col: None,
+                    });
+                }
+            });
+            for (vi, &ci) in view.iter().enumerate() {
+                let name = &res.columns[ci];
                 header.col(|ui| {
                     cell_chrome(ui, table_rect, t);
+                    if vi < pinned {
+                        frozen.push(Frozen {
+                            rect: full_cell(ui),
+                            clip: ui.clip_rect(),
+                            text: name.clone(),
+                            font: egui::TextStyle::Body.resolve(ui.style()),
+                            color: t.foreground,
+                            bg: t.card,
+                            right_align: false,
+                            row: None,
+                            col: Some(ci),
+                        });
+                    }
                     let c = info[ci];
                     if c.is_some_and(|c| c.pk) {
                         ui.label(theme::icon(icon::KEY).color(t.warning).size(12.0));
@@ -339,6 +396,45 @@ pub fn grid(
                             event = Some(GridEvent::ColumnStats(ci));
                             ui.close();
                         }
+                        ui.separator();
+                        let pin = if vi < pinned {
+                            "Desafixar"
+                        } else {
+                            "Fixar à esquerda"
+                        };
+                        if ui
+                            .button(pin)
+                            .on_hover_text("Colunas fixadas ficam visíveis ao rolar para o lado")
+                            .clicked()
+                        {
+                            event = Some(GridEvent::TogglePin(ci));
+                            ui.close();
+                        }
+                        if view.len() > 1 && ui.button("Esconder coluna").clicked() {
+                            event = Some(GridEvent::ToggleColumn(ci));
+                            ui.close();
+                        }
+                        let hidden = res.columns.len() - view.len();
+                        ui.menu_button(
+                            format!("Colunas visíveis ({}/{})", view.len(), res.columns.len()),
+                            |ui| {
+                                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                                    for (i, n) in res.columns.iter().enumerate() {
+                                        let mut on = view.contains(&i);
+                                        // The last visible one can't go: something must stay clickable.
+                                        let can = !on || view.len() > 1;
+                                        if ui.add_enabled(can, egui::Checkbox::new(&mut on, n)).changed() {
+                                            event = Some(GridEvent::ToggleColumn(i));
+                                        }
+                                    }
+                                });
+                            },
+                        );
+                        if hidden > 0 && ui.button(format!("Mostrar todas ({hidden} ocultas)")).clicked() {
+                            event = Some(GridEvent::ShowAllColumns);
+                            ui.close();
+                        }
+                        ui.separator();
                         if ui.button("Copiar nome").clicked() {
                             ui.ctx().copy_text(name.clone());
                             ui.close();
@@ -363,8 +459,22 @@ pub fn grid(
                             );
                         },
                     );
+                    if pinned > 0 {
+                        frozen.push(Frozen {
+                            rect: full_cell(ui),
+                            clip: ui.clip_rect(),
+                            text: (row_offset + ri + 1).to_string(),
+                            font: cell_font.clone(),
+                            color: t.subtle,
+                            bg: t.background,
+                            right_align: false,
+                            row: Some(ri),
+                            col: None,
+                        });
+                    }
                 });
-                for (ci, &kind) in kinds.iter().enumerate() {
+                for (vi, &ci) in view.iter().enumerate() {
+                    let kind = kinds[ci];
                     row.col(|ui| {
                         cell_chrome(ui, table_rect, t);
                         if let Some(e) = edit.as_deref_mut().filter(|e| e.row == ri && e.col == ci) {
@@ -402,6 +512,19 @@ pub fn grid(
                                 full_cell(ui),
                                 0.0,
                                 theme::mix(t.warning, 0.18, t.background),
+                            );
+                        }
+                        let is_found = found.is_some_and(|f| f.contains(&(ri, ci)));
+                        if is_found && selected != Some((ri, ci)) {
+                            let strength = if found_current == Some((ri, ci)) {
+                                0.45
+                            } else {
+                                0.22
+                            };
+                            gap_painter(ui, table_rect).rect_filled(
+                                full_cell(ui),
+                                0.0,
+                                theme::mix(t.warning, strength, t.background),
                             );
                         }
                         if selected != Some((ri, ci)) && in_range(ri, ci) {
@@ -450,6 +573,42 @@ pub fn grid(
                                 RichText::new(shown).font(cell_font.clone()).color(color)
                             }
                         };
+                        if vi < pinned {
+                            let bg = if selected == Some((ri, ci)) {
+                                t.selection
+                            } else if in_range(ri, ci) {
+                                theme::mix(t.selection, 0.6, t.background)
+                            } else if row_deleted {
+                                theme::mix(t.destructive, 0.14, t.background)
+                            } else if changed.is_some_and(|c| c.contains(&(ri, ci))) {
+                                theme::mix(t.warning, 0.18, t.background)
+                            } else {
+                                t.background
+                            };
+                            let (shown, color) = match val {
+                                None => ("NULL".to_string(), t.subtle),
+                                Some(v) => (
+                                    display_value(kind, v).to_string(),
+                                    match kind {
+                                        ValueKind::Number => t.number,
+                                        ValueKind::Bool => t.boolean,
+                                        ValueKind::Date => t.date,
+                                        ValueKind::Text => t.foreground,
+                                    },
+                                ),
+                            };
+                            frozen.push(Frozen {
+                                rect: full_cell(ui),
+                                clip: ui.clip_rect(),
+                                text: shown,
+                                font: cell_font.clone(),
+                                color,
+                                bg,
+                                right_align: kind == ValueKind::Number,
+                                row: Some(ri),
+                                col: Some(ci),
+                            });
+                        }
                         // Rows going away read as struck through.
                         let text = if row_deleted {
                             text.strikethrough().color(t.subtle)
@@ -553,6 +712,14 @@ pub fn grid(
                                 ui.close();
                             }
                             if can_edit {
+                                if ui
+                                    .button("Duplicar linha")
+                                    .on_hover_text("Abre o formulário de inserção preenchido com esta linha")
+                                    .clicked()
+                                {
+                                    event = Some(GridEvent::DuplicateRow(ri));
+                                    ui.close();
+                                }
                                 if ui.button("Definir NULL").clicked() {
                                     event = Some(GridEvent::Commit(ri, ci, None));
                                     ui.close();
@@ -632,7 +799,12 @@ mod tests {
                     deleted: None,
                     can_filter: false,
                     range: None,
+                    view: &[0, 1],
+                    pinned: 0,
+                    found: None,
+                    found_current: None,
                 },
+                &mut Vec::new(),
             );
         });
         harness.get_by_label("ana");
@@ -663,7 +835,12 @@ mod tests {
                     deleted: None,
                     can_filter: false,
                     range: None,
+                    view: &[0, 1],
+                    pinned: 0,
+                    found: None,
+                    found_current: None,
                 },
+                &mut Vec::new(),
             ) {
                 got = Some(e);
             }

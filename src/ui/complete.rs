@@ -12,7 +12,40 @@ pub enum ItemKind {
     Table,
     Column,
     Keyword,
+    /// Expands into a template; see `SNIPPETS`.
+    Snippet,
 }
+
+/// Where the cursor lands after a snippet expands.
+const CURSOR: char = '¦';
+
+/// `(trigger, what it is, template)`: typing the trigger offers the template in the completion
+/// list.
+pub const SNIPPETS: &[(&str, &str, &str)] = &[
+    ("sel", "SELECT … LIMIT 100", "SELECT *\nFROM ¦\nLIMIT 100;"),
+    ("selw", "SELECT … WHERE …", "SELECT *\nFROM ¦\nWHERE \nLIMIT 100;"),
+    ("cnt", "contar linhas", "SELECT count(*)\nFROM ¦;"),
+    (
+        "grp",
+        "agrupar e contar",
+        "SELECT ¦, count(*)\nFROM \nGROUP BY 1\nORDER BY 2 DESC;",
+    ),
+    (
+        "dup",
+        "valores repetidos",
+        "SELECT ¦, count(*)\nFROM \nGROUP BY 1\nHAVING count(*) > 1\nORDER BY 2 DESC;",
+    ),
+    ("join", "JOIN … ON", "JOIN ¦ ON  = "),
+    ("ljoin", "LEFT JOIN … ON", "LEFT JOIN ¦ ON  = "),
+    (
+        "cte",
+        "WITH … AS (…)",
+        "WITH base AS (\n  ¦\n)\nSELECT *\nFROM base;",
+    ),
+    ("ins", "INSERT INTO … VALUES", "INSERT INTO ¦ ()\nVALUES ();"),
+    ("upd", "UPDATE … SET … WHERE", "UPDATE ¦\nSET  = \nWHERE ;"),
+    ("del", "DELETE … WHERE", "DELETE FROM ¦\nWHERE ;"),
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
@@ -123,10 +156,29 @@ pub fn suggest(
         previous_keyword(&chars, start).as_deref(),
         Some("FROM" | "JOIN" | "INTO" | "UPDATE" | "TABLE")
     );
+    // Snippets from two letters on; the one typed exactly comes first.
+    let mut exact = Vec::new();
+    let mut snippet_items = Vec::new();
+    if qualifier.is_none() && lower.chars().count() >= 2 {
+        for (trigger, what, _) in SNIPPETS {
+            if trigger.starts_with(lower.as_str()) {
+                let item = Item {
+                    text: trigger.to_string(),
+                    kind: ItemKind::Snippet,
+                    detail: what.to_string(),
+                };
+                if *trigger == lower {
+                    exact.push(item)
+                } else {
+                    snippet_items.push(item)
+                }
+            }
+        }
+    }
     let mut items = if wants_table {
-        [table_items, column_items, keyword_items].concat()
+        [exact, table_items, column_items, keyword_items, snippet_items].concat()
     } else {
-        [column_items, table_items, keyword_items].concat()
+        [exact, column_items, table_items, keyword_items, snippet_items].concat()
     };
     items.truncate(MAX_ITEMS);
     (!items.is_empty()).then_some(Suggestions { start, items })
@@ -188,8 +240,9 @@ pub fn before_editor(
         let item = &sugg.items[st.selected];
         let byte = |ci: usize| text.char_indices().nth(ci).map_or(text.len(), |(b, _)| b);
         let (a, b) = (byte(sugg.start), byte(cursor));
-        text.replace_range(a..b, &item.text);
-        let pos = sugg.start + item.text.chars().count();
+        let (insert, pos) = expansion(item);
+        text.replace_range(a..b, &insert);
+        let pos = sugg.start + pos;
         te.cursor
             .set_char_range(Some(CCursorRange::one(CCursor::new(pos))));
         te.store(ctx, editor_id);
@@ -199,6 +252,24 @@ pub fn before_editor(
     let selected = st.selected;
     ctx.data_mut(|d| d.insert_temp(state_id, st));
     Some((sugg, selected))
+}
+
+/// Text an accepted item puts in, and where the cursor goes (chars from its start).
+fn expansion(item: &Item) -> (String, usize) {
+    let template = match item.kind {
+        ItemKind::Snippet => SNIPPETS
+            .iter()
+            .find(|(t, _, _)| *t == item.text)
+            .map(|(_, _, s)| *s),
+        _ => None,
+    };
+    match template {
+        Some(s) => {
+            let pos = s.chars().position(|c| c == CURSOR).unwrap_or(s.chars().count());
+            (s.replace(CURSOR, ""), pos)
+        }
+        None => (item.text.clone(), item.text.chars().count()),
+    }
 }
 
 /// Draws the suggestion list just under the cursor.
@@ -230,6 +301,7 @@ pub fn popup(
                             ItemKind::Table => (icon::TABLE, t.info),
                             ItemKind::Column => (icon::COLUMNS, t.number),
                             ItemKind::Keyword => (icon::TEXT_AA, t.subtle),
+                            ItemKind::Snippet => (icon::LIGHTNING, t.lime),
                         };
                         p.text(
                             rect.left_center() + egui::vec2(8.0, 0.0),
@@ -316,7 +388,26 @@ mod tests {
             "produto_id"
         );
         let text = "sel";
-        assert_eq!(texts(&suggest(text, 3, &tables(), &columns())), ["select"]);
+        assert_eq!(
+            texts(&suggest(text, 3, &tables(), &columns())),
+            ["sel", "select", "selw"]
+        );
+    }
+
+    #[test]
+    fn snippets_expand_with_the_cursor_inside() {
+        let s = suggest("cn", 2, &tables(), &columns()).unwrap();
+        let item = s.items.iter().find(|i| i.kind == ItemKind::Snippet).unwrap();
+        assert_eq!(item.text, "cnt");
+        let (text, pos) = expansion(item);
+        assert_eq!(text, "SELECT count(*)\nFROM ;");
+        assert_eq!(&text[..pos], "SELECT count(*)\nFROM ");
+        // One letter is too little to offer them.
+        assert!(
+            texts(&suggest("c", 1, &tables(), &columns()))
+                .iter()
+                .all(|t| *t != "cnt")
+        );
     }
 
     #[test]

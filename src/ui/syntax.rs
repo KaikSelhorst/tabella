@@ -93,6 +93,8 @@ enum Kind {
     Comment,
     Ident,
     Punct,
+    /// `:name`, filled in by the parameters prompt before running.
+    Param,
 }
 
 /// Splits `text` into colored spans. Every byte ends up in exactly one span.
@@ -122,6 +124,21 @@ fn tokens(text: &str) -> Vec<(Kind, &str)> {
             }
             i = (i + 1).min(b.len());
             if c == b'\'' { Kind::Str } else { Kind::Ident }
+        } else if c == b':'
+            && (i == 0
+                || !(b[i - 1] == b':'
+                    || b[i - 1].is_ascii_alphanumeric()
+                    || b[i - 1] == b'_'
+                    || b[i - 1] == b']'))
+            && b.get(i + 1)
+                .is_some_and(|n| n.is_ascii_alphabetic() || *n == b'_' || *n >= 0x80)
+        {
+            // Same rule as `sql::param_spans`: not `::`, not `a[1:2]`, not `:=`.
+            i += 1;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] >= 0x80) {
+                i += 1;
+            }
+            Kind::Param
         } else if c.is_ascii_digit() {
             while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
                 i += 1;
@@ -158,6 +175,7 @@ fn color(kind: Kind, t: &Tokens) -> Color32 {
         Kind::Comment => t.subtle,
         Kind::Ident => t.foreground,
         Kind::Punct => t.muted_foreground,
+        Kind::Param => t.warning,
     }
 }
 
@@ -210,5 +228,15 @@ mod tests {
         // Nothing is lost: spans concatenate back to the input.
         let src = "SELECT ç, 1.5 /* x */ FROM t";
         assert_eq!(tokens(src).iter().map(|(_, s)| *s).collect::<String>(), src);
+    }
+
+    #[test]
+    fn marks_parameters_but_not_casts() {
+        let params: Vec<&str> = tokens("WHERE id = :id AND x::text = :nome AND a[1:2]")
+            .into_iter()
+            .filter(|(k, _)| *k == Kind::Param)
+            .map(|(_, s)| s)
+            .collect();
+        assert_eq!(params, [":id", ":nome"]);
     }
 }

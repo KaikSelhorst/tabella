@@ -3,9 +3,11 @@
 mod app;
 mod config;
 mod db;
+mod design;
 mod error;
 mod export;
 mod favorites;
+mod filters;
 mod history;
 mod import;
 mod plan;
