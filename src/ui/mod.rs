@@ -1249,6 +1249,7 @@ mod screenshots {
                 table: table.into(),
                 column: column.into(),
                 data_type: ty.into(),
+                pk: column == "id",
             };
             let s = harness.state_mut().session.as_mut().unwrap();
             s.schema_cols = vec![
@@ -1439,6 +1440,41 @@ mod screenshots {
             };
             harness.state_mut().apply_settings(&ctx, dark);
             harness.state_mut().active = 1;
+        }
+
+        // Sidebar with functions, triggers and sequences; then "definir valor" on a selection.
+        {
+            let obj = |name: &str, kind: crate::db::ObjKind, table: &str| crate::db::DbObject {
+                schema: "public".into(),
+                name: name.into(),
+                kind,
+                args: String::new(),
+                table: table.into(),
+                id: String::new(),
+            };
+            let state = harness.state_mut();
+            state.session.as_mut().unwrap().objects = vec![
+                obj("atualiza_saldo", crate::db::ObjKind::Function, ""),
+                obj("calcula_frete", crate::db::ObjKind::Function, ""),
+                obj("fecha_mes", crate::db::ObjKind::Procedure, ""),
+                obj("pedidos_auditoria", crate::db::ObjKind::Trigger, "pedidos"),
+                obj("pedidos_id_seq", crate::db::ObjKind::Sequence, ""),
+            ];
+            state.active = 0;
+            let tab = &mut state.tabs[0];
+            tab.anchor = Some((1, 2));
+            tab.selected = Some((4, 2));
+            tab.fill_prompt = Some("pendente".into());
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/objects-fill.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[0];
+            tab.fill_prompt = None;
+            tab.anchor = None;
+            tab.selected = Some((2, 2));
         }
 
         // Autocomplete: type a partial word and put the cursor after it.

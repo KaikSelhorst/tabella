@@ -11,8 +11,8 @@ use eframe::egui;
 
 use crate::config;
 use crate::db::{
-    ActivityView, Canceller, ColumnInfo, ConnConfig, FkEdge, IncomingFk, Kind, PreviewData, QueryResult,
-    SchemaColumn, ServerInfo, TableRef, TableStructure,
+    ActivityView, Canceller, ColumnInfo, ConnConfig, DbObject, FkEdge, IncomingFk, Kind, PreviewData,
+    QueryResult, SchemaColumn, ServerInfo, TableRef, TableStructure,
 };
 use crate::design::Design;
 use crate::diagram::DiagramState;
@@ -65,6 +65,8 @@ pub struct Session {
     pub schema_cols: Vec<SchemaColumn>,
     /// Foreign keys, for JOIN suggestions in the editor.
     pub fks: Vec<FkEdge>,
+    /// Functions, procedures, triggers, views, sequences.
+    pub objects: Vec<DbObject>,
     /// Manual-commit mode and the open transaction, as last reported by the worker.
     pub txn: TxState,
 }
@@ -407,6 +409,8 @@ pub struct Tab {
     pub plan: Option<Plan>,
     /// Values asked for `:parameters` before running.
     pub params: Option<ParamPrompt>,
+    /// "Definir valor na seleção": the value being typed.
+    pub fill_prompt: Option<String>,
     /// Last value typed for each parameter name.
     pub param_values: std::collections::HashMap<String, String>,
     pub col_stats: Option<StatsView>,
@@ -489,6 +493,7 @@ impl Tab {
             set_shown: 0,
             plan: None,
             params: None,
+            fill_prompt: None,
             param_values: Default::default(),
             col_stats: None,
             preview: None,
@@ -691,6 +696,16 @@ pub enum GridEvent {
     DuplicateRow(usize),
     /// Open the rows of another table whose foreign key (`incoming[i]`) points at this row.
     FollowIncoming(usize, usize),
+    /// Copy the selection (or, without one, the whole result) as a Markdown table.
+    CopyMarkdown,
+    /// Ask for a value to put in every selected cell.
+    AskFill,
+    /// Every selected cell gets this value (`None`: NULL).
+    FillSelection(Option<String>),
+    /// Each selected column takes the value of the selection's first row (Ctrl+D).
+    FillDown,
+    /// Mark the selected rows for deletion.
+    DeleteRows,
 }
 
 /// What `handle_grid_event` needs the app (or the clipboard) to do.
@@ -1221,6 +1236,7 @@ impl App {
             columns: vec![],
             schema_cols: vec![],
             fks: vec![],
+            objects: vec![],
             txn: TxState {
                 manual: cfg_manual,
                 ..Default::default()
@@ -1396,6 +1412,25 @@ impl App {
                 // Autocomplete just has no columns then.
                 Reply::AllColumns(Err(_)) => {}
                 Reply::AllFks(Ok(f)) => s.fks = f,
+                Reply::Objects(Ok(o)) => s.objects = o,
+                // The sidebar just shows tables then.
+                Reply::Objects(Err(_)) => {}
+                Reply::Source { tab, res } => {
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    if let Some(took) = t.end_job() {
+                        finished.push((t.title.clone(), took));
+                    }
+                    match res {
+                        Ok(code) => {
+                            if let TabKind::Sql { text } = &mut t.kind {
+                                *text = code;
+                            }
+                        }
+                        Err(e) => t.error = Some(e.to_string()),
+                    }
+                }
                 // Without them the editor just doesn't suggest joins.
                 Reply::AllFks(Err(_)) => {}
                 Reply::Rows { tab, res, notice } => {
@@ -1799,6 +1834,33 @@ impl App {
         let tab = &mut self.tabs[i];
         tab.begin_job();
         s.send(Job::Fks { tab: tab.id });
+    }
+
+    /// The code of a function, trigger, view or sequence, in a new editor tab.
+    pub fn open_object(&mut self, object: DbObject) {
+        if self.session.is_none() {
+            return;
+        }
+        self.open_sql(format!("-- carregando a definição de {}…", object.name));
+        let Some(s) = &self.session else { return };
+        let Some(tab) = self.tabs.last_mut() else { return };
+        tab.title = object.name.clone();
+        tab.renamed = true;
+        tab.begin_job();
+        s.send(Job::Source { tab: tab.id, object });
+    }
+
+    /// "Gerar SQL": a statement for a table in a new editor tab.
+    pub fn open_template(&mut self, schema: &str, table: &str, what: sql::Template) {
+        let Some(s) = &self.session else { return };
+        let cols: Vec<(String, bool)> = s
+            .schema_cols
+            .iter()
+            .filter(|c| c.schema == schema && c.table == table)
+            .map(|c| (c.column.clone(), c.pk))
+            .collect();
+        let text = sql::template(s.cfg.kind, schema, table, &cols, what);
+        self.open_sql(text);
     }
 
     /// Opens (or focuses) the full query history.
@@ -2618,6 +2680,20 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
             }
             return None;
         }
+        GridEvent::CopyMarkdown => {
+            let view = tab.view();
+            let range = tab.range().unwrap_or(CellRange {
+                r0: 0,
+                r1: res.rows.len().saturating_sub(1),
+                cols: view,
+            });
+            if res.rows.is_empty() {
+                return None;
+            }
+            let overlay = editable_ref(&tab.kind, &tab.source).and_then(|ts| ts.overlay(res));
+            let shown = overlay.as_ref().map_or(res, |o| &o.result);
+            return Some(Effect::Copy(values::to_markdown(shown, &range, &kinds)));
+        }
         GridEvent::CopyCells { headers } => {
             let range = tab.selection()?;
             // Copy what the grid shows, pending edits included.
@@ -2766,7 +2842,49 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         GridEvent::DuplicateRow(row) => {
             open_duplicate_form(tab, row);
         }
+        GridEvent::AskFill => tab.fill_prompt = Some(String::new()),
+        GridEvent::FillSelection(value) => {
+            let Some(sel) = &selection else { return None };
+            tab.fill_prompt = None;
+            for row in sel.r0..=sel.r1 {
+                for &col in &sel.cols {
+                    if let Err(e) = set_cell(ts, res, &kinds, k, (row, col), value.clone()) {
+                        tab.error = Some(e);
+                        return None;
+                    }
+                }
+            }
+        }
+        GridEvent::FillDown => {
+            let Some(sel) = &selection else { return None };
+            // The first row as the grid shows it, pending edits included.
+            let overlay = ts.overlay(res);
+            let shown = overlay.as_ref().map_or(res, |o| &o.result);
+            let top: Vec<Option<String>> = sel.cols.iter().map(|&c| shown.rows[sel.r0][c].clone()).collect();
+            for row in sel.r0 + 1..=sel.r1 {
+                for (i, &col) in sel.cols.iter().enumerate() {
+                    if let Err(e) = set_cell(ts, res, &kinds, k, (row, col), top[i].clone()) {
+                        tab.error = Some(e);
+                        return None;
+                    }
+                }
+            }
+        }
+        GridEvent::DeleteRows => {
+            let Some(sel) = &selection else { return None };
+            for row in sel.r0..=sel.r1 {
+                let key = ts.row_key(res, row);
+                if !ts
+                    .changes
+                    .iter()
+                    .any(|c| matches!(c, Change::Delete { key: k2 } if *k2 == key))
+                {
+                    ts.changes.push(Change::Delete { key });
+                }
+            }
+        }
         GridEvent::Select(..)
+        | GridEvent::CopyMarkdown
         | GridEvent::FollowIncoming(..)
         | GridEvent::ColumnStats(..)
         | GridEvent::ToggleColumn(..)
@@ -2916,6 +3034,7 @@ pub mod tests {
             columns: vec![],
             schema_cols: vec![],
             fks: vec![],
+            objects: vec![],
             txn: TxState::default(),
         };
         (s, jobs, replies)
@@ -3075,6 +3194,56 @@ pub mod tests {
             "a new host waits for a reconnect"
         );
         assert_eq!(s.cfg.host, "localhost", "and isn't applied live");
+    }
+
+    #[test]
+    fn bulk_edits_on_a_selection() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut tab = table_tab();
+        if let Some(r) = &mut tab.result {
+            r.rows
+                .push(vec![Some("8".into()), Some("t".into()), Some("bia".into())]);
+            r.rows
+                .push(vec![Some("9".into()), Some("f".into()), Some("caio".into())]);
+        }
+        let sets = |tab: &Tab| -> Vec<(Vec<Option<String>>, String, Option<String>)> {
+            let TabKind::Table(ts) = &tab.kind else { panic!() };
+            ts.changes
+                .iter()
+                .filter_map(|c| match c {
+                    Change::Set { key, col, value, .. } => Some((key.clone(), col.clone(), value.clone())),
+                    Change::Delete { .. } => None,
+                })
+                .collect()
+        };
+        let key = |id: &str| vec![Some(id.to_string())];
+        // "nome" of the first two rows set to one value.
+        handle_grid_event(&mut tab, &s, GridEvent::Select(0, 2), true);
+        handle_grid_event(&mut tab, &s, GridEvent::Extend(1, 2), true);
+        handle_grid_event(&mut tab, &s, GridEvent::FillSelection(Some("igual".into())), true);
+        assert_eq!(
+            sets(&tab),
+            [
+                (key("7"), "nome".into(), Some("igual".into())),
+                (key("8"), "nome".into(), Some("igual".into()))
+            ]
+        );
+        // Fill down takes the first row as shown (with its pending edit).
+        handle_grid_event(&mut tab, &s, GridEvent::Select(0, 2), true);
+        handle_grid_event(&mut tab, &s, GridEvent::Extend(2, 2), true);
+        handle_grid_event(&mut tab, &s, GridEvent::FillDown, true);
+        assert!(sets(&tab).contains(&(key("9"), "nome".into(), Some("igual".into()))));
+        // Delete marks every selected row once.
+        handle_grid_event(&mut tab, &s, GridEvent::DeleteRows, true);
+        handle_grid_event(&mut tab, &s, GridEvent::DeleteRows, true);
+        let TabKind::Table(ts) = &tab.kind else { panic!() };
+        assert_eq!(
+            ts.changes
+                .iter()
+                .filter(|c| matches!(c, Change::Delete { .. }))
+                .count(),
+            3
+        );
     }
 
     #[test]

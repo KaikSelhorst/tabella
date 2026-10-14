@@ -731,6 +731,42 @@ pub fn grid(
                                 }
                                 ui.separator();
                             }
+                            if let Some(sel) = range.filter(|_| can_edit) {
+                                let cells = (sel.r1 - sel.r0 + 1) * sel.cols.len();
+                                if ui.button(format!("Definir valor nas {cells} células…")).clicked() {
+                                    event = Some(GridEvent::AskFill);
+                                    ui.close();
+                                }
+                                if ui.button("Definir NULL na seleção").clicked() {
+                                    event = Some(GridEvent::FillSelection(None));
+                                    ui.close();
+                                }
+                                if sel.r1 > sel.r0
+                                    && ui
+                                        .add(
+                                            egui::Button::new("Preencher para baixo").shortcut_text("Ctrl+D"),
+                                        )
+                                        .on_hover_text(
+                                            "Cada coluna recebe o valor da primeira linha selecionada",
+                                        )
+                                        .clicked()
+                                {
+                                    event = Some(GridEvent::FillDown);
+                                    ui.close();
+                                }
+                                let rows = sel.r1 - sel.r0 + 1;
+                                if ui
+                                    .add(
+                                        egui::Button::new(format!("Excluir {rows} linha(s)"))
+                                            .shortcut_text("Delete"),
+                                    )
+                                    .clicked()
+                                {
+                                    event = Some(GridEvent::DeleteRows);
+                                    ui.close();
+                                }
+                                ui.separator();
+                            }
                             if range.is_some() {
                                 if ui
                                     .button("Copiar seleção")
@@ -745,6 +781,19 @@ pub fn grid(
                                     ui.close();
                                 }
                                 ui.separator();
+                            }
+                            let md = if range.is_some() {
+                                "Copiar seleção como Markdown"
+                            } else {
+                                "Copiar resultado como Markdown"
+                            };
+                            if ui
+                                .button(md)
+                                .on_hover_text("Tabela pronta para colar em issue, documentação ou chat")
+                                .clicked()
+                            {
+                                event = Some(GridEvent::CopyMarkdown);
+                                ui.close();
                             }
                             if ui.button("Copiar valor").clicked() {
                                 ui.ctx().copy_text(val.clone().unwrap_or_default());

@@ -223,6 +223,43 @@ pub struct SchemaColumn {
     pub table: String,
     pub column: String,
     pub data_type: String,
+    /// Part of the table's primary key.
+    pub pk: bool,
+}
+
+/// Functions, procedures, triggers, views and sequences, for the sidebar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ObjKind {
+    Function,
+    Procedure,
+    Trigger,
+    View,
+    Sequence,
+}
+
+impl ObjKind {
+    pub fn plural(self) -> &'static str {
+        match self {
+            ObjKind::Function => "Funções",
+            ObjKind::Procedure => "Procedures",
+            ObjKind::Trigger => "Triggers",
+            ObjKind::View => "Views",
+            ObjKind::Sequence => "Sequences",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DbObject {
+    pub schema: String,
+    pub name: String,
+    pub kind: ObjKind,
+    /// Postgres functions and procedures: the argument types, which tell overloads apart.
+    pub args: String,
+    /// Triggers: the table they belong to.
+    pub table: String,
+    /// Postgres functions and procedures: their oid (exact, overloads included).
+    pub id: String,
 }
 
 /// Outcome of `Conn::preview`.
@@ -544,20 +581,36 @@ impl Conn {
             Conn::Pg(_) => "'pg_catalog', 'information_schema'",
             Conn::My(_) => "'information_schema', 'mysql', 'performance_schema', 'sys'",
         };
-        let sql = format!(
-            "SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns \
-             WHERE table_schema NOT IN ({system}) ORDER BY 1, 2, ordinal_position"
-        );
+        let sql = match self {
+            Conn::Pg(_) => format!(
+                "SELECT c.table_schema, c.table_name, c.column_name, c.data_type, \
+                 CASE WHEN pk.col IS NULL THEN '0' ELSE '1' END \
+                 FROM information_schema.columns c \
+                 LEFT JOIN (SELECT n.nspname AS s, cl.relname AS t, a.attname AS col \
+                   FROM pg_index i JOIN pg_class cl ON cl.oid = i.indrelid \
+                   JOIN pg_namespace n ON n.oid = cl.relnamespace \
+                   JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey) \
+                   WHERE i.indisprimary) pk \
+                   ON pk.s = c.table_schema AND pk.t = c.table_name AND pk.col = c.column_name \
+                 WHERE c.table_schema NOT IN ({system}) ORDER BY 1, 2, c.ordinal_position"
+            ),
+            Conn::My(_) => format!(
+                "SELECT table_schema, table_name, column_name, data_type, IF(column_key = 'PRI', '1', '0') \
+                 FROM information_schema.columns \
+                 WHERE table_schema NOT IN ({system}) ORDER BY 1, 2, ordinal_position"
+            ),
+        };
         let r = self.query_limit(&sql, 100_000)?;
         r.rows
             .into_iter()
             .map(|row| {
-                let [schema, table, column, data_type] = cells(row)?;
+                let [schema, table, column, data_type, pk] = cells(row)?;
                 Ok(SchemaColumn {
                     schema,
                     table,
                     column,
                     data_type,
+                    pk: pk == "1",
                 })
             })
             .collect()
@@ -665,6 +718,147 @@ impl Conn {
             }
         }
         Ok(cols)
+    }
+
+    /// Functions, procedures, triggers, views and sequences outside the system schemas (and not
+    /// installed by extensions).
+    pub fn objects(&mut self) -> DbResult<Vec<DbObject>> {
+        let rows: Vec<[String; 6]> = match self.kind() {
+            Kind::Postgres => {
+                let sql = "SELECT n.nspname, p.proname, CASE p.prokind WHEN 'p' THEN 'p' ELSE 'f' END, \
+                     pg_get_function_identity_arguments(p.oid), '', p.oid::text \
+                     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+                     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND p.prokind IN ('f', 'p') \
+                     AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') \
+                     UNION ALL \
+                     SELECT n.nspname, t.tgname, 't', '', c.relname, '' \
+                     FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+                     UNION ALL \
+                     SELECT schemaname, viewname, 'v', '', '', '' FROM pg_views \
+                     WHERE schemaname NOT IN ('pg_catalog', 'information_schema') \
+                     UNION ALL \
+                     SELECT schemaname, sequencename, 's', '', '', '' FROM pg_sequences \
+                     ORDER BY 1, 3, 2";
+                self.query_limit(sql, 100_000)?
+                    .rows
+                    .into_iter()
+                    .map(cells)
+                    .collect::<DbResult<_>>()?
+            }
+            Kind::MySql => {
+                let sql = "SELECT routine_schema, routine_name, IF(routine_type = 'PROCEDURE', 'p', 'f'), '', '', '' \
+                     FROM information_schema.routines \
+                     WHERE routine_schema NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') \
+                     UNION ALL \
+                     SELECT trigger_schema, trigger_name, 't', '', event_object_table, '' FROM information_schema.triggers \
+                     WHERE trigger_schema NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') \
+                     UNION ALL \
+                     SELECT table_schema, table_name, 'v', '', '', '' FROM information_schema.views \
+                     WHERE table_schema NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') \
+                     ORDER BY 1, 3, 2";
+                self.query_limit(sql, 100_000)?
+                    .rows
+                    .into_iter()
+                    .map(cells)
+                    .collect::<DbResult<_>>()?
+            }
+        };
+        Ok(rows
+            .into_iter()
+            .map(|[schema, name, kind, args, table, id]| DbObject {
+                schema,
+                name,
+                kind: match kind.as_str() {
+                    "p" => ObjKind::Procedure,
+                    "t" => ObjKind::Trigger,
+                    "v" => ObjKind::View,
+                    "s" => ObjKind::Sequence,
+                    _ => ObjKind::Function,
+                },
+                args,
+                table,
+                id,
+            })
+            .collect())
+    }
+
+    /// The object's definition as SQL that recreates it (CREATE OR REPLACE where the engine has it).
+    pub fn object_source(&mut self, o: &DbObject) -> DbResult<String> {
+        let first_cell = |r: QueryResult, col: usize| -> DbResult<String> {
+            r.rows
+                .into_iter()
+                .next()
+                .and_then(|row| row.into_iter().nth(col).flatten())
+                .ok_or_else(|| DbError::Other(format!("não encontrei a definição de {}", o.name)))
+        };
+        let k = self.kind();
+        match k {
+            Kind::Postgres => {
+                // Names go in as values; the server quotes them into a regprocedure / regclass.
+                let qualified = |name: &str| {
+                    Stmt::new("quote_ident(")
+                        .value(Some(&o.schema))
+                        .sql(") || '.' || quote_ident(")
+                        .value(Some(name))
+                        .sql(")")
+                };
+                let stmt = match o.kind {
+                    ObjKind::Function | ObjKind::Procedure => Stmt::new("SELECT pg_get_functiondef(CAST(")
+                        .value(Some(&o.id))
+                        .sql(" AS oid))"),
+                    ObjKind::Trigger => Stmt::new(
+                        "SELECT pg_get_triggerdef(t.oid, true) || ';' FROM pg_trigger t \
+                         JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+                         WHERE n.nspname = ",
+                    )
+                    .value(Some(&o.schema))
+                    .sql(" AND c.relname = ")
+                    .value(Some(&o.table))
+                    .sql(" AND t.tgname = ")
+                    .value(Some(&o.name)),
+                    ObjKind::View => Stmt::new("SELECT 'CREATE OR REPLACE VIEW ' || ")
+                        .sql(qualified(&o.name).render(k))
+                        .sql(" || E' AS\\n' || pg_get_viewdef((")
+                        .sql(qualified(&o.name).render(k))
+                        .sql(")::regclass, true)"),
+                    ObjKind::Sequence => Stmt::new(
+                        "SELECT 'CREATE SEQUENCE ' || quote_ident(schemaname) || '.' || quote_ident(sequencename) \
+                         || E'\\n  INCREMENT BY ' || increment_by || E'\\n  MINVALUE ' || min_value \
+                         || E'\\n  MAXVALUE ' || max_value || E'\\n  START WITH ' || start_value \
+                         || E';\\n-- valor atual: ' || coalesce(last_value::text, 'ainda não usada') \
+                         FROM pg_sequences WHERE schemaname = ",
+                    )
+                    .value(Some(&o.schema))
+                    .sql(" AND sequencename = ")
+                    .value(Some(&o.name)),
+                };
+                first_cell(self.execute(&stmt)?, 0)
+            }
+            Kind::MySql => {
+                let what = match o.kind {
+                    ObjKind::Function => "FUNCTION",
+                    ObjKind::Procedure => "PROCEDURE",
+                    ObjKind::Trigger => "TRIGGER",
+                    ObjKind::View => "VIEW",
+                    ObjKind::Sequence => return Err(DbError::Other("MySQL não tem sequences".into())),
+                };
+                let r = self.query(&format!("SHOW CREATE {what} {}", k.qualified(&o.schema, &o.name)))?;
+                // The definition column: 2nd for views, 3rd for routines and triggers.
+                let col = if o.kind == ObjKind::View { 1 } else { 2 };
+                let body = first_cell(r, col)?;
+                // MySQL has no CREATE OR REPLACE for these: dropping first is left to the user.
+                // The body has its own ";" inside, so it runs with F5 (the whole text), not
+                // Ctrl+Enter.
+                Ok(match o.kind {
+                    ObjKind::View => format!("{};", body.replacen("CREATE ", "CREATE OR REPLACE ", 1)),
+                    _ => format!(
+                        "-- Para recriar: descomente o DROP e execute tudo (F5).\n-- DROP {what} IF EXISTS {};\n{body}",
+                        k.qualified(&o.schema, &o.name)
+                    ),
+                })
+            }
+        }
     }
 
     /// Every single-column foreign key of the connection (for the ER diagram).
@@ -1354,6 +1548,8 @@ mod tests {
             ..ConnConfig::new(kind)
         };
         let mut c = Conn::connect(&cfg, None).expect("connect");
+        // Leftovers from a run that failed half-way would block dropping the table.
+        c.query("DROP VIEW IF EXISTS dbl_v").unwrap();
         c.query("DROP TABLE IF EXISTS dbl_t").unwrap();
         c.query("CREATE TABLE dbl_t (id INT PRIMARY KEY, name VARCHAR(50), at TIMESTAMP NULL)")
             .unwrap();
@@ -1677,6 +1873,83 @@ mod tests {
             "{kind:?}"
         );
         c.reset_query_stats().unwrap();
+
+        // Functions, triggers, views (and Postgres sequences): listed, and their code comes back.
+        {
+            let schema = if kind == Kind::MySql { db } else { "public" };
+            c.query("DROP VIEW IF EXISTS dbl_v").unwrap();
+            c.query("CREATE VIEW dbl_v AS SELECT id FROM dbl_t").unwrap();
+            match kind {
+                Kind::Postgres => {
+                    c.query("CREATE OR REPLACE FUNCTION dbl_f(a integer) RETURNS integer LANGUAGE sql AS $$ SELECT a + 1; $$").unwrap();
+                    c.query("CREATE OR REPLACE FUNCTION dbl_tf() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$").unwrap();
+                    c.query("DROP TRIGGER IF EXISTS dbl_tr ON dbl_t").unwrap();
+                    c.query(
+                        "CREATE TRIGGER dbl_tr BEFORE UPDATE ON dbl_t FOR EACH ROW EXECUTE FUNCTION dbl_tf()",
+                    )
+                    .unwrap();
+                    c.query("CREATE SEQUENCE IF NOT EXISTS dbl_seq START 7").unwrap();
+                }
+                Kind::MySql => {
+                    c.query("DROP FUNCTION IF EXISTS dbl_f").unwrap();
+                    c.query("CREATE FUNCTION dbl_f(a INT) RETURNS INT DETERMINISTIC RETURN a + 1")
+                        .unwrap();
+                    c.query("DROP TRIGGER IF EXISTS dbl_tr").unwrap();
+                    c.query(
+                        "CREATE TRIGGER dbl_tr BEFORE UPDATE ON dbl_t FOR EACH ROW SET NEW.name = NEW.name",
+                    )
+                    .unwrap();
+                }
+            }
+            let objs = c.objects().unwrap();
+            let find = |name: &str| {
+                objs.iter()
+                    .find(|o| o.schema == schema && o.name == name)
+                    .unwrap_or_else(|| panic!("{kind:?}: {name} in {objs:?}"))
+            };
+            assert_eq!(find("dbl_f").kind, ObjKind::Function);
+            assert_eq!(find("dbl_tr").table, "dbl_t");
+            assert_eq!(find("dbl_v").kind, ObjKind::View);
+            let src = c.object_source(find("dbl_f")).unwrap();
+            assert!(src.contains("dbl_f") && src.contains("a + 1"), "{kind:?}: {src}");
+            assert!(
+                c.object_source(find("dbl_tr")).unwrap().contains("dbl_t"),
+                "{kind:?}"
+            );
+            assert!(
+                c.object_source(find("dbl_v"))
+                    .unwrap()
+                    .contains("CREATE OR REPLACE"),
+                "{kind:?}"
+            );
+            if kind == Kind::Postgres {
+                let src = c.object_source(find("dbl_seq")).unwrap();
+                assert!(src.contains("START WITH 7"), "{src}");
+                // The function's own code runs again as it came back.
+                let again = c.object_source(find("dbl_f")).unwrap();
+                c.query(&again).unwrap();
+                c.query("DROP SEQUENCE dbl_seq").unwrap();
+                c.query("DROP TRIGGER dbl_tr ON dbl_t").unwrap();
+                c.query("DROP FUNCTION dbl_tf()").unwrap();
+            } else {
+                c.query("DROP TRIGGER dbl_tr").unwrap();
+            }
+            c.query("DROP FUNCTION dbl_f")
+                .unwrap_or_else(|_| c.query("DROP FUNCTION dbl_f(integer)").unwrap());
+            c.query("DROP VIEW dbl_v").unwrap();
+            // Primary keys come with the column list.
+            let cols = c.all_columns().unwrap();
+            assert!(
+                cols.iter()
+                    .any(|c| c.table == "dbl_t" && c.column == "id" && c.pk),
+                "{kind:?}"
+            );
+            assert!(
+                cols.iter()
+                    .any(|c| c.table == "dbl_t" && c.column == "name" && !c.pk),
+                "{kind:?}"
+            );
+        }
 
         // Server overview: every fact present, and the test table among the biggest.
         let info = c.server_info().unwrap();

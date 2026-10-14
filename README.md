@@ -15,7 +15,7 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Paleta de comandos (`Ctrl+P`) para abrir tabelas, conexões e consultas recentes
 - Inserção de linhas por formulário (cada coluna: padrão do banco, `NULL` ou valor)
 - Aba "Estrutura": colunas, índices, chaves estrangeiras e DDL pronto para copiar
-- Exportação para CSV, JSON ou SQL (`INSERT`): a página atual ou a tabela inteira (em blocos,
+- Exportação para CSV, Excel, JSON ou SQL (`INSERT`): a página atual ou a tabela inteira (em blocos,
   sem carregar tudo na memória), salva na pasta Downloads
 - Cópia de linhas como JSON ou `INSERT`
 - Cancelamento de consultas em andamento e timeout por conexão (aplicado no servidor)
@@ -86,6 +86,13 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Histórico completo (`Ctrl+Shift+H`): busca, filtro por conexão e por erro, abrir no editor
 - Tema claro ou escuro e zoom da interface pelo `Ctrl+P` (zoom também com `Ctrl +`/`Ctrl −`/
   `Ctrl 0`); os dois ficam lembrados
+- Funções, procedures, triggers e sequences na sidebar (views junto com as tabelas): um clique
+  abre o código num editor, pronto para alterar e rodar
+- "Gerar SQL" no clique direito da tabela: SELECT, INSERT, UPDATE e DELETE pela chave, com
+  `:parâmetros`
+- Edição em massa: definir valor ou NULL em todas as células selecionadas, preencher para baixo
+  (`Ctrl+D`) e excluir as linhas selecionadas (`Delete`)
+- Exportar para Excel (.xlsx, com números e booleanos como tais) e copiar como tabela Markdown
 
 ## Segurança
 

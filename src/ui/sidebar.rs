@@ -2,7 +2,7 @@ use eframe::egui::{self, TextEdit};
 
 use super::{icon, palette, theme};
 use crate::app::{App, ConnForm, TabKind};
-use crate::db::{ConnConfig, Kind, TableRef};
+use crate::db::{ConnConfig, DbObject, Kind, ObjKind, TableRef};
 use crate::worker::Job;
 
 /// Schemas with fewer tables than this start expanded.
@@ -230,6 +230,8 @@ impl App {
         let kind = s.cfg.kind;
         let mut to_open: Option<(String, String)> = None;
         let mut to_sql: Option<String> = None;
+        let mut to_template: Option<(String, String, crate::sql::Template)> = None;
+        let mut to_object: Option<DbObject> = None;
         let mut to_structure: Option<(String, String)> = None;
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
@@ -318,7 +320,93 @@ impl App {
                                         ));
                                         ui.close();
                                     }
+                                    ui.menu_button("Gerar SQL", |ui| {
+                                        for (what, label) in [
+                                            (crate::sql::Template::Select, "SELECT com as colunas"),
+                                            (crate::sql::Template::Insert, "INSERT"),
+                                            (crate::sql::Template::Update, "UPDATE pela chave"),
+                                            (crate::sql::Template::Delete, "DELETE pela chave"),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                to_template = Some((t.schema.clone(), t.name.clone(), what));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                    if t.is_view && ui.button("Ver código da view").clicked() {
+                                        to_object = s
+                                            .objects
+                                            .iter()
+                                            .find(|o| {
+                                                o.kind == ObjKind::View
+                                                    && o.schema == t.schema
+                                                    && o.name == t.name
+                                            })
+                                            .cloned();
+                                        ui.close();
+                                    }
                                 });
+                            }
+                            // Functions, procedures, triggers and sequences of this schema (views
+                            // are listed with the tables).
+                            for kind_ in [
+                                ObjKind::Function,
+                                ObjKind::Procedure,
+                                ObjKind::Trigger,
+                                ObjKind::Sequence,
+                            ] {
+                                let objs: Vec<&DbObject> = s
+                                    .objects
+                                    .iter()
+                                    .filter(|o| o.schema == *schema && o.kind == kind_)
+                                    .filter(|o| needle.is_empty() || o.name.to_lowercase().contains(&needle))
+                                    .collect();
+                                if objs.is_empty() {
+                                    continue;
+                                }
+                                let header =
+                                    egui::RichText::new(format!("{}  {}", kind_.plural(), objs.len()))
+                                        .size(11.0)
+                                        .color(tk.subtle);
+                                egui::CollapsingHeader::new(header)
+                                    .id_salt(("objs", schema, kind_))
+                                    .default_open(!needle.is_empty())
+                                    .show(ui, |ui| {
+                                        for o in objs {
+                                            let glyph = match o.kind {
+                                                ObjKind::Function => icon::FUNCTION,
+                                                ObjKind::Procedure => icon::GEAR_SIX,
+                                                ObjKind::Trigger => icon::LIGHTNING,
+                                                ObjKind::Sequence => icon::LIST_NUMBERS,
+                                                ObjKind::View => icon::EYE,
+                                            };
+                                            let r = ui.add(
+                                                egui::Button::new(theme::icon_text(
+                                                    glyph,
+                                                    &o.name,
+                                                    tk.subtle,
+                                                    tk.muted_foreground,
+                                                ))
+                                                .frame_when_inactive(false)
+                                                .truncate()
+                                                .min_size(egui::vec2(ui.available_width(), 22.0)),
+                                            );
+                                            let tip = match o.kind {
+                                                ObjKind::Trigger => {
+                                                    format!("{} · tabela {}", o.name, o.table)
+                                                }
+                                                ObjKind::Function | ObjKind::Procedure => {
+                                                    format!("{}({})", o.name, o.args)
+                                                }
+                                                _ => o.name.clone(),
+                                            };
+                                            if r.on_hover_text(format!("{tip}\nclique abre o código"))
+                                                .clicked()
+                                            {
+                                                to_object = Some(o.clone());
+                                            }
+                                        }
+                                    });
                             }
                         });
                     section.header_response.context_menu(|ui| {
@@ -363,6 +451,12 @@ impl App {
         }
         if let Some(sql) = to_sql {
             self.open_sql(sql);
+        }
+        if let Some((schema, table, what)) = to_template {
+            self.open_template(&schema, &table, what);
+        }
+        if let Some(o) = to_object {
+            self.open_object(o);
         }
     }
 }

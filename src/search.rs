@@ -159,6 +159,7 @@ mod tests {
             table: table.into(),
             column: name.into(),
             data_type: ty.into(),
+            pk: false,
         }
     }
 

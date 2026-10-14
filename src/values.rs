@@ -151,6 +151,36 @@ pub fn to_tsv(res: &QueryResult, range: &CellRange, headers: bool) -> String {
     out
 }
 
+/// The cells as a Markdown table (issues, docs, chat): numbers right-aligned, `|` escaped,
+/// line breaks as spaces, NULL as an empty cell.
+pub fn to_markdown(res: &QueryResult, range: &CellRange, kinds: &[ValueKind]) -> String {
+    let cell = |v: &str| v.replace('|', "\\|").replace(['\r', '\n'], " ");
+    let mut out = String::new();
+    let header: Vec<String> = range.cols.iter().map(|&c| cell(&res.columns[c])).collect();
+    out.push_str(&format!("| {} |\n", header.join(" | ")));
+    let align: Vec<&str> = range
+        .cols
+        .iter()
+        .map(|&c| {
+            if kinds.get(c) == Some(&ValueKind::Number) {
+                "---:"
+            } else {
+                "---"
+            }
+        })
+        .collect();
+    out.push_str(&format!("| {} |\n", align.join(" | ")));
+    for row in &res.rows[range.r0..=range.r1] {
+        let cells: Vec<String> = range
+            .cols
+            .iter()
+            .map(|&c| row[c].as_deref().map(cell).unwrap_or_default())
+            .collect();
+        out.push_str(&format!("| {} |\n", cells.join(" | ")));
+    }
+    out
+}
+
 /// Parses spreadsheet clipboard text back into rows of cells (inverse of `to_tsv`).
 pub fn parse_tsv(text: &str) -> Vec<Vec<String>> {
     let text = text.strip_suffix('\n').unwrap_or(text);
@@ -400,6 +430,27 @@ mod tests {
         assert_eq!((st.min.as_deref(), st.max.as_deref()), (Some("2.5"), Some("10")));
         assert_eq!(st.top[0], (Some("3".into()), 2));
         assert!(st.top.contains(&(None, 1)));
+    }
+
+    #[test]
+    fn markdown_tables() {
+        let res = QueryResult {
+            columns: vec!["id".into(), "nota".into()],
+            rows: vec![
+                vec![Some("1".into()), Some("a|b\nc".into())],
+                vec![Some("2".into()), None],
+            ],
+            ..Default::default()
+        };
+        let all = CellRange {
+            r0: 0,
+            r1: 1,
+            cols: vec![0, 1],
+        };
+        assert_eq!(
+            to_markdown(&res, &all, &[ValueKind::Number, ValueKind::Text]),
+            "| id | nota |\n| ---: | --- |\n| 1 | a\\|b c |\n| 2 |  |\n"
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ egui_extras = { version = "0.36.2", default-features = false }
 getrandom = "0.3"
 mysql = { version = "28.0.3", default-features = false, features = ["minimal", "rustls-tls-ring"] }
 postgres = { version = "0.19.14", default-features = false }
+rust_xlsxwriter = "0.99.1"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -40,6 +41,7 @@ keyring = { version = "3", default-features = false, features = ["sync-secret-se
 [dev-dependencies]
 egui_kittest = { version = "0.36.2", features = ["wgpu", "eframe"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "ico"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 
 [features]

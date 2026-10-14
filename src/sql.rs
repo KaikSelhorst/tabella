@@ -542,6 +542,70 @@ pub fn word_at(text: &str, cursor: usize) -> Option<(usize, usize)> {
     (a < b).then_some((a, b))
 }
 
+/// What "Gerar SQL" writes for a table.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Template {
+    Select,
+    Insert,
+    Update,
+    Delete,
+}
+
+/// A statement for a table, with `:parâmetros` where values go (the editor asks for them when
+/// it runs). `cols` are `(name, is primary key)`; without a key the WHERE uses every column.
+pub fn template(kind: Kind, schema: &str, table: &str, cols: &[(String, bool)], what: Template) -> String {
+    let t = kind.qualified(schema, table);
+    let q = |c: &str| kind.quote_ident(c);
+    // Parameter names are plain words: anything else in a column name becomes "_".
+    let p = |c: &str| {
+        let s: String = c
+            .chars()
+            .map(|ch| {
+                if ch.is_alphanumeric() || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        format!(":{s}")
+    };
+    let keys: Vec<&String> = {
+        let pk: Vec<&String> = cols.iter().filter(|(_, k)| *k).map(|(c, _)| c).collect();
+        if pk.is_empty() {
+            cols.iter().map(|(c, _)| c).collect()
+        } else {
+            pk
+        }
+    };
+    let cond = keys
+        .iter()
+        .map(|c| format!("{} = {}", q(c), p(c)))
+        .collect::<Vec<_>>()
+        .join("\n  AND ");
+    let names = cols.iter().map(|(c, _)| q(c)).collect::<Vec<_>>();
+    match what {
+        Template::Select => format!(
+            "SELECT {}\nFROM {t}\nWHERE 1 = 1\nLIMIT 100;",
+            names.join(",\n       ")
+        ),
+        Template::Insert => format!(
+            "INSERT INTO {t} ({})\nVALUES ({});",
+            names.join(", "),
+            cols.iter().map(|(c, _)| p(c)).collect::<Vec<_>>().join(", ")
+        ),
+        Template::Update => {
+            let sets: Vec<String> = cols
+                .iter()
+                .filter(|(c, _)| !keys.contains(&c))
+                .map(|(c, _)| format!("{} = {}", q(c), p(c)))
+                .collect();
+            format!("UPDATE {t}\nSET {}\nWHERE {cond};", sets.join(",\n    "))
+        }
+        Template::Delete => format!("DELETE FROM {t}\nWHERE {cond};"),
+    }
+}
+
 /// Words outside parentheses, quotes and comments, uppercased, with their char ranges.
 fn top_level_words(script: &str) -> Vec<(String, usize, usize)> {
     let chars: Vec<char> = script.chars().collect();
@@ -1139,6 +1203,37 @@ mod tests {
             "a = '1.2.3'"
         );
         assert!(param_names("SELECT $$ :x $$, '10:30'").is_empty());
+    }
+
+    #[test]
+    fn templates_for_a_table() {
+        let cols = [
+            ("id".to_string(), true),
+            ("nome".to_string(), false),
+            ("data nasc".to_string(), false),
+        ];
+        let t = |w| template(Kind::Postgres, "public", "clientes", &cols, w);
+        assert_eq!(
+            t(Template::Update),
+            "UPDATE \"public\".\"clientes\"\nSET \"nome\" = :nome,\n    \"data nasc\" = :data_nasc\nWHERE \"id\" = :id;"
+        );
+        assert_eq!(
+            t(Template::Delete),
+            "DELETE FROM \"public\".\"clientes\"\nWHERE \"id\" = :id;"
+        );
+        assert_eq!(
+            t(Template::Insert),
+            "INSERT INTO \"public\".\"clientes\" (\"id\", \"nome\", \"data nasc\")\nVALUES (:id, :nome, :data_nasc);"
+        );
+        assert!(t(Template::Select).starts_with("SELECT \"id\",\n       \"nome\""));
+        // The parameters are the ones the editor will ask for.
+        assert_eq!(param_names(&t(Template::Update)), ["nome", "data_nasc", "id"]);
+        // No key: every column identifies the row.
+        let nokey = [("a".to_string(), false), ("b".to_string(), false)];
+        assert_eq!(
+            template(Kind::MySql, "db", "t", &nokey, Template::Delete),
+            "DELETE FROM `db`.`t`\nWHERE `a` = :a\n  AND `b` = :b;"
+        );
     }
 
     #[test]

@@ -2325,6 +2325,9 @@ fn summary(res: &QueryResult) -> String {
 fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     let s = cx.s;
     stats_dialog(ui.ctx(), tab, s);
+    if let Some(e) = fill_dialog(ui.ctx(), tab) {
+        app::handle_grid_event(tab, s, e, true);
+    }
     let t = theme::tokens();
     if let Some(e) = &tab.error {
         error_banner(ui, e);
@@ -2743,6 +2746,56 @@ fn found_cells(
     out
 }
 
+/// "Definir valor nas N células": type the value (or choose NULL).
+fn fill_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEvent> {
+    let cells = tab.selection().map_or(0, |s| (s.r1 - s.r0 + 1) * s.cols.len());
+    let value = tab.fill_prompt.as_mut()?;
+    let t = theme::tokens();
+    let mut out = None;
+    let mut cancel = false;
+    let modal = egui::Modal::new(egui::Id::new(("fill", tab.id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(
+                egui::RichText::new(format!("Valor para {cells} célula(s)"))
+                    .size(15.0)
+                    .color(t.foreground),
+            );
+            ui.label(
+                egui::RichText::new("Fica pendente até salvar (Ctrl+S), como as outras edições.")
+                    .size(11.0)
+                    .color(t.subtle),
+            );
+            ui.add_space(8.0);
+            let r = ui.add(
+                TextEdit::singleline(value)
+                    .font(egui::FontId::monospace(12.5))
+                    .desired_width(f32::INFINITY),
+            );
+            r.request_focus();
+            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                out = Some(GridEvent::FillSelection(Some(value.clone())));
+            }
+            ui.add_space(12.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(theme::primary_button(None, "Aplicar")).clicked() {
+                    out = Some(GridEvent::FillSelection(Some(value.clone())));
+                }
+                if ui.add(theme::outline_button("NULL")).clicked() {
+                    out = Some(GridEvent::FillSelection(None));
+                }
+                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if out.is_none() && (cancel || modal.should_close()) {
+        tab.fill_prompt = None;
+    }
+    out
+}
+
 /// "Estatísticas da coluna": fill rate, distinct values, range and the most common values, each
 /// one a click away from becoming a filter (table tabs).
 fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
@@ -2921,6 +2974,10 @@ fn keyboard_event(
         };
         if i.modifiers.command && i.key_pressed(Key::A) {
             Some(GridEvent::SelectAll)
+        } else if can_edit && i.modifiers.command && i.key_pressed(Key::D) {
+            Some(GridEvent::FillDown)
+        } else if can_edit && i.key_pressed(Key::Delete) {
+            Some(GridEvent::DeleteRows)
         } else if can_edit && (i.key_pressed(Key::Enter) || i.key_pressed(Key::F2)) {
             Some(GridEvent::StartEdit(row, col))
         } else if i.key_pressed(Key::ArrowDown) {

@@ -8,8 +8,8 @@ use std::thread;
 use std::path::PathBuf;
 
 use crate::db::{
-    ActivityView, Canceller, ColumnInfo, Conn, ConnConfig, FkEdge, IncomingFk, PreviewData, QueryResult,
-    SchemaColumn, ServerInfo, TableRef, TableStructure,
+    ActivityView, Canceller, ColumnInfo, Conn, ConnConfig, DbObject, FkEdge, IncomingFk, PreviewData,
+    QueryResult, SchemaColumn, ServerInfo, TableRef, TableStructure,
 };
 use crate::error::{DbError, DbResult};
 use crate::export::{Format, Writer};
@@ -80,6 +80,11 @@ pub enum Job {
     /// Every foreign key, for the ER diagram.
     Fks {
         tab: u64,
+    },
+    /// The code of a function, trigger, view…
+    Source {
+        tab: u64,
+        object: DbObject,
     },
     /// The "Servidor" panel.
     ServerInfo {
@@ -182,6 +187,13 @@ pub enum Reply {
     AllColumns(DbResult<Vec<SchemaColumn>>),
     /// Every foreign key, for JOIN suggestions; sent with `AllColumns`.
     AllFks(DbResult<Vec<FkEdge>>),
+    /// Functions, procedures, triggers, views and sequences, for the sidebar.
+    Objects(DbResult<Vec<DbObject>>),
+    /// Definition of an object, for the editor tab opened to show it.
+    Source {
+        tab: u64,
+        res: DbResult<String>,
+    },
     Structure {
         tab: u64,
         res: DbResult<TableStructure>,
@@ -274,6 +286,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
         ));
         send(Reply::AllColumns(conn.all_columns()));
         send(Reply::AllFks(conn.all_fks()));
+        send(Reply::Objects(conn.objects()));
         let mut tx = TxState {
             manual: cfg.manual_commit,
             ..Default::default()
@@ -408,6 +421,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                     let tables = conn.tables();
                     send(Reply::AllColumns(conn.all_columns()));
                     send(Reply::AllFks(conn.all_fks()));
+                    send(Reply::Objects(conn.objects()));
                     Reply::Tables(tables)
                 }
                 Job::Batch { tab, stmts, refresh } => {
@@ -450,6 +464,10 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                         cancelled: cancel.load(Ordering::Relaxed),
                     }
                 }
+                Job::Source { tab, object } => Reply::Source {
+                    tab,
+                    res: conn.object_source(&object),
+                },
                 Job::Fks { tab } => Reply::Fks {
                     tab,
                     res: conn.all_fks(),

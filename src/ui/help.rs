@@ -65,6 +65,11 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+A", "Selecionar tudo"),
             ("Ctrl+C", "Copiar (texto com tabs, cola no Excel)"),
             ("Ctrl+V", "Colar do Excel como alterações pendentes"),
+            (
+                "Ctrl+D",
+                "Preencher para baixo (cada coluna recebe o valor da primeira linha selecionada)",
+            ),
+            ("Delete", "Marcar as linhas selecionadas para exclusão"),
             ("Enter / F2 / duplo clique", "Editar a célula"),
             ("Ctrl+clique", "Abrir a linha de uma chave estrangeira"),
             ("Ctrl+F", "Buscar no resultado (tabelas: busca no banco)"),

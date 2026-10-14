@@ -13,16 +13,18 @@ pub enum Format {
     Csv,
     Json,
     Sql,
+    Xlsx,
 }
 
 impl Format {
-    pub const ALL: [Format; 3] = [Format::Csv, Format::Json, Format::Sql];
+    pub const ALL: [Format; 4] = [Format::Csv, Format::Xlsx, Format::Json, Format::Sql];
 
     pub fn label(self) -> &'static str {
         match self {
             Format::Csv => "CSV",
             Format::Json => "JSON",
             Format::Sql => "SQL (INSERT)",
+            Format::Xlsx => "Excel (.xlsx)",
         }
     }
 
@@ -31,13 +33,26 @@ impl Format {
             Format::Csv => "csv",
             Format::Json => "json",
             Format::Sql => "sql",
+            Format::Xlsx => "xlsx",
         }
     }
 }
 
+/// Excel's last row (1 048 576, the header included).
+const XLSX_MAX_ROWS: u64 = 1_048_575;
+
+/// Where rows go: a text file written as it goes, or a sheet saved at the end.
+enum Sink {
+    Text(BufWriter<File>),
+    Xlsx {
+        sheet: Box<rust_xlsxwriter::Worksheet>,
+        path: PathBuf,
+    },
+}
+
 /// Streams rows into a file in one format. Call `rows` per chunk, then `finish`.
 pub struct Writer {
-    out: BufWriter<File>,
+    out: Sink,
     format: Format,
     kind: Kind,
     /// Qualified table name for INSERT statements.
@@ -56,16 +71,35 @@ impl Writer {
         first: &QueryResult,
         cols: &[ColumnInfo],
     ) -> std::io::Result<Self> {
-        let mut out = BufWriter::new(File::create(path)?);
-        match format {
-            Format::Csv => writeln!(
-                out,
-                "{}",
-                csv_line(first.columns.iter().map(|c| Some(c.as_str())))
-            )?,
-            Format::Json => write!(out, "[")?,
-            Format::Sql => {}
-        }
+        let out = if format == Format::Xlsx {
+            // Header in bold, frozen above the data.
+            let mut sheet = rust_xlsxwriter::Worksheet::new();
+            let bold = rust_xlsxwriter::Format::new().set_bold();
+            for (c, name) in first.columns.iter().enumerate() {
+                sheet
+                    .write_string_with_format(0, c as u16, name, &bold)
+                    .map_err(xlsx_err)?;
+            }
+            sheet.set_freeze_panes(1, 0).map_err(xlsx_err)?;
+            // Fail now, not after reading the whole table, if the file can't be created.
+            File::create(path)?;
+            Sink::Xlsx {
+                sheet: Box::new(sheet),
+                path: path.to_path_buf(),
+            }
+        } else {
+            let mut out = BufWriter::new(File::create(path)?);
+            match format {
+                Format::Csv => writeln!(
+                    out,
+                    "{}",
+                    csv_line(first.columns.iter().map(|c| Some(c.as_str())))
+                )?,
+                Format::Json => write!(out, "[")?,
+                Format::Sql | Format::Xlsx => {}
+            }
+            Sink::Text(out)
+        };
         Ok(Writer {
             out,
             format,
@@ -78,23 +112,53 @@ impl Writer {
     }
 
     pub fn rows(&mut self, rows: &[Vec<Option<String>>]) -> std::io::Result<()> {
+        if let Sink::Xlsx { sheet, .. } = &mut self.out {
+            for row in rows {
+                if self.written >= XLSX_MAX_ROWS {
+                    return Err(std::io::Error::other(
+                        "o Excel aceita até 1.048.575 linhas: exporte em CSV para mais que isso",
+                    ));
+                }
+                let r = (self.written + 1) as u32;
+                for (c, v) in row.iter().enumerate() {
+                    let Some(v) = v else { continue };
+                    let c = c as u16;
+                    // Numbers and booleans as such, so Excel can sum and filter them.
+                    let done = match self.kinds.get(c as usize) {
+                        Some(ValueKind::Number) => {
+                            v.trim().parse::<f64>().ok().map(|n| sheet.write_number(r, c, n))
+                        }
+                        Some(ValueKind::Bool) => {
+                            crate::sql::parse_bool(v).map(|b| sheet.write_boolean(r, c, b))
+                        }
+                        _ => None,
+                    };
+                    match done {
+                        Some(res) => res.map(|_| ()).map_err(xlsx_err)?,
+                        None => sheet.write_string(r, c, v).map(|_| ()).map_err(xlsx_err)?,
+                    }
+                }
+                self.written += 1;
+            }
+            return Ok(());
+        }
+        let Sink::Text(out) = &mut self.out else {
+            unreachable!()
+        };
         for row in rows {
             match self.format {
-                Format::Csv => writeln!(self.out, "{}", csv_line(row.iter().map(|v| v.as_deref())))?,
+                Format::Csv => writeln!(out, "{}", csv_line(row.iter().map(|v| v.as_deref())))?,
                 Format::Json => {
                     let sep = if self.written == 0 { "\n  " } else { ",\n  " };
                     let obj = values::json_object(&self.columns, &self.kinds, row);
-                    write!(
-                        self.out,
-                        "{sep}{}",
-                        serde_json::to_string(&obj).unwrap_or_default()
-                    )?;
+                    write!(out, "{sep}{}", serde_json::to_string(&obj).unwrap_or_default())?;
                 }
                 Format::Sql => writeln!(
-                    self.out,
+                    out,
                     "{}",
                     crate::sql::insert_row(self.kind, &self.table, &self.columns, row)
                 )?,
+                Format::Xlsx => {}
             }
             self.written += 1;
         }
@@ -102,13 +166,27 @@ impl Writer {
     }
 
     /// Closes the JSON array and flushes. Returns the number of rows written.
-    pub fn finish(mut self) -> std::io::Result<u64> {
-        if self.format == Format::Json {
-            writeln!(self.out, "{}]", if self.written == 0 { "" } else { "\n" })?;
+    pub fn finish(self) -> std::io::Result<u64> {
+        match self.out {
+            Sink::Xlsx { mut sheet, path } => {
+                sheet.autofit();
+                let mut book = rust_xlsxwriter::Workbook::new();
+                book.push_worksheet(*sheet);
+                book.save(&path).map_err(xlsx_err)?;
+            }
+            Sink::Text(mut out) => {
+                if self.format == Format::Json {
+                    writeln!(out, "{}]", if self.written == 0 { "" } else { "\n" })?;
+                }
+                out.flush()?;
+            }
         }
-        self.out.flush()?;
         Ok(self.written)
     }
+}
+
+fn xlsx_err(e: rust_xlsxwriter::XlsxError) -> std::io::Error {
+    std::io::Error::other(e.to_string())
 }
 
 /// RFC 4180: quote fields with separators, quotes or line breaks; NULL is an empty field.
@@ -192,6 +270,10 @@ mod tests {
     }
 
     fn export(format: Format) -> String {
+        String::from_utf8(export_bytes(format)).unwrap()
+    }
+
+    fn export_bytes(format: Format) -> Vec<u8> {
         let path = std::env::temp_dir().join(format!("dblite-export-{}-{format:?}", std::process::id()));
         let res = result();
         let cols = [
@@ -224,9 +306,26 @@ mod tests {
         w.rows(&res.rows[..1]).unwrap();
         w.rows(&res.rows[1..]).unwrap();
         assert_eq!(w.finish().unwrap(), 2);
-        let text = std::fs::read_to_string(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
         let _ = std::fs::remove_file(&path);
-        text
+        bytes
+    }
+
+    #[test]
+    fn xlsx_keeps_numbers_and_booleans_typed() {
+        use std::io::Read;
+        let bytes = export_bytes(Format::Xlsx);
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("a real .xlsx (zip)");
+        let mut sheet = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut sheet)
+            .unwrap();
+        // id 1 as a number, ok=true as a boolean, nome of row 3 (NULL) left empty.
+        assert!(sheet.contains(r#"<c r="A2"><v>1</v></c>"#), "{sheet}");
+        assert!(sheet.contains(r#"<c r="C2" t="b"><v>1</v></c>"#), "{sheet}");
+        assert!(!sheet.contains(r#"r="B3""#), "{sheet}");
+        assert!(sheet.contains("<pane"), "header row frozen");
     }
 
     #[test]
