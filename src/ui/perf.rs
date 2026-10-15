@@ -224,3 +224,40 @@ fn frame_times() {
     );
     harness.state_mut().palette = None;
 }
+
+/// Contact sheets of the screenshots, for reviewing many screens at once:
+/// `DBLITE_SHOTS=<dir> cargo test contact_sheets -- --ignored` writes `<dir>/sheets/NN.png`
+/// (2 x 3 screens each, half size) and lists what is on each.
+#[test]
+#[ignore]
+fn contact_sheets() {
+    use image::{GenericImage, RgbaImage, imageops};
+    let Ok(dir) = std::env::var("DBLITE_SHOTS") else {
+        return;
+    };
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "png"))
+        .collect();
+    files.sort();
+    let out = std::path::Path::new(&dir).join("sheets");
+    std::fs::create_dir_all(&out).unwrap();
+    let (w, h) = (640u32, 380u32);
+    for (n, chunk) in files.chunks(6).enumerate() {
+        let mut sheet = RgbaImage::from_pixel(w * 2 + 8, h * 3 + 16, image::Rgba([255, 0, 255, 255]));
+        for (i, f) in chunk.iter().enumerate() {
+            let img = image::open(f).unwrap().to_rgba8();
+            let small = imageops::resize(&img, w, h, imageops::FilterType::Triangle);
+            sheet
+                .copy_from(&small, (i as u32 % 2) * (w + 8), (i as u32 / 2) * (h + 8))
+                .unwrap();
+        }
+        sheet.save(out.join(format!("{n:02}.png"))).unwrap();
+        let names: Vec<String> = chunk
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        eprintln!("{n:02}: {}", names.join(" | "));
+    }
+}

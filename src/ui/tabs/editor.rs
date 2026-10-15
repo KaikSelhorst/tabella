@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Room the editor toolbar keeps on its right for the panel toggle and "em banco · schema".
+const RIGHT_ROOM: f32 = 200.0;
+
 pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
     let busy = tab.busy();
@@ -60,9 +63,16 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             let format_key =
                 ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT | egui::Modifiers::ALT, Key::F));
             ui.horizontal(|ui| {
-                let label = if selection.is_some() {
+                // Short of room (narrow window, big zoom): icons only. Decided from the width the
+                // full bar took when it last fitted, so it doesn't flip back and forth.
+                let start_x = ui.cursor().left();
+                let avail = ui.available_width();
+                let variant = egui::Id::new(("editor_toolbar", statement.is_some(), app::previewable(&one), repeat.is_some(), busy));
+                let full: Option<f32> = ui.data(|d| d.get_temp(variant));
+                let compact = full.is_some_and(|w| w + RIGHT_ROOM > avail);
+                let label = if selection.is_some() && !compact {
                     "Executar seleção"
-                } else if statement.is_some() {
+                } else if statement.is_some() && !compact {
                     "Executar comando"
                 } else {
                     "Executar"
@@ -80,7 +90,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 }
                 if statement.is_some()
                     && ui
-                        .add_enabled(!busy, theme::outline_button("Executar tudo"))
+                        .add_enabled(!busy, theme::outline_button(if compact { "Tudo" } else { "Executar tudo" }))
                         .on_hover_text("F5 · todos os comandos, um resultado para cada consulta")
                         .clicked()
                 {
@@ -90,7 +100,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     && ui
                         .add_enabled(
                             !busy,
-                            egui::Button::new(theme::icon_text(icon::EYE, "Prévia", t.muted_foreground, t.foreground)),
+                            egui::Button::new(theme::tool(icon::EYE, "Prévia", compact, t.muted_foreground, t.foreground)),
                         )
                         .on_hover_text("Ctrl+Shift+Enter · quantas e quais linhas este UPDATE/DELETE alteraria, sem alterar")
                         .clicked()
@@ -100,12 +110,12 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 if busy {
                     busy_indicator(ui, s);
                 }
-                match history_menu(ui, cx.history, &s.cfg.name) {
+                match history_menu(ui, cx.history, &s.cfg.name, compact) {
                     Some(HistoryPick::Load(sql)) => *text = sql,
                     Some(HistoryPick::All) => file_menu_action = Some(Request::History),
                     None => {}
                 }
-                match favorites_menu(ui, cx.favorites, &s.cfg.id, !text.trim().is_empty()) {
+                match favorites_menu(ui, cx.favorites, &s.cfg.id, !text.trim().is_empty(), compact) {
                     Some(FavAction::Load(sql)) => *text = sql,
                     Some(FavAction::Save) => {
                         let sql = selection.clone().unwrap_or_else(|| text.clone());
@@ -114,9 +124,8 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     Some(FavAction::Delete(id)) => cx.request = Some(Request::DeleteFavorite(id)),
                     None => {}
                 }
-                export = export_menu(ui, false, can_export);
-                let explain_label =
-                    theme::icon_text(icon::TREE_VIEW, "Explicar", t.muted_foreground, t.foreground);
+                export = export_menu(ui, false, can_export, compact);
+                let explain_label = theme::tool(icon::TREE_VIEW, "Explicar", compact, t.muted_foreground, t.foreground);
                 ui.menu_button(explain_label, |ui| {
                     if ui
                         .add_enabled(!busy, egui::Button::new("Plano estimado").shortcut_text("Ctrl+E"))
@@ -140,6 +149,11 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 let repeat_label = match *repeat {
                     Some(n) => theme::icon_text(icon::ARROWS_CLOCKWISE, &format!("a cada {n} s"), t.lime, t.lime),
                     None => theme::icon_text(icon::ARROWS_CLOCKWISE, "Repetir", t.muted_foreground, t.foreground),
+                };
+                let repeat_label: egui::WidgetText = if compact && repeat.is_none() {
+                    theme::icon(icon::ARROWS_CLOCKWISE).color(t.muted_foreground).into()
+                } else {
+                    repeat_label.into()
                 };
                 ui.add_enabled_ui(last_reads || repeat.is_some(), |ui| {
                     ui.menu_button(repeat_label, |ui| {
@@ -185,19 +199,23 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 })
                 .response
                 .on_hover_text(if has_file { "Arquivo .sql desta aba" } else { "Abrir ou salvar como arquivo .sql" });
-                let format = theme::icon_text(
-                    icon::TEXT_ALIGN_LEFT,
-                    "Formatar",
-                    t.muted_foreground,
-                    t.foreground,
-                );
+                let format = theme::tool(icon::TEXT_ALIGN_LEFT, "Formatar", compact, t.muted_foreground, t.foreground);
                 if ui
                     .button(format)
-                    .on_hover_text("Shift+Alt+F · formata a seleção, se houver")
+                    .on_hover_text("Formatar · Shift+Alt+F · formata a seleção, se houver")
                     .clicked()
                     || format_key
                 {
                     format_in_place(text, selected_range, s.cfg.kind);
+                }
+                if !compact {
+                    let used = ui.cursor().left() - start_x;
+                    if full != Some(used) {
+                        ui.data_mut(|d| d.insert_temp(variant, used));
+                        if used + RIGHT_ROOM > avail {
+                            ui.ctx().request_repaint();
+                        }
+                    }
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     detail_toggle(ui, cx.show_detail);
@@ -209,14 +227,20 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         _ if !s.current_db.is_empty() => format!("em {}", s.current_db),
                         _ => String::new(),
                     };
-                    ui.label(egui::RichText::new(here).size(11.0).monospace().color(t.muted_foreground))
-                        .on_hover_text("Banco e schema dos nomes sem prefixo (troque na sidebar)");
+                    // Cut with "…" when there is little room, never drawn over the buttons.
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&here).size(11.0).monospace().color(t.muted_foreground))
+                            .truncate(),
+                    )
+                    .on_hover_text(format!("{here} · banco e schema dos nomes sem prefixo (troque na sidebar)"));
                     let keys = if several {
                         "Ctrl+Enter comando · F5 tudo"
                     } else {
                         "Ctrl+Enter / F5"
                     };
-                    ui.label(egui::RichText::new(keys).size(11.0).color(t.subtle));
+                    if ui.available_width() > 160.0 {
+                        ui.add(egui::Label::new(egui::RichText::new(keys).size(11.0).color(t.subtle)).truncate());
+                    }
                 });
             });
             ui.add_space(4.0);
@@ -946,10 +970,11 @@ pub(super) fn favorites_menu(
     favs: &[Favorite],
     conn: &str,
     can_save: bool,
+    compact: bool,
 ) -> Option<FavAction> {
     let t = theme::tokens();
     let mut action = None;
-    let label = theme::icon_text(icon::STAR, "Favoritos", t.warning, t.foreground);
+    let label = theme::tool(icon::STAR, "Favoritos", compact, t.warning, t.foreground);
     ui.menu_button(label, |ui| {
         ui.set_width(380.0);
         let save = theme::icon_text(icon::PLUS, "Salvar consulta atual…", t.lime, t.foreground);
@@ -1006,12 +1031,18 @@ pub(super) enum HistoryPick {
     All,
 }
 
-pub(super) fn history_menu(ui: &mut egui::Ui, history: &[Entry], conn: &str) -> Option<HistoryPick> {
+pub(super) fn history_menu(
+    ui: &mut egui::Ui,
+    history: &[Entry],
+    conn: &str,
+    compact: bool,
+) -> Option<HistoryPick> {
     let t = theme::tokens();
     let mut picked = None;
-    let label = theme::icon_text(
+    let label = theme::tool(
         icon::CLOCK_COUNTER_CLOCKWISE,
         "Histórico",
+        compact,
         t.muted_foreground,
         t.foreground,
     );

@@ -348,6 +348,22 @@ pub fn modal_frame(margin: i8) -> egui::Frame {
 }
 
 /// Filled call-to-action button (`bg-primary`, dark text on lime), with an optional leading icon.
+/// A toolbar label: icon and text, or only the icon when the bar is short of room (the name
+/// then goes in the tooltip).
+pub fn tool(
+    glyph: &str,
+    text: &str,
+    compact: bool,
+    icon_color: Color32,
+    text_color: Color32,
+) -> egui::WidgetText {
+    if compact {
+        icon(glyph).color(icon_color).into()
+    } else {
+        icon_text(glyph, text, icon_color, text_color).into()
+    }
+}
+
 pub fn primary_button(glyph: Option<&str>, text: &str) -> egui::Button<'static> {
     let t = tokens();
     let label: egui::WidgetText = match glyph {

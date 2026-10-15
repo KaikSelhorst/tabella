@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Narrowest the WHERE filter gets before the toolbar turns compact.
+const FILTER_MIN: f32 = 260.0;
+
 pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
     let search_id = egui::Id::new(("table_search", tab.id));
@@ -91,13 +94,22 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             // Roomier than the rest of the UI: the filter is where you type the most.
             ui.spacing_mut().interact_size.y = 28.0;
             ui.horizontal(|ui| {
+                // Short of room: a narrower search box and icon-only buttons, so the filter keeps
+                // a usable width (decided from the full buttons' last measured width).
+                let full_id = egui::Id::new(("toolbar_right_full", tab_id));
+                let full_right = ui.data(|d| d.get_temp::<f32>(full_id)).unwrap_or(440.0);
+                let compact = ui.available_width() - 200.0 - 90.0 - full_right < FILTER_MIN;
                 // Search: the term in any column, on top of the WHERE filter.
                 let search = ui.add(
                     TextEdit::singleline(&mut ts.search)
                         .id(search_id)
-                        .hint_text("Buscar em todas as colunas  (Ctrl+F)")
+                        .hint_text(if compact {
+                            "Buscar  (Ctrl+F)"
+                        } else {
+                            "Buscar em todas as colunas  (Ctrl+F)"
+                        })
                         .margin(egui::Margin::symmetric(8, 6))
-                        .desired_width(200.0),
+                        .desired_width(if compact { 130.0 } else { 200.0 }),
                 );
                 if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     ts.page = 0;
@@ -136,9 +148,11 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         .hint_text("id > 10 AND nome LIKE 'a%'   (Enter aplica)")
                         .font(egui::FontId::monospace(13.0))
                         .margin(egui::Margin::symmetric(8, 6))
-                        .layouter(&mut syntax::sql_layouter(13.0))
+                        .layouter(&mut syntax::sql_line_layouter(13.0))
                         .desired_width(w),
                 );
+                r.clone()
+                    .on_hover_text_at_pointer(egui::RichText::new(&ts.filter).monospace());
                 if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     ts.page = 0;
                     reload_now = true;
@@ -148,8 +162,9 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     add_record = ui
                         .add_enabled(
                             !s.cfg.read_only,
-                            theme::primary_button(Some(icon::PLUS), "Registro"),
+                            theme::primary_button(Some(icon::PLUS), if compact { "" } else { "Registro" }),
                         )
+                        .on_hover_text("Novo registro")
                         .on_disabled_hover_text("Conexão somente leitura")
                         .clicked();
                     if ui
@@ -160,7 +175,7 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         reload_now = true;
                     }
                     detail_toggle(ui, cx.show_detail);
-                    export = export_menu(ui, true, can_export);
+                    export = export_menu(ui, true, can_export, compact);
                     import_csv = ui
                         .add_enabled(
                             !s.cfg.read_only,
@@ -169,18 +184,22 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         .on_hover_text("Importar CSV ou Excel (ou arraste o arquivo para a janela)")
                         .on_disabled_hover_text("Conexão somente leitura")
                         .clicked();
-                    let structure = theme::icon_text(
+                    let structure = theme::tool(
                         icon::TREE_STRUCTURE,
                         "Estrutura",
+                        compact,
                         t.muted_foreground,
                         t.foreground,
                     );
                     show_structure = ui
                         .button(structure)
-                        .on_hover_text("Colunas, índices e DDL")
+                        .on_hover_text("Estrutura · colunas, índices e DDL")
                         .clicked();
                     let used = start - ui.cursor().right();
                     ui.data_mut(|d| d.insert_temp(right_id, used));
+                    if !compact {
+                        ui.data_mut(|d| d.insert_temp(full_id, used));
+                    }
                 });
             })
         });

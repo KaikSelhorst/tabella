@@ -386,11 +386,17 @@ pub(super) fn error_banner(ui: &mut egui::Ui, e: &str) {
 
 /// "Exportar" dropdown: what is on screen, or (table tabs) the whole table. Returns the choice;
 /// the caller starts the export once it can borrow the tab again.
-pub(super) fn export_menu(ui: &mut egui::Ui, is_table: bool, enabled: bool) -> Option<(Format, bool)> {
+pub(super) fn export_menu(
+    ui: &mut egui::Ui,
+    is_table: bool,
+    enabled: bool,
+    compact: bool,
+) -> Option<(Format, bool)> {
     let t = theme::tokens();
-    let label = theme::icon_text(
+    let label = theme::tool(
         icon::DOWNLOAD_SIMPLE,
         "Exportar",
+        compact,
         t.muted_foreground,
         t.foreground,
     );
@@ -424,7 +430,9 @@ pub(super) fn export_menu(ui: &mut egui::Ui, is_table: bool, enabled: bool) -> O
                     .size(11.0)
                     .color(t.subtle),
             );
-        });
+        })
+        .response
+        .on_hover_text("Exportar");
     });
     chosen
 }

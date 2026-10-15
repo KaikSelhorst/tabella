@@ -223,10 +223,13 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                                 .color(t.muted_foreground),
                         )
                         .frame(false);
-                        if ui
-                            .add(open)
-                            .on_hover_text("Abrir no editor grande (Shift+Enter na grade)")
-                            .clicked()
+                        // Only where a bigger editor helps: text (JSON, long values), not numbers,
+                        // booleans or dates (Shift+Enter in the grid still opens any of them).
+                        if kinds[ci] == ValueKind::Text
+                            && ui
+                                .add(open)
+                                .on_hover_text("Abrir no editor grande (Shift+Enter na grade)")
+                                .clicked()
                         {
                             action = Some(DetailAction::Open(ci));
                         }

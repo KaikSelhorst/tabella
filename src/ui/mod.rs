@@ -2203,6 +2203,72 @@ pub(crate) mod screenshots {
     }
 }
 
+/// The main screens at small sizes and larger zoom, where layouts break first:
+/// `DBLITE_SHOTS=<dir> cargo test ux_sweep -- --ignored` writes `<dir>/sweep/*.png`.
+#[cfg(test)]
+mod ux_sweep {
+    use eframe::egui;
+    use egui_kittest::Harness;
+
+    use super::screenshots::fake_app;
+    use crate::app::TabKind;
+
+    #[test]
+    #[ignore]
+    fn ux_sweep() {
+        let dir = std::env::var("DBLITE_SHOTS").unwrap_or_else(|_| "target/shots".into());
+        let out = format!("{dir}/sweep");
+        std::fs::create_dir_all(&out).unwrap();
+        for (w, h, zoom) in [(1024.0, 640.0, 1.0), (1366.0, 768.0, 1.25), (1920.0, 1080.0, 1.5)] {
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(w, h))
+                .wgpu()
+                .build_eframe(|cc| {
+                    super::theme::apply(&cc.egui_ctx);
+                    fake_app(&cc.egui_ctx)
+                });
+            harness.ctx.set_zoom_factor(zoom);
+            let tag = format!("{}x{}@{}", w as u32, h as u32, (zoom * 100.0) as u32);
+            let shot = |harness: &mut Harness<'_, crate::app::App>, name: &str| {
+                harness.run();
+                harness
+                    .render()
+                    .unwrap()
+                    .save(format!("{out}/{tag}-{name}.png"))
+                    .unwrap();
+            };
+            shot(&mut harness, "table");
+            {
+                let app = harness.state_mut();
+                app.active = 1;
+                if let Some(ed) = app.tabs[1].editor_mut() {
+                    ed.text = "SELECT count(*) FROM clientes;\n\nSELECT id, nome FROM clientes;".into();
+                }
+            }
+            shot(&mut harness, "sql");
+            harness.state_mut().open_compare(None);
+            shot(&mut harness, "compare");
+            harness.state_mut().open_dump(crate::app::DumpScope::Database);
+            shot(&mut harness, "dump");
+            harness.state_mut().open_history();
+            shot(&mut harness, "history");
+            harness.state_mut().open_search();
+            shot(&mut harness, "search");
+            {
+                let app = harness.state_mut();
+                app.active = 0;
+                if let TabKind::Table(ts) = &mut app.tabs[0].kind {
+                    ts.filter = "uf IN ('SP', 'RJ', 'MG', 'PR', 'SC', 'RS', 'BA', 'PE') AND saldo > 1000 AND ativo AND email LIKE '%@exemplo.com'".into();
+                }
+            }
+            shot(&mut harness, "table-long-filter");
+            harness.state_mut().session = None;
+            harness.state_mut().tabs.clear();
+            shot(&mut harness, "welcome");
+        }
+    }
+}
+
 #[cfg(test)]
 mod layout_tests {
     use eframe::egui;

@@ -189,13 +189,14 @@ fn color(kind: Kind, t: &Tokens) -> Color32 {
     }
 }
 
-/// Layouter for an SQL `TextEdit` (`.layouter(&mut sql_layouter(13.0))`).
-pub fn sql_layouter(
+/// For one-line fields (the WHERE filter): long text scrolls sideways instead of wrapping
+/// into a column of lines.
+pub fn sql_line_layouter(
     size: f32,
 ) -> impl FnMut(&egui::Ui, &dyn egui::TextBuffer, f32) -> std::sync::Arc<egui::Galley> {
-    move |ui, buf, wrap| {
+    move |ui, buf, _wrap| {
         let mut job = highlight(buf.as_str(), FontId::monospace(size));
-        job.wrap.max_width = wrap;
+        job.wrap.max_width = f32::INFINITY;
         ui.fonts_mut(|f| f.layout_job(job))
     }
 }
