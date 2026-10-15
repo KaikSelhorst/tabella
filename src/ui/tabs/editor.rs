@@ -612,8 +612,8 @@ fn statement_ranges_cached(ctx: &egui::Context, tab: u64, text: &str) -> Vec<(us
     r
 }
 
-/// The sidebar's table for a name typed in the editor (`clientes`, `public.clientes`,
-/// `"Clientes"`), ignoring case when there's no exact match.
+/// The sidebar's table for a name typed in the editor (`customers`, `public.customers`,
+/// `"Customers"`), ignoring case when there's no exact match.
 pub(super) fn table_named<'a>(s: &'a Session, word: &str) -> Option<&'a crate::db::TableRef> {
     let parts: Vec<String> = word
         .split('.')

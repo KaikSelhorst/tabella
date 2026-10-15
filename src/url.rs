@@ -6,7 +6,7 @@ use crate::db::{ConnConfig, Kind};
 /// Fills the connection fields of `cfg` from `url`. Name, color and other app settings are kept.
 pub fn apply(cfg: &mut ConnConfig, url: &str) -> Result<(), String> {
     let url = url.trim();
-    // sqlite:///C:/dados/loja.db, sqlite:///home/eu/loja.db, sqlite:loja.db: a file path.
+    // sqlite:///C:/data/shop.db, sqlite:///home/eu/shop.db, sqlite:shop.db: a file path.
     if url.len() > 7 && url[..7].eq_ignore_ascii_case("sqlite:") {
         let path = url[7..].trim_start_matches("//");
         // "/C:/…" is a Windows drive, not a path under the root.
@@ -126,24 +126,24 @@ mod tests {
 
     fn parse(url: &str) -> ConnConfig {
         let mut c = ConnConfig::new(Kind::Postgres);
-        c.name = "manter".into();
+        c.name = "keep".into();
         apply(&mut c, url).unwrap();
         c
     }
 
     #[test]
     fn postgres_url_with_everything() {
-        let c = parse("postgresql://app%40corp:p%3Ass%2Fw@db.example.com:6543/loja?sslmode=require");
+        let c = parse("postgresql://app%40corp:p%3Ass%2Fw@db.example.com:6543/shop?sslmode=require");
         assert_eq!(
             (c.kind, c.host.as_str(), c.port),
             (Kind::Postgres, "db.example.com", 6543)
         );
         assert_eq!(
             (c.user.as_str(), c.password.as_str(), c.database.as_str()),
-            ("app@corp", "p:ss/w", "loja")
+            ("app@corp", "p:ss/w", "shop")
         );
         assert!(c.ssl && !c.ssl_insecure, "require still checks the certificate");
-        assert_eq!(c.name, "manter", "app settings are kept");
+        assert_eq!(c.name, "keep", "app settings are kept");
     }
 
     #[test]

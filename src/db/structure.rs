@@ -181,7 +181,7 @@ impl Conn {
                     }
                     (_, _, Some(d)) => {
                         let _ = write!(l, " DEFAULT {d}");
-                        // nextval('clientes_id_seq'::regclass): the name as SQL writes it.
+                        // nextval('customers_id_seq'::regclass): the name as SQL writes it.
                         if let Some(seq) = d
                             .strip_prefix("nextval('")
                             .and_then(|r| r.split_once("'::regclass)"))

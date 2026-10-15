@@ -50,12 +50,12 @@ mod tests {
             schema: "public".into(),
             table: table.into(),
         };
-        let list = [f("b", "pedidos"), f("a", "pedidos"), f("c", "clientes")];
-        let names: Vec<_> = for_table(&list, "dev", "public", "pedidos")
+        let list = [f("b", "orders"), f("a", "orders"), f("c", "customers")];
+        let names: Vec<_> = for_table(&list, "dev", "public", "orders")
             .iter()
             .map(|f| f.name.as_str())
             .collect();
         assert_eq!(names, ["a", "b"]);
-        assert!(for_table(&list, "prod", "public", "pedidos").is_empty());
+        assert!(for_table(&list, "prod", "public", "orders").is_empty());
     }
 }

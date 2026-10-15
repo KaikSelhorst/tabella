@@ -11,7 +11,7 @@ pub struct ColDef {
     pub name: String,
     pub data_type: String,
     pub nullable: bool,
-    /// SQL expression (`0`, `now()`, `'novo'`); empty for none.
+    /// SQL expression (`0`, `now()`, `'new'`); empty for none.
     pub default: String,
     pub pk: bool,
     pub dropped: bool,
@@ -378,15 +378,15 @@ mod tests {
     #[test]
     fn creates_with_primary_key_and_indexes() {
         let mut d = Design::new_table(Kind::Postgres, "public");
-        d.table = "clientes".into();
+        d.table = "customers".into();
         d.columns.push(ColDef {
-            name: "nome".into(),
+            name: "name".into(),
             data_type: "text".into(),
             nullable: false,
             ..ColDef::new()
         });
         d.columns.push(ColDef {
-            name: "criado_em".into(),
+            name: "created_at".into(),
             data_type: "timestamptz".into(),
             default: "now()".into(),
             ..ColDef::new()
@@ -394,14 +394,14 @@ mod tests {
         d.indexes.push(IndexDef {
             existing: false,
             name: String::new(),
-            columns: "nome, criado_em".into(),
+            columns: "name, created_at".into(),
             unique: true,
             dropped: false,
         });
         assert!(d.problems().is_empty());
         assert_eq!(
             d.script(),
-            "CREATE TABLE \"public\".\"clientes\" (\n  \"id\" bigserial NOT NULL,\n  \"nome\" text NOT NULL,\n  \"criado_em\" timestamptz DEFAULT now(),\n  PRIMARY KEY (\"id\")\n);\nCREATE UNIQUE INDEX \"clientes_nome_criado_em_idx\" ON \"public\".\"clientes\" (\"nome\", \"criado_em\");"
+            "CREATE TABLE \"public\".\"customers\" (\n  \"id\" bigserial NOT NULL,\n  \"name\" text NOT NULL,\n  \"created_at\" timestamptz DEFAULT now(),\n  PRIMARY KEY (\"id\")\n);\nCREATE UNIQUE INDEX \"customers_name_created_at_idx\" ON \"public\".\"customers\" (\"name\", \"created_at\");"
         );
     }
 
@@ -416,11 +416,11 @@ mod tests {
         let s = TableStructure {
             columns: vec![
                 col("id", "integer", false, None, true),
-                col("nome", "text", true, None, false),
-                col("velho", "text", true, None, false),
-                col("saldo", "numeric(10,2)", true, Some("0"), false),
+                col("name", "text", true, None, false),
+                col("old", "text", true, None, false),
+                col("balance", "numeric(10,2)", true, Some("0"), false),
             ],
-            indexes: vec![("t_nome_idx".into(), "CREATE INDEX t_nome_idx ON t (nome)".into())],
+            indexes: vec![("t_name_idx".into(), "CREATE INDEX t_name_idx ON t (name)".into())],
             foreign_keys: vec![],
             ddl: String::new(),
             ..Default::default()
@@ -435,13 +435,13 @@ mod tests {
             assert!(d.statements().is_empty(), "{kind:?}: untouched means no DDL");
         }
         let mut d = existing(Kind::Postgres);
-        d.columns[1].name = "nome_completo".into();
+        d.columns[1].name = "full_name".into();
         d.columns[1].nullable = false;
         d.columns[2].dropped = true;
         d.columns[3].data_type = "numeric(12,2)".into();
         d.columns[3].default = String::new();
         d.columns.push(ColDef {
-            name: "ativo".into(),
+            name: "active".into(),
             data_type: "boolean".into(),
             default: "true".into(),
             ..ColDef::new()
@@ -450,13 +450,13 @@ mod tests {
         assert_eq!(
             d.statements(),
             [
-                "DROP INDEX \"s\".\"t_nome_idx\"",
-                "ALTER TABLE \"s\".\"t\" RENAME COLUMN \"nome\" TO \"nome_completo\"",
-                "ALTER TABLE \"s\".\"t\" ALTER COLUMN \"nome_completo\" SET NOT NULL",
-                "ALTER TABLE \"s\".\"t\" DROP COLUMN \"velho\"",
-                "ALTER TABLE \"s\".\"t\" ALTER COLUMN \"saldo\" TYPE numeric(12,2) USING \"saldo\"::numeric(12,2)",
-                "ALTER TABLE \"s\".\"t\" ALTER COLUMN \"saldo\" DROP DEFAULT",
-                "ALTER TABLE \"s\".\"t\" ADD COLUMN \"ativo\" boolean DEFAULT true",
+                "DROP INDEX \"s\".\"t_name_idx\"",
+                "ALTER TABLE \"s\".\"t\" RENAME COLUMN \"name\" TO \"full_name\"",
+                "ALTER TABLE \"s\".\"t\" ALTER COLUMN \"full_name\" SET NOT NULL",
+                "ALTER TABLE \"s\".\"t\" DROP COLUMN \"old\"",
+                "ALTER TABLE \"s\".\"t\" ALTER COLUMN \"balance\" TYPE numeric(12,2) USING \"balance\"::numeric(12,2)",
+                "ALTER TABLE \"s\".\"t\" ALTER COLUMN \"balance\" DROP DEFAULT",
+                "ALTER TABLE \"s\".\"t\" ADD COLUMN \"active\" boolean DEFAULT true",
             ]
         );
 
@@ -466,8 +466,8 @@ mod tests {
         assert_eq!(
             d.statements(),
             [
-                "DROP INDEX `t_nome_idx` ON `s`.`t`",
-                "ALTER TABLE `s`.`t` MODIFY COLUMN `saldo` numeric(10,2) NOT NULL DEFAULT 0",
+                "DROP INDEX `t_name_idx` ON `s`.`t`",
+                "ALTER TABLE `s`.`t` MODIFY COLUMN `balance` numeric(10,2) NOT NULL DEFAULT 0",
             ]
         );
     }

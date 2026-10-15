@@ -272,7 +272,7 @@ mod tests {
 
     fn result() -> QueryResult {
         QueryResult {
-            columns: vec!["id".into(), "nome".into(), "ok".into()],
+            columns: vec!["id".into(), "name".into(), "ok".into()],
             rows: vec![
                 vec![Some("1".into()), Some("a, \"b\"\nc".into()), Some("t".into())],
                 vec![Some("2".into()), None, Some("f".into())],
@@ -298,7 +298,7 @@ mod tests {
                 references: None,
             },
             ColumnInfo {
-                name: "nome".into(),
+                name: "name".into(),
                 data_type: "text".into(),
                 pk: false,
                 nullable: true,
@@ -333,7 +333,7 @@ mod tests {
             .unwrap()
             .read_to_string(&mut sheet)
             .unwrap();
-        // id 1 as a number, ok=true as a boolean, nome of row 3 (NULL) left empty.
+        // id 1 as a number, ok=true as a boolean, name of row 3 (NULL) left empty.
         assert!(sheet.contains(r#"<c r="A2"><v>1</v></c>"#), "{sheet}");
         assert!(sheet.contains(r#"<c r="C2" t="b"><v>1</v></c>"#), "{sheet}");
         assert!(!sheet.contains(r#"r="B3""#), "{sheet}");
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn csv_quotes_only_what_needs_it() {
-        assert_eq!(export(Format::Csv), "id,nome,ok\n1,\"a, \"\"b\"\"\nc\",t\n2,,f\n");
+        assert_eq!(export(Format::Csv), "id,name,ok\n1,\"a, \"\"b\"\"\nc\",t\n2,,f\n");
     }
 
     #[test]
@@ -361,8 +361,8 @@ mod tests {
         assert_eq!(
             v,
             serde_json::json!([
-                {"id": 1, "nome": "a, \"b\"\nc", "ok": true},
-                {"id": 2, "nome": null, "ok": false}
+                {"id": 1, "name": "a, \"b\"\nc", "ok": true},
+                {"id": 2, "name": null, "ok": false}
             ])
         );
     }
@@ -377,10 +377,10 @@ mod tests {
 
     #[test]
     fn file_names_are_safe_and_dated() {
-        let p = target_path("public.clientes/x", Format::Csv);
+        let p = target_path("public.customers/x", Format::Csv);
         let name = p.file_name().unwrap().to_string_lossy().to_string();
         assert!(
-            name.starts_with("public_clientes_x_2") && name.ends_with(".csv"),
+            name.starts_with("public_customers_x_2") && name.ends_with(".csv"),
             "{name}"
         );
         assert_eq!(timestamp().len(), 15);

@@ -525,17 +525,17 @@ pub(crate) mod screenshots {
         std::mem::forget(replies);
         session.cfg = cfg;
         session.tables = vec![
-            table("public", "clientes", false),
-            table("public", "pedidos", false),
-            table("public", "produtos", false),
-            table("public", "vendas_mensais", true),
+            table("public", "customers", false),
+            table("public", "orders", false),
+            table("public", "products", false),
+            table("public", "monthly_sales", true),
             table("auth", "sessions", false),
             table("auth", "users", false),
         ];
-        session.columns = ["id", "nome", "email", "ativo", "saldo", "criado_em"]
+        session.columns = ["id", "name", "email", "active", "balance", "created_at"]
             .iter()
-            .map(|c| ("clientes".to_string(), c.to_string()))
-            .chain([("pedidos".to_string(), "cliente_id".to_string())])
+            .map(|c| ("customers".to_string(), c.to_string()))
+            .chain([("orders".to_string(), "customer_id".to_string())])
             .collect();
         session.databases = vec!["dev".into(), "postgres".into()];
         session.current_db = "postgres".into();
@@ -550,8 +550,8 @@ pub(crate) mod screenshots {
             ms: 3,
         };
         app.history = vec![
-            entry("SELECT count(*) FROM clientes WHERE ativo", 7200),
-            entry("SELECT * FROM pedidos WHERE cliente_id = 3", 600),
+            entry("SELECT count(*) FROM customers WHERE active", 7200),
+            entry("SELECT * FROM orders WHERE customer_id = 3", 600),
         ];
         let col = |name: &str, ty: &str, pk| ColumnInfo {
             name: name.into(),
@@ -563,18 +563,18 @@ pub(crate) mod screenshots {
         };
         let cols = vec![
             col("id", "integer", true),
-            col("nome", "text", false),
+            col("name", "text", false),
             col("email", "text", false),
-            col("ativo", "boolean", false),
-            col("saldo", "numeric", false),
-            col("criado_em", "timestamp without time zone", false),
+            col("active", "boolean", false),
+            col("balance", "numeric", false),
+            col("created_at", "timestamp without time zone", false),
         ];
         let rows = (1..=40)
             .map(|i| {
                 vec![
                     Some(i.to_string()),
-                    Some(format!("Cliente {i}")),
-                    Some(format!("cliente{i}@exemplo.com")),
+                    Some(format!("Customer {i}")),
+                    Some(format!("customer{i}@example.com")),
                     Some(if i % 3 == 0 { "f" } else { "t" }.into()),
                     if i % 5 == 0 {
                         None
@@ -593,15 +593,15 @@ pub(crate) mod screenshots {
             elapsed: Duration::from_millis(3),
             previous: Vec::new(),
         };
-        let mut ts = TableState::new("public", "clientes", Some(40));
+        let mut ts = TableState::new("public", "customers", Some(40));
         ts.cols = cols;
         ts.order = Some(("id".into(), true));
         ts.total = Some(40);
         ts.counted_filter = Some(String::new());
-        let mut table_tab = Tab::new(1, "clientes".into(), TabKind::Table(Box::new(ts)));
+        let mut table_tab = Tab::new(1, "customers".into(), TabKind::Table(Box::new(ts)));
         table_tab.result = Some(result.clone());
         table_tab.selected = Some((2, 2));
-        let sql = "SELECT id, nome, saldo\nFROM public.clientes\nWHERE ativo\nORDER BY saldo DESC;";
+        let sql = "SELECT id, name, balance\nFROM public.customers\nWHERE active\nORDER BY balance DESC;";
         let mut sql_tab = Tab::new(
             2,
             "SQL 1".into(),
@@ -657,10 +657,10 @@ pub(crate) mod screenshots {
         }
         // CSV import dialog with a semicolon file from a spreadsheet.
         {
-            let csv = std::env::temp_dir().join("dblite-shot-clientes.csv");
+            let csv = std::env::temp_dir().join("dblite-shot-customers.csv");
             std::fs::write(
                 &csv,
-                "Nome;Email;Ativo;Saldo;Observação\nMaria Souza;maria@exemplo.com;sim;1520,30;cliente antiga\nJoão Lima;joao@exemplo.com;não;;\nAna Prado;ana@exemplo.com;sim;88,00;indicação\n",
+                "Name;Email;Active;Balance;Notes\nMary Smith;mary@example.com;yes;1520,30;longtime customer\nJohn Jones;john@example.com;no;;\nAnna Parker;anna@example.com;yes;88,00;referral\n",
             )
             .unwrap();
             crate::app::open_import(&mut harness.state_mut().tabs[0], Some(csv.display().to_string()));
@@ -699,27 +699,27 @@ pub(crate) mod screenshots {
             };
             let data = TableStructure {
                 columns: vec![
-                    col("id", "integer", false, Some("nextval('clientes_id_seq'::regclass)"), true),
-                    col("nome", "text", true, None, false),
+                    col("id", "integer", false, Some("nextval('customers_id_seq'::regclass)"), true),
+                    col("name", "text", true, None, false),
                     col("email", "text", true, None, false),
-                    col("ativo", "boolean", true, Some("true"), false),
-                    col("saldo", "numeric(12,2)", true, None, false),
-                    col("criado_em", "timestamp without time zone", true, Some("now()"), false),
+                    col("active", "boolean", true, Some("true"), false),
+                    col("balance", "numeric(12,2)", true, None, false),
+                    col("created_at", "timestamp without time zone", true, Some("now()"), false),
                 ],
                 indexes: vec![
-                    ("clientes_pkey".into(), "CREATE UNIQUE INDEX clientes_pkey ON public.clientes USING btree (id)".into()),
-                    ("clientes_email_idx".into(), "CREATE INDEX clientes_email_idx ON public.clientes USING btree (email)".into()),
+                    ("customers_pkey".into(), "CREATE UNIQUE INDEX customers_pkey ON public.customers USING btree (id)".into()),
+                    ("customers_email_idx".into(), "CREATE INDEX customers_email_idx ON public.customers USING btree (email)".into()),
                 ],
                 foreign_keys: vec![],
-                ddl: "CREATE TABLE \"public\".\"clientes\" (\n    \"id\" integer NOT NULL DEFAULT nextval('clientes_id_seq'::regclass),\n    \"nome\" text,\n    \"email\" text,\n    \"ativo\" boolean DEFAULT true,\n    \"saldo\" numeric(12,2),\n    \"criado_em\" timestamp without time zone DEFAULT now(),\n    CONSTRAINT \"clientes_pkey\" PRIMARY KEY (id)\n);\nCREATE INDEX clientes_email_idx ON public.clientes USING btree (email);".into(),
+                ddl: "CREATE TABLE \"public\".\"customers\" (\n    \"id\" integer NOT NULL DEFAULT nextval('customers_id_seq'::regclass),\n    \"name\" text,\n    \"email\" text,\n    \"active\" boolean DEFAULT true,\n    \"balance\" numeric(12,2),\n    \"created_at\" timestamp without time zone DEFAULT now(),\n    CONSTRAINT \"customers_pkey\" PRIMARY KEY (id)\n);\nCREATE INDEX customers_email_idx ON public.customers USING btree (email);".into(),
                 ..Default::default()
             };
             let st = crate::app::StructState {
                 schema: "public".into(),
-                table: "clientes".into(),
+                table: "customers".into(),
                 data: Some(data),
             };
-            let tab = Tab::new(3, "clientes · structure".into(), TabKind::Structure(Box::new(st)));
+            let tab = Tab::new(3, "customers · structure".into(), TabKind::Structure(Box::new(st)));
             harness.state_mut().tabs.push(tab);
             harness.state_mut().active = 2;
             harness.run();
@@ -733,21 +733,21 @@ pub(crate) mod screenshots {
                 TabKind::Structure(st) => st.data.clone().unwrap(),
                 _ => unreachable!(),
             };
-            harness.state_mut().open_design("public", "clientes", &data);
+            harness.state_mut().open_design("public", "customers", &data);
             if let Some(TabKind::Design(d)) = harness.state_mut().tabs.last_mut().map(|t| &mut t.kind) {
-                d.columns[1].name = "nome_completo".into();
+                d.columns[1].name = "full_name".into();
                 d.columns[1].nullable = false;
                 d.columns[4].dropped = true;
                 d.columns.push(crate::design::ColDef {
-                    name: "uf".into(),
+                    name: "state".into(),
                     data_type: "char(2)".into(),
-                    default: "'SP'".into(),
+                    default: "'NY'".into(),
                     ..crate::design::ColDef::new()
                 });
                 d.indexes.push(crate::design::IndexDef {
                     existing: false,
                     name: String::new(),
-                    columns: "uf, criado_em".into(),
+                    columns: "state, created_at".into(),
                     unique: false,
                     dropped: false,
                 });
@@ -810,13 +810,13 @@ pub(crate) mod screenshots {
                         "4121",
                         "active",
                         "00:00:41",
-                        "SELECT count(*) FROM pedidos p JOIN clientes c ON c.id = p.cliente_id",
+                        "SELECT count(*) FROM orders p JOIN customers c ON c.id = p.customer_id",
                     ),
                     row(
                         "4188",
                         "idle in transaction",
                         "00:03:12",
-                        "UPDATE clientes SET saldo = 0 WHERE id = 7",
+                        "UPDATE customers SET balance = 0 WHERE id = 7",
                     ),
                     row("4203", "idle", "00:12:55", "SELECT 1"),
                 ],
@@ -862,9 +862,9 @@ pub(crate) mod screenshots {
             let slow = QueryResult {
                 columns: ["calls", "total_ms", "mean_ms", "row_count", "query"].map(String::from).to_vec(),
                 rows: [
-                    ["1240", "98213.4", "79.20", "1240", "SELECT count(*) FROM pedidos p JOIN clientes c ON c.id = p.cliente_id WHERE p.status = $1"],
-                    ["58201", "41022.8", "0.70", "58201", "SELECT * FROM clientes WHERE email = $1"],
-                    ["12", "8890.1", "740.84", "60000000", "SELECT * FROM eventos ORDER BY criado_em DESC"],
+                    ["1240", "98213.4", "79.20", "1240", "SELECT count(*) FROM orders p JOIN customers c ON c.id = p.customer_id WHERE p.status = $1"],
+                    ["58201", "41022.8", "0.70", "58201", "SELECT * FROM customers WHERE email = $1"],
+                    ["12", "8890.1", "740.84", "60000000", "SELECT * FROM events ORDER BY created_at DESC"],
                 ]
                 .iter()
                 .map(|r| r.iter().map(|v| Some(v.to_string())).collect())
@@ -893,11 +893,11 @@ pub(crate) mod screenshots {
         {
             let json = r#"[{"Plan": {"Node Type": "Aggregate", "Total Cost": 98000, "Plan Rows": 1, "Actual Total Time": 812.0, "Actual Rows": 1, "Actual Loops": 1,
               "Plans": [{"Node Type": "Hash Join", "Total Cost": 97000, "Plan Rows": 1200, "Actual Total Time": 790.0, "Actual Rows": 41000, "Actual Loops": 1,
-                "Hash Cond": "(p.cliente_id = c.id)",
+                "Hash Cond": "(p.customer_id = c.id)",
                 "Plans": [
-                  {"Node Type": "Seq Scan", "Relation Name": "pedidos", "Alias": "p", "Total Cost": 91000, "Plan Rows": 5000000, "Actual Total Time": 610.0, "Actual Rows": 5000000, "Actual Loops": 1, "Filter": "(status = 'pago'::text)", "Rows Removed by Filter": 4170000},
+                  {"Node Type": "Seq Scan", "Relation Name": "orders", "Alias": "p", "Total Cost": 91000, "Plan Rows": 5000000, "Actual Total Time": 610.0, "Actual Rows": 5000000, "Actual Loops": 1, "Filter": "(status = 'paid'::text)", "Rows Removed by Filter": 4170000},
                   {"Node Type": "Hash", "Total Cost": 3100, "Plan Rows": 900, "Actual Total Time": 21.0, "Actual Rows": 900, "Actual Loops": 1,
-                    "Plans": [{"Node Type": "Index Scan", "Index Name": "clientes_pkey", "Relation Name": "clientes", "Alias": "c", "Total Cost": 3000, "Plan Rows": 900, "Actual Total Time": 18.0, "Actual Rows": 900, "Actual Loops": 1, "Index Cond": "(id < 1000)"}]}
+                    "Plans": [{"Node Type": "Index Scan", "Index Name": "customers_pkey", "Relation Name": "customers", "Alias": "c", "Total Cost": 3000, "Plan Rows": 900, "Actual Total Time": 18.0, "Actual Rows": 900, "Actual Loops": 1, "Index Cond": "(id < 1000)"}]}
                 ]}]},
               "Planning Time": 0.4, "Execution Time": 812.5}]"#;
             let tab = &mut harness.state_mut().tabs[1];
@@ -907,16 +907,16 @@ pub(crate) mod screenshots {
             harness.state_mut().tabs[1].editor_mut().unwrap().plan = None;
         }
 
-        // Wide editor result scrolled sideways: "id" and "nome" are pinned and stay at the left.
+        // Wide editor result scrolled sideways: "id" and "name" are pinned and stay at the left.
         {
             let state = harness.state_mut();
             state.active = 1;
             let tab = &mut state.tabs[1];
             let saved = tab.result.take();
-            let names: Vec<String> = ["id", "nome"]
+            let names: Vec<String> = ["id", "name"]
                 .iter()
                 .map(|s| s.to_string())
-                .chain((1..=14).map(|i| format!("campo_{i:02}")))
+                .chain((1..=14).map(|i| format!("field_{i:02}")))
                 .collect();
             tab.result = Some(QueryResult {
                 rows: (1..=30)
@@ -926,8 +926,8 @@ pub(crate) mod screenshots {
                             .enumerate()
                             .map(|(i, _)| match i {
                                 0 => Some(r.to_string()),
-                                1 => Some(format!("Cliente {r}")),
-                                _ => Some(format!("valor {r}-{i}")),
+                                1 => Some(format!("Customer {r}")),
+                                _ => Some(format!("value {r}-{i}")),
                             })
                             .collect()
                     })
@@ -935,8 +935,8 @@ pub(crate) mod screenshots {
                 columns: names,
                 ..Default::default()
             });
-            tab.pinned_cols = vec!["id".into(), "nome".into()];
-            tab.hidden_cols = vec!["campo_03".into()];
+            tab.pinned_cols = vec!["id".into(), "name".into()];
+            tab.hidden_cols = vec!["field_03".into()];
             tab.selected = Some((4, 9));
             harness.run();
             harness.hover_at(egui::pos2(700.0, 500.0));
@@ -965,7 +965,7 @@ pub(crate) mod screenshots {
         // Several statements: the one under the cursor is marked, and each query has a result.
         {
             let editor = egui::Id::new(("sql", 2u64));
-            let script = "SELECT count(*) FROM clientes;\n\nSELECT id, nome, saldo\nFROM clientes\nWHERE ativo;\n\nSELECT * FROM pedidos LIMIT 5;";
+            let script = "SELECT count(*) FROM customers;\n\nSELECT id, name, balance\nFROM customers\nWHERE active;\n\nSELECT * FROM orders LIMIT 5;";
             let state = harness.state_mut();
             let tab = &mut state.tabs[1];
             let mut old = script.to_string();
@@ -1009,7 +1009,7 @@ pub(crate) mod screenshots {
                 failed: false,
             };
             state.tabs[0].col_stats = Some(crate::app::StatsView {
-                column: "cidade".into(),
+                column: "city".into(),
                 scope: "whole table".into(),
                 data: Some(Ok(crate::values::ColumnStats {
                     total: 1_000_000,
@@ -1018,11 +1018,11 @@ pub(crate) mod screenshots {
                     min: None,
                     max: None,
                     top: [
-                        "São Paulo",
-                        "Rio de Janeiro",
-                        "Belo Horizonte",
-                        "Curitiba",
-                        "Recife",
+                        "New York",
+                        "Los Angeles",
+                        "Chicago",
+                        "Chicago",
+                        "Boston",
                     ]
                     .iter()
                     .enumerate()
@@ -1046,14 +1046,14 @@ pub(crate) mod screenshots {
             let state = harness.state_mut();
             state.active = 1;
             if let Some(text) = state.tabs[1].editor_mut().map(|ed| &mut ed.text) {
-                *text = "SELECT *\nFROM clientes\nWHERE id = :id\n  AND cidade = :cidade\n  AND id IN (SELECT cliente_id FROM pedidos);".into();
+                *text = "SELECT *\nFROM customers\nWHERE id = :id\n  AND city = :city\n  AND id IN (SELECT customer_id FROM orders);".into();
             }
             let saved = state.tabs[1].result.take();
             state.tabs[1].result = Some(QueryResult {
                 columns: vec!["id".into(), "payload".into()],
                 rows: vec![vec![
                     Some("7".into()),
-                    Some(r#"{"pagina": "/produto/42", "navegador": "firefox", "itens": [{"sku": "A-1", "preco": 19.9}, {"sku": "B-2", "preco": 5}], "cupom": null, "novo": true}"#.into()),
+                    Some(r#"{"page": "/product/42", "browser": "firefox", "items": [{"sku": "A-1", "price": 19.9}, {"sku": "B-2", "price": 5}], "coupon": null, "new": true}"#.into()),
                 ]],
                 ..Default::default()
             });
@@ -1085,7 +1085,7 @@ pub(crate) mod screenshots {
                 .insert("id".into(), "42".into());
             tab.editor_mut().unwrap().params = Some(crate::app::ParamPrompt {
                 sql: String::new(),
-                names: vec!["id".into(), "cidade".into()],
+                names: vec!["id".into(), "city".into()],
                 mode: crate::app::RunMode::Run,
                 focused: true,
             });
@@ -1101,7 +1101,7 @@ pub(crate) mod screenshots {
             tab.selected = None;
             if let Some(text) = tab.editor_mut().map(|ed| &mut ed.text) {
                 *text =
-                    "SELECT id, nome, saldo\nFROM public.clientes\nWHERE ativo\nORDER BY saldo DESC;".into();
+                    "SELECT id, name, balance\nFROM public.customers\nWHERE active\nORDER BY balance DESC;".into();
             }
         }
 
@@ -1112,17 +1112,17 @@ pub(crate) mod screenshots {
             let tab = &mut state.tabs[1];
             let saved = tab.result.take();
             let cities = [
-                "São Paulo",
-                "Rio de Janeiro",
-                "Belo Horizonte",
-                "Curitiba",
-                "Porto Alegre",
-                "Recife",
-                "Salvador",
-                "Fortaleza",
+                "New York",
+                "Los Angeles",
+                "Chicago",
+                "Chicago",
+                "Seattle",
+                "Boston",
+                "Miami",
+                "Denver",
             ];
             tab.result = Some(QueryResult {
-                columns: vec!["cidade".into(), "total".into()],
+                columns: vec!["city".into(), "total".into()],
                 rows: cities
                     .iter()
                     .enumerate()
@@ -1156,7 +1156,7 @@ pub(crate) mod screenshots {
                 .unwrap();
             let tab = &mut harness.state_mut().tabs[1];
             tab.result = Some(QueryResult {
-                columns: vec!["dia".into(), "pedidos".into()],
+                columns: vec!["day".into(), "orders".into()],
                 rows: (1..=60)
                     .map(|d: i32| {
                         let v = 900 + (d * 37 % 200) + d * 12 - if d % 7 == 0 { 300 } else { 0 };
@@ -1192,23 +1192,23 @@ pub(crate) mod screenshots {
 
             let tab = &mut harness.state_mut().tabs[1];
             tab.editor_mut().unwrap().preview = Some(crate::app::PreviewState {
-                sql: "UPDATE clientes SET ativo = false\nWHERE uf = 'SP' AND criado_em < '2023-01-01'".into(),
+                sql: "UPDATE customers SET active = false\nWHERE state = 'NY' AND created_at < '2023-01-01'".into(),
                 data: Some(Ok(crate::db::PreviewData {
                     count: 18_342,
                     sample: QueryResult {
                         columns: vec![
                             "id".into(),
-                            "nome".into(),
-                            "uf".into(),
-                            "ativo".into(),
-                            "criado_em".into(),
+                            "name".into(),
+                            "state".into(),
+                            "active".into(),
+                            "created_at".into(),
                         ],
                         rows: (0..12)
                             .map(|i| {
                                 vec![
                                     Some((i * 10 + 3).to_string()),
-                                    Some(format!("Cliente {}", i * 10 + 3)),
-                                    Some("SP".into()),
+                                    Some(format!("Customer {}", i * 10 + 3)),
+                                    Some("NY".into()),
                                     Some("t".into()),
                                     Some(format!("2022-0{}-1{} 10:00:00", i % 9 + 1, i % 9)),
                                 ]
@@ -1238,19 +1238,19 @@ pub(crate) mod screenshots {
             let tab = &mut state.tabs[1];
             let saved = tab.result.take();
             tab.result = Some(QueryResult {
-                columns: vec!["id".into(), "nome".into(), "saldo".into()],
+                columns: vec!["id".into(), "name".into(), "balance".into()],
                 rows: (1..=12)
                     .map(|i| {
                         vec![
                             Some(i.to_string()),
-                            Some(format!("Cliente {i}")),
+                            Some(format!("Customer {i}")),
                             Some(format!("{}.00", i * 120)),
                         ]
                     })
                     .collect(),
                 ..Default::default()
             });
-            let mut src = crate::app::TableState::new("public", "clientes", None);
+            let mut src = crate::app::TableState::new("public", "customers", None);
             let col = |name: &str, ty: &str, pk| ColumnInfo {
                 name: name.into(),
                 data_type: ty.into(),
@@ -1261,18 +1261,18 @@ pub(crate) mod screenshots {
             };
             src.cols = vec![
                 col("id", "integer", true),
-                col("nome", "text", false),
-                col("saldo", "numeric", false),
+                col("name", "text", false),
+                col("balance", "numeric", false),
             ];
             src.changes.push(crate::app::Change::Set {
                 key: vec![Some("3".into())],
-                col: "nome".into(),
-                value: Some("Cliente Três".into()),
-                before: Some("Cliente 3".into()),
+                col: "name".into(),
+                value: Some("Customer Three".into()),
+                before: Some("Customer 3".into()),
             });
             tab.editor_mut().unwrap().source = Some(Box::new(src));
             tab.editor_mut().unwrap().source_query =
-                "SELECT id, nome, saldo FROM clientes WHERE ativo".into();
+                "SELECT id, name, balance FROM customers WHERE active".into();
             tab.selected = Some((2, 1));
             harness.run();
             harness
@@ -1284,7 +1284,7 @@ pub(crate) mod screenshots {
             tab.editor_mut().unwrap().source = None;
             tab.selected = None;
 
-            let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "clientes", "Alias": "clientes", "Total Cost": 21000, "Plan Rows": 31000, "Filter": "((saldo > '1000'::numeric) AND (ativo = true))"}}]"#;
+            let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "customers", "Alias": "customers", "Total Cost": 21000, "Plan Rows": 31000, "Filter": "((balance > '1000'::numeric) AND (active = true))"}}]"#;
             tab.editor_mut().unwrap().plan = Some(crate::plan::from_pg_json(json).unwrap());
             harness.run();
             harness
@@ -1312,9 +1312,9 @@ pub(crate) mod screenshots {
                         .map(String::from)
                         .to_vec(),
                     rows: [
-                        ["public.pedidos", "1012 MB", "652 MB", "360 MB", "5000000"],
-                        ["public.clientes", "186 MB", "141 MB", "45 MB", "1000000"],
-                        ["public.eventos", "171 MB", "140 MB", "31 MB", "300000"],
+                        ["public.orders", "1012 MB", "652 MB", "360 MB", "5000000"],
+                        ["public.customers", "186 MB", "141 MB", "45 MB", "1000000"],
+                        ["public.events", "171 MB", "140 MB", "31 MB", "300000"],
                     ]
                     .iter()
                     .map(|r| r.iter().map(|v| Some(v.to_string())).collect())
@@ -1326,8 +1326,8 @@ pub(crate) mod screenshots {
                         .map(String::from)
                         .to_vec(),
                     rows: [
-                        ["public.pedidos", "pedidos_criado_idx", "0", "107 MB", ""],
-                        ["public.pedidos", "pedidos_cliente_idx", "1", "107 MB", "yes"],
+                        ["public.orders", "orders_created_idx", "0", "107 MB", ""],
+                        ["public.orders", "orders_customer_idx", "1", "107 MB", "yes"],
                     ]
                     .iter()
                     .map(|r| r.iter().map(|v| Some(v.to_string())).collect())
@@ -1366,13 +1366,13 @@ pub(crate) mod screenshots {
             let tab = &mut state.tabs[1];
             let saved = tab.result.take();
             tab.result = Some(QueryResult {
-                columns: vec!["id".into(), "nome".into(), "email".into(), "saldo".into()],
+                columns: vec!["id".into(), "name".into(), "email".into(), "balance".into()],
                 rows: (1..=20)
                     .map(|i| {
                         vec![
                             Some((i * 37).to_string()),
-                            Some(format!("Cliente {}", i * 37)),
-                            Some(format!("cliente{}@exemplo.com", i * 37)),
+                            Some(format!("Customer {}", i * 37)),
+                            Some(format!("customer{}@example.com", i * 37)),
                             Some(format!("{}.{:02}", 10_000 + i * 1_234, i)),
                         ]
                     })
@@ -1410,21 +1410,21 @@ pub(crate) mod screenshots {
             };
             let s = harness.state_mut().session.as_mut().unwrap();
             s.schema_cols = vec![
-                col("public", "clientes", "id", "integer"),
-                col("public", "clientes", "nome", "text"),
-                col("public", "clientes", "email", "text"),
-                col("public", "clientes", "ativo", "boolean"),
-                col("public", "clientes", "saldo", "numeric"),
-                col("public", "clientes", "criado_em", "timestamp"),
-                col("public", "pedidos", "id", "bigint"),
-                col("public", "pedidos", "cliente_id", "integer"),
-                col("public", "pedidos", "produto_id", "integer"),
-                col("public", "pedidos", "status", "text"),
-                col("public", "pedidos", "total", "numeric"),
-                col("public", "produtos", "id", "integer"),
-                col("public", "produtos", "nome", "text"),
-                col("public", "produtos", "preco", "numeric"),
-                col("public", "produtos", "categoria_id", "integer"),
+                col("public", "customers", "id", "integer"),
+                col("public", "customers", "name", "text"),
+                col("public", "customers", "email", "text"),
+                col("public", "customers", "active", "boolean"),
+                col("public", "customers", "balance", "numeric"),
+                col("public", "customers", "created_at", "timestamp"),
+                col("public", "orders", "id", "bigint"),
+                col("public", "orders", "customer_id", "integer"),
+                col("public", "orders", "product_id", "integer"),
+                col("public", "orders", "status", "text"),
+                col("public", "orders", "total", "numeric"),
+                col("public", "products", "id", "integer"),
+                col("public", "products", "name", "text"),
+                col("public", "products", "price", "numeric"),
+                col("public", "products", "category_id", "integer"),
             ];
         }
         // Hover card over a table name in the editor.
@@ -1432,7 +1432,7 @@ pub(crate) mod screenshots {
             let state = harness.state_mut();
             state.active = 1;
             if let Some(text) = state.tabs[1].editor_mut().map(|ed| &mut ed.text) {
-                *text = "SELECT *\nFROM clientes\nWHERE ativo;".into();
+                *text = "SELECT *\nFROM customers\nWHERE active;".into();
             }
             harness.run();
             harness.hover_at(egui::pos2(316.0, 104.0));
@@ -1464,8 +1464,8 @@ pub(crate) mod screenshots {
             state.tabs.last_mut().unwrap().end_job();
             if let Some(TabKind::Diagram(d)) = state.tabs.last_mut().map(|t| &mut t.kind) {
                 d.edges = Some(Ok(vec![
-                    fk("pedidos", "cliente_id", "clientes"),
-                    fk("pedidos", "produto_id", "produtos"),
+                    fk("orders", "customer_id", "customers"),
+                    fk("orders", "product_id", "products"),
                 ]));
                 d.build(&tables, &cols);
             }
@@ -1486,7 +1486,7 @@ pub(crate) mod screenshots {
             let state = harness.state_mut();
             state.open_search();
             if let Some(TabKind::Search(st)) = state.tabs.last_mut().map(|t| &mut t.kind) {
-                st.term = "cliente42@exemplo.com".into();
+                st.term = "customer42@example.com".into();
                 st.focus = false;
                 st.total = 214;
                 st.done = 214;
@@ -1494,15 +1494,15 @@ pub(crate) mod screenshots {
                 st.hits = vec![
                     crate::search::SearchHit {
                         schema: "public".into(),
-                        table: "clientes".into(),
+                        table: "customers".into(),
                         columns: vec!["email".into()],
                         rows: 1,
-                        filter: "(CAST(\"email\" AS TEXT) ILIKE '%cliente42@exemplo.com%')".into(),
+                        filter: "(CAST(\"email\" AS TEXT) ILIKE '%customer42@example.com%')".into(),
                     },
                     crate::search::SearchHit {
                         schema: "public".into(),
-                        table: "eventos".into(),
-                        columns: vec!["payload".into(), "descricao".into()],
+                        table: "events".into(),
+                        columns: vec!["payload".into(), "description".into()],
                         rows: 5,
                         filter: String::new(),
                     },
@@ -1525,15 +1525,15 @@ pub(crate) mod screenshots {
             let now = crate::history::now();
             for (i, (sql, ok)) in [
                 (
-                    "SELECT * FROM clientes WHERE uf = 'SP' ORDER BY id LIMIT 50",
+                    "SELECT * FROM customers WHERE state = 'NY' ORDER BY id LIMIT 50",
                     true,
                 ),
-                ("UPDATE pedidos SET status = 'pago' WHERE id = 42", true),
+                ("UPDATE orders SET status = 'paid' WHERE id = 42", true),
                 (
-                    "SELECT c.uf, count(*) FROM pedidos p JOIN clientes c ON c.id = p.cliente_id GROUP BY 1",
+                    "SELECT c.state, count(*) FROM orders p JOIN customers c ON c.id = p.customer_id GROUP BY 1",
                     true,
                 ),
-                ("SELECT * FROM produtos", false),
+                ("SELECT * FROM products", false),
             ]
             .iter()
             .enumerate()
@@ -1611,17 +1611,17 @@ pub(crate) mod screenshots {
             };
             let state = harness.state_mut();
             state.session.as_mut().unwrap().objects = vec![
-                obj("atualiza_saldo", crate::db::ObjKind::Function, ""),
-                obj("calcula_frete", crate::db::ObjKind::Function, ""),
-                obj("fecha_mes", crate::db::ObjKind::Procedure, ""),
-                obj("pedidos_auditoria", crate::db::ObjKind::Trigger, "pedidos"),
+                obj("update_balance", crate::db::ObjKind::Function, ""),
+                obj("calc_shipping", crate::db::ObjKind::Function, ""),
+                obj("close_month", crate::db::ObjKind::Procedure, ""),
+                obj("orders_audit", crate::db::ObjKind::Trigger, "orders"),
                 obj("pedidos_id_seq", crate::db::ObjKind::Sequence, ""),
             ];
             state.active = 0;
             let tab = &mut state.tabs[0];
             tab.anchor = Some((1, 2));
             tab.selected = Some((4, 2));
-            tab.fill_prompt = Some("pendente".into());
+            tab.fill_prompt = Some("pending".into());
             harness.run();
             harness
                 .render()
@@ -1699,7 +1699,7 @@ pub(crate) mod screenshots {
             let s = state.session.as_ref().unwrap();
             let tab = &mut state.tabs[0];
             for ev in [
-                crate::app::GridEvent::Commit(1, 1, Some("Cliente Dois".into())),
+                crate::app::GridEvent::Commit(1, 1, Some("Customer Two".into())),
                 crate::app::GridEvent::Commit(1, 4, Some("999.90".into())),
                 crate::app::GridEvent::DeleteRow(4),
             ] {
@@ -1725,7 +1725,7 @@ pub(crate) mod screenshots {
         harness.state_mut().active = 1;
         harness.state_mut().dialog = Some(crate::app::Dialog::Favorite(crate::app::FavPrompt {
             name: "Customers with the highest balance".into(),
-            sql: "SELECT id, nome, saldo\nFROM public.clientes\nWHERE ativo\nORDER BY saldo DESC;".into(),
+            sql: "SELECT id, name, balance\nFROM public.customers\nWHERE active\nORDER BY balance DESC;".into(),
             shared: false,
         }));
         harness.run();
@@ -1735,7 +1735,7 @@ pub(crate) mod screenshots {
             .save(format!("{dir}/favorite.png"))
             .unwrap();
         harness.state_mut().dialog = None;
-        harness.state_mut().tabs[1].confirm_run = Some("DELETE FROM clientes; DROP TABLE pedidos".into());
+        harness.state_mut().tabs[1].confirm_run = Some("DELETE FROM customers; DROP TABLE orders".into());
         harness.run();
         harness
             .render()
@@ -1782,18 +1782,18 @@ pub(crate) mod screenshots {
             let before = tab.result.clone().unwrap();
             let ed = tab.editor_mut().unwrap();
             ed.last_query =
-                "SELECT id, nome, email, ativo, saldo, criado_em FROM clientes ORDER BY id".into();
+                "SELECT id, name, email, active, balance, created_at FROM customers ORDER BY id".into();
             ed.pin(&before, None);
             ed.comparing = true;
             let mut now = before.clone();
             now.rows[2][4] = Some("150.00".into());
             now.rows[6][3] = Some("f".into());
-            now.rows[9][1] = Some("Cliente Dez".into());
+            now.rows[9][1] = Some("Customer Ten".into());
             now.rows.remove(4);
             now.rows.push(vec![
                 Some("41".into()),
-                Some("Cliente 41".into()),
-                Some("novo@exemplo.com".into()),
+                Some("Customer 41".into()),
+                Some("new@example.com".into()),
                 Some("t".into()),
                 None,
                 Some("2026-10-14 09:00:00".into()),
@@ -1820,24 +1820,24 @@ pub(crate) mod screenshots {
             let row = |k: &str, l: &str| (k.to_string(), Some(l.to_string()));
             app.tabs[0].fk_picker = Some(crate::app::FkPicker {
                 target: crate::app::PickFor::Cell(2, 1),
-                column: "cliente_id".into(),
+                column: "customer_id".into(),
                 fk: crate::db::FkRef {
                     schema: "public".into(),
-                    table: "clientes".into(),
+                    table: "customers".into(),
                     column: "id".into(),
                 },
-                label: Some("nome".into()),
+                label: Some("name".into()),
                 numeric_key: true,
                 local: false,
-                search: "maria".into(),
-                asked: "maria".into(),
+                search: "mary".into(),
+                asked: "mary".into(),
                 typed_at: std::time::Instant::now() - std::time::Duration::from_secs(5),
                 loading: false,
                 options: Some(Ok(vec![
-                    row("42", "Maria Souza"),
-                    row("1077", "Maria Eduarda Lima"),
-                    row("23514", "Ana Maria Prado"),
-                    row("90211", "Mariana Costa"),
+                    row("42", "Mary Smith"),
+                    row("1077", "Mary Ellen Jones"),
+                    row("23514", "Anna Mary Parker"),
+                    row("90211", "Marianne Clark"),
                 ])),
                 current: Some("1077".into()),
                 focused: true,
@@ -1855,11 +1855,11 @@ pub(crate) mod screenshots {
         {
             let app = harness.state_mut();
             app.active = 0;
-            let raw = r#"{"cliente":{"id":3,"nome":"Cliente 3","vip":true},"itens":[{"sku":"A-10","qtd":2,"preco":1520.30},{"sku":"B-7","qtd":1,"preco":89.90}],"cupom":null,"obs":"entregar à tarde, portão \"azul\""}"#;
+            let raw = r#"{"customer":{"id":3,"name":"Customer 3","vip":true},"items":[{"sku":"A-10","qty":2,"price":1520.30},{"sku":"B-7","qty":1,"price":89.90}],"coupon":null,"note":"deliver in the afternoon, \"blue\" gate"}"#;
             app.tabs[0].value_editor = Some(crate::app::ValueEditor {
                 row: 2,
                 col: 2,
-                column: "dados".into(),
+                column: "data".into(),
                 data_type: "jsonb".into(),
                 text: crate::values::json_pretty(raw),
                 original: Some(raw.into()),
@@ -1895,7 +1895,7 @@ pub(crate) mod screenshots {
 
         // Notices: an error stays (with copy and close), information fades.
         harness.state_mut().notice =
-            crate::app::Notice::error("Couldn't do it: relation \"clientes_antigos\" already exists");
+            crate::app::Notice::error("Couldn't do it: relation \"old_customers\" already exists");
         harness.run();
         harness
             .render()
@@ -1914,7 +1914,7 @@ pub(crate) mod screenshots {
 
         // A view's tab has the eye, like the sidebar.
         {
-            harness.state_mut().open_table("public", "vendas_mensais");
+            harness.state_mut().open_table("public", "monthly_sales");
             // It stays loading (no database here): a few frames, not "until it settles".
             harness.run_steps(3);
             harness
@@ -1926,7 +1926,7 @@ pub(crate) mod screenshots {
             app.tabs.pop();
             app.active = 0;
             // Its Structure tab: no designer, no CREATE TABLE "DDL"; the view's code instead.
-            app.open_structure("public", "vendas_mensais");
+            app.open_structure("public", "monthly_sales");
             if let Some(crate::app::Tab {
                 kind: TabKind::Structure(st),
                 ..
@@ -1941,11 +1941,11 @@ pub(crate) mod screenshots {
                 };
                 st.data = Some(crate::db::TableStructure {
                     columns: vec![
-                        col("mes", "date"),
-                        col("pedidos", "bigint"),
+                        col("month", "date"),
+                        col("orders", "bigint"),
                         col("total", "numeric"),
                     ],
-                    ddl: "CREATE TABLE \"public\".\"vendas_mensais\" (…);".into(),
+                    ddl: "CREATE TABLE \"public\".\"monthly_sales\" (…);".into(),
                     ..Default::default()
                 });
             }
@@ -1992,14 +1992,14 @@ pub(crate) mod screenshots {
                     sql: sql.into(),
                     destructive,
                 };
-                st.target_conn = "homolog".into();
-                st.target_db = "loja".into();
+                st.target_conn = "staging".into();
+                st.target_db = "shop".into();
                 st.target_schema = "public".into();
-                st.compared = "dev · postgres · public → homolog · loja · public".into();
+                st.compared = "dev · postgres · public → staging · shop · public".into();
                 st.same_connection = false;
                 st.result = Some(Ok(vec![
                     TableDiff {
-                        table: "clientes".into(),
+                        table: "customers".into(),
                         status: Status::Changed,
                         items: vec![
                             it(
@@ -2007,22 +2007,22 @@ pub(crate) mod screenshots {
                                 "ALTER TABLE …",
                                 false,
                             ),
-                            it("new column ativo", "ALTER TABLE …", false),
+                            it("new column active", "ALTER TABLE …", false),
                             it(
                                 "column fax only exists in the target (its data is lost)",
                                 "ALTER TABLE …",
                                 true,
                             ),
-                            it("index clientes_email_idx (new)", "CREATE INDEX …", false),
+                            it("index customers_email_idx (new)", "CREATE INDEX …", false),
                         ],
                     },
                     TableDiff {
-                        table: "cupons".into(),
+                        table: "coupons".into(),
                         status: Status::New,
                         items: vec![it("new table", "CREATE TABLE …", false)],
                     },
                     TableDiff {
-                        table: "log_antigo".into(),
+                        table: "old_log".into(),
                         status: Status::Extra,
                         items: vec![it("only in the target", "-- DROP TABLE …", true)],
                     },
@@ -2057,7 +2057,7 @@ pub(crate) mod screenshots {
                     bytes: 4_812_000,
                 };
                 st.took = Some(std::time::Duration::from_millis(1_870));
-                st.outcome = Some(Ok("C:\\Users\\voce\\Downloads\\public_20261014-170501.sql".into()));
+                st.outcome = Some(Ok("C:\\Users\\you\\Downloads\\public_20261014-170501.sql".into()));
             }
             harness.run();
             harness.render().unwrap().save(format!("{dir}/dump.png")).unwrap();
@@ -2073,22 +2073,22 @@ pub(crate) mod screenshots {
             if let TabKind::Table(ts) = &mut state.tabs[0].kind {
                 let v = |x: &str, n| (Some(x.to_string()), n);
                 ts.value_conds.push(crate::app::ValueCond {
-                    column: "ativo".into(),
-                    cond: "\"ativo\" IN ('t')".into(),
+                    column: "active".into(),
+                    cond: "\"active\" IN ('t')".into(),
                     unchecked: Default::default(),
                 });
                 ts.value_filter = Some(crate::app::ValueFilter {
-                    column: "nome".into(),
-                    expr: "\"nome\"".into(),
+                    column: "name".into(),
+                    expr: "\"name\"".into(),
                     values: Some(Ok(vec![
-                        v("Ana Souza", 412),
-                        v("Bruno Lima", 388),
-                        v("Carla Rocha", 301),
+                        v("Anna Smith", 412),
+                        v("Bruce Jones", 388),
+                        v("Carol Brooks", 301),
                         (None, 57),
-                        v("Diego Costa", 12),
+                        v("Derek Clark", 12),
                     ])),
                     complete: true,
-                    unchecked: [None, Some("Diego Costa".to_string())].into_iter().collect(),
+                    unchecked: [None, Some("Derek Clark".to_string())].into_iter().collect(),
                     search: String::new(),
                     focused: true,
                 });
@@ -2114,10 +2114,10 @@ pub(crate) mod screenshots {
             let ed = tab.editor_mut().unwrap();
             let old = std::mem::replace(
                 &mut ed.text,
-                "SELECT id, nome, emial\nFROM clientes\nWHERE ativo;".into(),
+                "SELECT id, name, emial\nFROM customers\nWHERE active;".into(),
             );
             ed.error_at = Some((17, 22));
-            tab.error = Some("column \"emial\" does not exist (hint: Perhaps you meant to reference the column \"clientes.email\".) (line 1, column 18)".into());
+            tab.error = Some("column \"emial\" does not exist (hint: Perhaps you meant to reference the column \"customers.email\".) (line 1, column 18)".into());
             harness.run();
             harness
                 .render()
@@ -2148,7 +2148,7 @@ pub(crate) mod screenshots {
         // Table action (drop) with its confirmation, then a script file that stopped on an error.
         harness.state_mut().dialog = Some(crate::app::Dialog::TableAction(crate::app::TableActionPrompt {
             schema: "public".into(),
-            table: "clientes".into(),
+            table: "customers".into(),
             action: crate::sql::TableAction::Drop,
             input: "clien".into(),
         }));
@@ -2160,7 +2160,7 @@ pub(crate) mod screenshots {
             .unwrap();
         harness.state_mut().dialog = None;
         {
-            let file = std::env::temp_dir().join("migracao_2026_10.sql");
+            let file = std::env::temp_dir().join("migration_2026_10.sql");
             std::fs::write(&file, "x".repeat(48_000)).unwrap();
             harness.state_mut().open_script(file);
             let app = harness.state_mut();
@@ -2175,10 +2175,10 @@ pub(crate) mod screenshots {
                 };
                 st.took = Some(std::time::Duration::from_millis(2_340));
                 st.outcome = Some(Some(crate::worker::ScriptError {
-                    message: "db error: ERROR: column \"telefone\" of relation \"clientes\" already exists"
+                    message: "db error: ERROR: column \"phone\" of relation \"customers\" already exists"
                         .into(),
                     line: 418,
-                    statement: "ALTER TABLE clientes ADD COLUMN telefone text".into(),
+                    statement: "ALTER TABLE customers ADD COLUMN phone text".into(),
                     cancelled: false,
                 }));
             }
@@ -2200,9 +2200,9 @@ pub(crate) mod screenshots {
 
         harness.state_mut().session = None;
         let mut my = ConnConfig::new(Kind::MySql);
-        my.name = "loja-producao".into();
+        my.name = "shop-production".into();
         my.host = "db.example.com".into();
-        my.database = "loja".into();
+        my.database = "shop".into();
         harness.state_mut().saved.push(my);
         harness.run();
         harness
@@ -2231,7 +2231,7 @@ pub(crate) mod screenshots {
         {
             let app = harness.state_mut();
             let form = app.form.as_mut().unwrap();
-            form.cfg.name = "loja-producao".into();
+            form.cfg.name = "shop-production".into();
             form.cfg.ssh = None;
             let (_tx, rx) = std::sync::mpsc::channel();
             app.conn_test = Some(crate::app::ConnTest {
@@ -2253,7 +2253,7 @@ pub(crate) mod screenshots {
         {
             let form = harness.state_mut().form.as_mut().unwrap();
             form.cfg.kind = Kind::Sqlite;
-            form.cfg.name = "estoque".into();
+            form.cfg.name = "inventory".into();
             form.cfg.database = r"C:\Users\you\Documents\inventory.db".into();
         }
         harness.run();
@@ -2304,7 +2304,7 @@ mod ux_sweep {
                 let app = harness.state_mut();
                 app.active = 1;
                 if let Some(ed) = app.tabs[1].editor_mut() {
-                    ed.text = "SELECT count(*) FROM clientes;\n\nSELECT id, nome FROM clientes;".into();
+                    ed.text = "SELECT count(*) FROM customers;\n\nSELECT id, name FROM customers;".into();
                 }
             }
             shot(&mut harness, "sql");
@@ -2320,7 +2320,7 @@ mod ux_sweep {
                 let app = harness.state_mut();
                 app.active = 0;
                 if let TabKind::Table(ts) = &mut app.tabs[0].kind {
-                    ts.filter = "uf IN ('SP', 'RJ', 'MG', 'PR', 'SC', 'RS', 'BA', 'PE') AND saldo > 1000 AND ativo AND email LIKE '%@exemplo.com'".into();
+                    ts.filter = "state IN ('NY', 'CA', 'TX', 'FL', 'WA', 'IL', 'GA', 'OH') AND balance > 1000 AND active AND email LIKE '%@example.com'".into();
                 }
             }
             shot(&mut harness, "table-long-filter");
@@ -2352,8 +2352,8 @@ mod layout_tests {
             });
         harness.run();
         use egui_kittest::kittest::Queryable;
-        let text = harness.get_by_label("Cliente 5").rect();
-        // 40 points right of the text: still the "nome" cell, nothing written there.
+        let text = harness.get_by_label("Customer 5").rect();
+        // 40 points right of the text: still the "name" cell, nothing written there.
         let spot = egui::pos2(text.right() + 40.0, text.center().y);
         let click = |harness: &mut Harness<crate::app::App>| {
             for pressed in [true, false] {

@@ -294,7 +294,7 @@ impl<R: Fn(DumpProgress)> Progress<'_, R> {
     /// Stops with an error once the user cancelled.
     fn stop_if_cancelled(&self) -> DbResult<()> {
         if self.cancel.load(Ordering::Relaxed) {
-            return Err(DbError::Other("cancelado".into()));
+            return Err(DbError::Other("cancelled".into()));
         }
         Ok(())
     }
@@ -560,41 +560,41 @@ mod tests {
             Kind::Postgres => vec![
                 "DROP SCHEMA IF EXISTS dbl_dump CASCADE",
                 "CREATE SCHEMA dbl_dump",
-                "CREATE TABLE dbl_dump.cliente (id serial PRIMARY KEY, nome text NOT NULL, foto bytea, \
-                 ativo boolean DEFAULT true, nome_maiusculo text GENERATED ALWAYS AS (upper(nome)) STORED)",
-                "CREATE TABLE dbl_dump.pedido (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, \
-                 cliente_id int NOT NULL REFERENCES dbl_dump.cliente (id), obs text)",
-                "CREATE SEQUENCE dbl_dump.nota_seq START 100",
-                "SELECT nextval('dbl_dump.nota_seq') FROM generate_series(1, 5)",
-                "INSERT INTO dbl_dump.cliente (nome, foto, ativo) SELECT 'c' || g || E' \\\\ ''q''', \
+                "CREATE TABLE dbl_dump.customer (id serial PRIMARY KEY, name text NOT NULL, photo bytea, \
+                 active boolean DEFAULT true, name_upper text GENERATED ALWAYS AS (upper(name)) STORED)",
+                "CREATE TABLE dbl_dump.purchase (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, \
+                 customer_id int NOT NULL REFERENCES dbl_dump.customer (id), note text)",
+                "CREATE SEQUENCE dbl_dump.note_seq START 100",
+                "SELECT nextval('dbl_dump.note_seq') FROM generate_series(1, 5)",
+                "INSERT INTO dbl_dump.customer (name, photo, active) SELECT 'c' || g || E' \\\\ ''q''', \
                  CASE WHEN g % 3 = 0 THEN '\\x00ff10'::bytea END, g % 2 = 0 FROM generate_series(1, 6001) g",
-                "DELETE FROM dbl_dump.cliente WHERE id > 6000",
-                "INSERT INTO dbl_dump.pedido (cliente_id, obs) SELECT 1 + g % 100, \
-                 CASE WHEN g % 5 = 0 THEN E'linha\\nquebrada; com ponto' END FROM generate_series(1, 700) g",
-                "CREATE FUNCTION dbl_dump.dobro(x int) RETURNS int LANGUAGE sql AS $$ SELECT x * 2 $$",
-                "CREATE VIEW dbl_dump.resumo AS SELECT cliente_id, count(*) AS n FROM dbl_dump.pedido GROUP BY 1",
-                "CREATE FUNCTION dbl_dump.toca() RETURNS trigger LANGUAGE plpgsql AS \
-                 $$ BEGIN NEW.obs := coalesce(NEW.obs, 'auto'); RETURN NEW; END $$",
-                "CREATE TRIGGER pedido_toca BEFORE INSERT ON dbl_dump.pedido FOR EACH ROW EXECUTE FUNCTION dbl_dump.toca()",
+                "DELETE FROM dbl_dump.customer WHERE id > 6000",
+                "INSERT INTO dbl_dump.purchase (customer_id, note) SELECT 1 + g % 100, \
+                 CASE WHEN g % 5 = 0 THEN E'line\\nbroken; com point' END FROM generate_series(1, 700) g",
+                "CREATE FUNCTION dbl_dump.twice(x int) RETURNS int LANGUAGE sql AS $$ SELECT x * 2 $$",
+                "CREATE VIEW dbl_dump.summary AS SELECT customer_id, count(*) AS n FROM dbl_dump.purchase GROUP BY 1",
+                "CREATE FUNCTION dbl_dump.touch() RETURNS trigger LANGUAGE plpgsql AS \
+                 $$ BEGIN NEW.note := coalesce(NEW.note, 'auto'); RETURN NEW; END $$",
+                "CREATE TRIGGER purchase_touch BEFORE INSERT ON dbl_dump.purchase FOR EACH ROW EXECUTE FUNCTION dbl_dump.touch()",
             ],
             Kind::MySql => vec![
                 "DROP DATABASE IF EXISTS dbl_dump",
                 "CREATE DATABASE dbl_dump",
-                "CREATE TABLE dbl_dump.cliente (id int AUTO_INCREMENT PRIMARY KEY, nome varchar(80) NOT NULL, foto blob, \
-                 ativo boolean DEFAULT true, nome_maiusculo varchar(80) GENERATED ALWAYS AS (upper(nome)) STORED)",
-                "CREATE TABLE dbl_dump.pedido (id int AUTO_INCREMENT PRIMARY KEY, cliente_id int NOT NULL, obs text, \
-                 FOREIGN KEY (cliente_id) REFERENCES dbl_dump.cliente (id))",
+                "CREATE TABLE dbl_dump.customer (id int AUTO_INCREMENT PRIMARY KEY, name varchar(80) NOT NULL, photo blob, \
+                 active boolean DEFAULT true, name_upper varchar(80) GENERATED ALWAYS AS (upper(name)) STORED)",
+                "CREATE TABLE dbl_dump.purchase (id int AUTO_INCREMENT PRIMARY KEY, customer_id int NOT NULL, note text, \
+                 FOREIGN KEY (customer_id) REFERENCES dbl_dump.customer (id))",
                 "SET SESSION cte_max_recursion_depth = 10000",
-                "INSERT INTO dbl_dump.cliente (nome, foto, ativo) \
+                "INSERT INTO dbl_dump.customer (name, photo, active) \
                  WITH RECURSIVE s (g) AS (SELECT 1 UNION ALL SELECT g + 1 FROM s WHERE g < 6000) \
                  SELECT CONCAT('c', g, ' \\\\ ''q'''), IF(g % 3 = 0, UNHEX('00FF10'), NULL), g % 2 = 0 FROM s",
-                "INSERT INTO dbl_dump.pedido (cliente_id, obs) \
+                "INSERT INTO dbl_dump.purchase (customer_id, note) \
                  WITH RECURSIVE s (g) AS (SELECT 1 UNION ALL SELECT g + 1 FROM s WHERE g < 700) \
-                 SELECT 1 + g % 100, IF(g % 5 = 0, 'linha\\nquebrada; com ponto', NULL) FROM s",
-                "CREATE FUNCTION dbl_dump.dobro(x int) RETURNS int DETERMINISTIC RETURN x * 2",
-                "CREATE VIEW dbl_dump.resumo AS SELECT cliente_id, count(*) AS n FROM dbl_dump.pedido GROUP BY cliente_id",
-                "CREATE TRIGGER dbl_dump.pedido_toca BEFORE INSERT ON dbl_dump.pedido \
-                 FOR EACH ROW BEGIN SET NEW.obs = coalesce(NEW.obs, 'auto'); END",
+                 SELECT 1 + g % 100, IF(g % 5 = 0, 'line\\nbroken; com point', NULL) FROM s",
+                "CREATE FUNCTION dbl_dump.twice(x int) RETURNS int DETERMINISTIC RETURN x * 2",
+                "CREATE VIEW dbl_dump.summary AS SELECT customer_id, count(*) AS n FROM dbl_dump.purchase GROUP BY customer_id",
+                "CREATE TRIGGER dbl_dump.purchase_touch BEFORE INSERT ON dbl_dump.purchase \
+                 FOR EACH ROW BEGIN SET NEW.note = coalesce(NEW.note, 'auto'); END",
             ],
             Kind::Sqlite => unreachable!("server test"),
         };
@@ -607,34 +607,34 @@ mod tests {
                 Kind::MySql => format!("md5(GROUP_CONCAT({col} ORDER BY id SEPARATOR '|'))"),
                 Kind::Sqlite => unreachable!("server test"),
             };
-            let foto = match kind {
-                Kind::Postgres => "coalesce(encode(foto, 'hex'), '-')",
-                Kind::MySql => "coalesce(hex(foto), '-')",
+            let photo = match kind {
+                Kind::Postgres => "coalesce(encode(photo, 'hex'), '-')",
+                Kind::MySql => "coalesce(hex(photo), '-')",
                 Kind::Sqlite => unreachable!("server test"),
             };
-            let cliente = md5(&format!("concat(id, nome, {foto}, ativo, nome_maiusculo)"));
+            let customer = md5(&format!("concat(id, name, {photo}, active, name_upper)"));
             vec![
-                one(c, &format!("SELECT {cliente} FROM dbl_dump.cliente")),
+                one(c, &format!("SELECT {customer} FROM dbl_dump.customer")),
                 one(
                     c,
                     &format!(
-                        "SELECT {} FROM dbl_dump.pedido",
-                        md5("concat(id, cliente_id, coalesce(obs, '-'))")
+                        "SELECT {} FROM dbl_dump.purchase",
+                        md5("concat(id, customer_id, coalesce(note, '-'))")
                     ),
                 ),
-                one(c, "SELECT count(*) FROM dbl_dump.resumo"),
-                one(c, "SELECT dbl_dump.dobro(21)"),
+                one(c, "SELECT count(*) FROM dbl_dump.summary"),
+                one(c, "SELECT dbl_dump.twice(21)"),
             ]
         };
         // A row added before the dump: the copy must number the next one right after it.
-        q(&mut c, "INSERT INTO dbl_dump.cliente (nome) VALUES ('novo')");
-        q(&mut c, "INSERT INTO dbl_dump.pedido (cliente_id) VALUES (1)");
+        q(&mut c, "INSERT INTO dbl_dump.customer (name) VALUES ('new')");
+        q(&mut c, "INSERT INTO dbl_dump.purchase (customer_id) VALUES (1)");
         let last = |c: &mut Conn, t: &str| -> i64 {
             one(c, &format!("SELECT max(id) FROM dbl_dump.{t}"))
                 .parse()
                 .unwrap()
         };
-        let (last_cliente, last_pedido) = (last(&mut c, "cliente"), last(&mut c, "pedido"));
+        let (last_customer, last_purchase) = (last(&mut c, "customer"), last(&mut c, "purchase"));
         let before = fingerprint(&mut c);
         assert_eq!(before[3], "42");
 
@@ -680,20 +680,20 @@ mod tests {
         }
         assert_eq!(fingerprint(&mut c), before, "{kind:?}");
         // Numbering goes on from where it was; the trigger is back.
-        q(&mut c, "INSERT INTO dbl_dump.cliente (nome) VALUES ('mais um')");
-        assert_eq!(last(&mut c, "cliente"), last_cliente + 1, "{kind:?}");
-        q(&mut c, "INSERT INTO dbl_dump.pedido (cliente_id) VALUES (1)");
-        assert_eq!(last(&mut c, "pedido"), last_pedido + 1, "{kind:?}");
+        q(&mut c, "INSERT INTO dbl_dump.customer (name) VALUES ('one more')");
+        assert_eq!(last(&mut c, "customer"), last_customer + 1, "{kind:?}");
+        q(&mut c, "INSERT INTO dbl_dump.purchase (customer_id) VALUES (1)");
+        assert_eq!(last(&mut c, "purchase"), last_purchase + 1, "{kind:?}");
         let obs = one(
             &mut c,
-            &format!("SELECT obs FROM dbl_dump.pedido WHERE id = {}", last_pedido + 1),
+            &format!("SELECT note FROM dbl_dump.purchase WHERE id = {}", last_purchase + 1),
         );
         assert_eq!(obs, "auto", "{kind:?}");
         if pg {
-            assert_eq!(one(&mut c, "SELECT nextval('dbl_dump.nota_seq')"), "105");
+            assert_eq!(one(&mut c, "SELECT nextval('dbl_dump.note_seq')"), "105");
             // No stray copies of the serial/identity sequences.
             let seqs = "SELECT string_agg(sequencename, ',' ORDER BY sequencename) FROM pg_sequences WHERE schemaname = 'dbl_dump'";
-            assert_eq!(one(&mut c, seqs), "cliente_id_seq,nota_seq,pedido_id_seq");
+            assert_eq!(one(&mut c, seqs), "customer_id_seq,note_seq,purchase_id_seq");
             q(&mut c, "DROP SCHEMA dbl_dump CASCADE");
         } else {
             q(&mut c, "DROP DATABASE dbl_dump");
@@ -812,13 +812,13 @@ mod tests {
             vec![
                 one(
                     c,
-                    "SELECT group_concat(id || '|' || nome || '|' || coalesce(email, '-') || '|' || ativo, ';') FROM (SELECT * FROM cliente ORDER BY id)",
+                    "SELECT group_concat(id || '|' || name || '|' || coalesce(email, '-') || '|' || active, ';') FROM (SELECT * FROM customer ORDER BY id)",
                 ),
                 one(
                     c,
-                    "SELECT group_concat(id || '|' || cliente_id || '|' || total || '|' || coalesce(hex(foto), '-') || '|' || obs, ';') FROM (SELECT * FROM pedido ORDER BY id)",
+                    "SELECT group_concat(id || '|' || customer_id || '|' || total || '|' || coalesce(hex(photo), '-') || '|' || note, ';') FROM (SELECT * FROM purchase ORDER BY id)",
                 ),
-                one(c, "SELECT group_concat(cliente_id || ':' || n) FROM resumo"),
+                one(c, "SELECT group_concat(customer_id || ':' || n) FROM summary"),
             ]
         };
         let before = fingerprint(&mut c);
@@ -863,12 +863,12 @@ mod tests {
         }
         assert_eq!(fingerprint(&mut d), before);
         // The trigger came back; numbering goes on after the copied ids.
-        d.query("INSERT INTO pedido (cliente_id, total) VALUES (2, 1)")
+        d.query("INSERT INTO purchase (customer_id, total) VALUES (2, 1)")
             .unwrap();
         assert_eq!(
             one(
                 &mut d,
-                "SELECT id || ':' || obs FROM pedido ORDER BY id DESC LIMIT 1"
+                "SELECT id || ':' || note FROM purchase ORDER BY id DESC LIMIT 1"
             ),
             "4:auto"
         );

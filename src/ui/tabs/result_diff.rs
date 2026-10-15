@@ -1,4 +1,4 @@
-//! "Comparar com o fixado": the editor's current result against the pinned one, row by row.
+//! "Compare with the pinned one": the editor's current result against the pinned one, row by row.
 
 use std::sync::Arc;
 
@@ -208,7 +208,7 @@ fn row_ui(ui: &mut egui::Ui, d: &ResultDiff, a: &QueryResult, b: &QueryResult, r
         RowDiff::Removed(_) => ("removed", t.destructive),
         RowDiff::Added(_) => ("new", t.lime),
         RowDiff::Changed(..) => ("changed", t.warning),
-        RowDiff::Same(..) => ("igual", t.subtle),
+        RowDiff::Same(..) => ("same", t.subtle),
     };
     cell(
         ui,

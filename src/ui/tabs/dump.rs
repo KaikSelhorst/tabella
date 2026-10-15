@@ -113,7 +113,7 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             }
                         }
                         Some(Err(e)) => {
-                            let title = if e == "cancelado" {
+                            let title = if e == "cancelled" {
                                 "Cancelled: the incomplete file was deleted."
                             } else {
                                 "The export failed; the incomplete file was deleted."
@@ -122,7 +122,7 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                                 ui.label(theme::icon(icon::WARNING).size(16.0).color(t.destructive));
                                 ui.label(egui::RichText::new(title).color(t.foreground));
                             });
-                            if e != "cancelado" {
+                            if e != "cancelled" {
                                 ui.add_space(4.0);
                                 error_banner(ui, e);
                             }

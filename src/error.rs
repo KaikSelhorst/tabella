@@ -70,7 +70,7 @@ impl DbError {
 }
 
 fn mysql_position(message: &str, sql: &str) -> Option<usize> {
-    // "… for the right syntax to use near 'FRM clientes' at line 1"
+    // "… for the right syntax to use near 'FRM customers' at line 1"
     if let Some(at) = message.rfind("' at line ") {
         let line: usize = message[at + 10..].trim().parse().ok()?;
         let near = &message[message.find("near '")? + 6..at];
@@ -91,7 +91,7 @@ fn mysql_position(message: &str, sql: &str) -> Option<usize> {
                 .map_or(line_start, |i| line_start + i),
         );
     }
-    // "Unknown column 'x' in 'field list'", "Table 'loja.x' doesn't exist", "Unknown table 'x'"
+    // "Unknown column 'x' in 'field list'", "Table 'shop.x' doesn't exist", "Unknown table 'x'"
     let name = message.split('\'').nth(1)?;
     let name = name.rsplit('.').next()?;
     find_word(sql, name)
@@ -144,18 +144,18 @@ mod tests {
 
     #[test]
     fn mysql_errors_point_at_the_statement() {
-        let sql = "SELECT id\nFRM clientes\nWHERE id = 1";
+        let sql = "SELECT id\nFRM customers\nWHERE id = 1";
         let msg = "You have an error in your SQL syntax; check the manual that corresponds to your MySQL \
-                   server version for the right syntax to use near 'FRM clientes\nWHERE id = 1' at line 2";
+                   server version for the right syntax to use near 'FRM customers\nWHERE id = 1' at line 2";
         assert_eq!(mysql_position(msg, sql), Some(10));
-        let sql = "SELECT nome, emial FROM clientes";
+        let sql = "SELECT name, emial FROM customers";
         assert_eq!(
             mysql_position("Unknown column 'emial' in 'field list'", sql),
             Some(13)
         );
-        let sql = "select * from Produto";
+        let sql = "select * from Product";
         assert_eq!(
-            mysql_position("Table 'loja.produto' doesn't exist", sql),
+            mysql_position("Table 'shop.product' doesn't exist", sql),
             Some(14)
         );
         // Not a word of its own: "id" inside "pid" doesn't count.

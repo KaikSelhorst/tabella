@@ -21,7 +21,7 @@ impl Default for Settings {
     }
 }
 
-/// Zoom limits and the step of "Aumentar / Diminuir zoom".
+/// Zoom limits and the step of "Zoom in / Zoom out".
 pub const ZOOM: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 pub const ZOOM_STEP: f32 = 0.1;
 

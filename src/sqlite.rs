@@ -195,8 +195,8 @@ pub(crate) mod tests {
     fn db() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, nome TEXT, preco REAL, foto BLOB);
-             INSERT INTO t (nome, preco, foto) VALUES ('ana', 1.5, x'00ff'), ('bia', NULL, NULL);",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, price REAL, photo BLOB);
+             INSERT INTO t (name, price, photo) VALUES ('anna', 1.5, x'00ff'), ('beth', NULL, NULL);",
         )
         .unwrap();
         c
@@ -207,18 +207,18 @@ pub(crate) mod tests {
         let c = db();
         let r = query(
             &c,
-            "SELECT count(*) AS n FROM t; UPDATE t SET preco = 2 WHERE id = 2; SELECT * FROM t ORDER BY id",
+            "SELECT count(*) AS n FROM t; UPDATE t SET price = 2 WHERE id = 2; SELECT * FROM t ORDER BY id",
             10,
         )
         .unwrap();
         assert_eq!(r.previous.len(), 1);
         assert_eq!(r.previous[0].rows, vec![vec![Some("2".into())]]);
-        assert_eq!(r.columns, ["id", "nome", "preco", "foto"]);
+        assert_eq!(r.columns, ["id", "name", "price", "photo"]);
         assert_eq!(
             r.rows[0],
             vec![
                 Some("1".into()),
-                Some("ana".into()),
+                Some("anna".into()),
                 Some("1.5".into()),
                 Some("\\x00ff".into())
             ]
@@ -228,7 +228,7 @@ pub(crate) mod tests {
         assert!(r.truncated && r.rows.len() == 1);
         let r = exec(
             &c,
-            "UPDATE t SET nome = ? WHERE id = ?",
+            "UPDATE t SET name = ? WHERE id = ?",
             &["o'neil".into(), "1".into()],
             10,
         )
@@ -251,15 +251,15 @@ pub(crate) mod tests {
         cfg.database = path.display().to_string();
         let mut c = crate::db::Conn::connect(&cfg, None).unwrap();
         c.query(
-            "CREATE TABLE cliente (id INTEGER PRIMARY KEY, nome TEXT NOT NULL, email TEXT UNIQUE, ativo BOOLEAN DEFAULT 1);
-             CREATE TABLE pedido (id INTEGER PRIMARY KEY, cliente_id INTEGER REFERENCES cliente (id), total REAL, foto BLOB, obs TEXT);
-             CREATE INDEX pedido_cliente ON pedido (cliente_id);
-             CREATE VIEW resumo AS SELECT cliente_id, count(*) AS n FROM pedido GROUP BY cliente_id;
-             CREATE TRIGGER pedido_obs AFTER INSERT ON pedido BEGIN
-               UPDATE pedido SET obs = coalesce(obs, 'auto') WHERE id = NEW.id;
+            "CREATE TABLE customer (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE, active BOOLEAN DEFAULT 1);
+             CREATE TABLE purchase (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customer (id), total REAL, photo BLOB, note TEXT);
+             CREATE INDEX purchase_customer ON purchase (customer_id);
+             CREATE VIEW summary AS SELECT customer_id, count(*) AS n FROM purchase GROUP BY customer_id;
+             CREATE TRIGGER purchase_note AFTER INSERT ON purchase BEGIN
+               UPDATE purchase SET note = coalesce(note, 'auto') WHERE id = NEW.id;
              END;
-             INSERT INTO cliente (nome, email) VALUES ('Ana', 'ana@x.com'), ('Bia', 'bia@x.com');
-             INSERT INTO pedido (cliente_id, total, foto) VALUES (1, 10.5, x'00ff'), (1, 20, NULL), (2, 7.25, NULL);",
+             INSERT INTO customer (name, email) VALUES ('Anna', 'anna@x.com'), ('Beth', 'beth@x.com');
+             INSERT INTO purchase (customer_id, total, photo) VALUES (1, 10.5, x'00ff'), (1, 20, NULL), (2, 7.25, NULL);",
         )
         .unwrap();
         cfg
@@ -275,9 +275,9 @@ pub(crate) mod tests {
         // Catalog.
         let tables = c.tables().unwrap();
         let names: Vec<(&str, bool)> = tables.iter().map(|t| (t.name.as_str(), t.is_view)).collect();
-        assert_eq!(names, [("cliente", false), ("pedido", false), ("resumo", true)]);
+        assert_eq!(names, [("customer", false), ("purchase", false), ("summary", true)]);
         assert!(tables.iter().all(|t| t.schema == "main"));
-        let cols = c.columns_with_fks("main", "pedido").unwrap();
+        let cols = c.columns_with_fks("main", "purchase").unwrap();
         let id = &cols[0];
         assert!(
             id.pk && id.has_default && !id.nullable,
@@ -285,144 +285,144 @@ pub(crate) mod tests {
         );
         let fk = cols
             .iter()
-            .find(|c| c.name == "cliente_id")
+            .find(|c| c.name == "customer_id")
             .unwrap()
             .references
             .clone()
             .unwrap();
         assert_eq!(
             (fk.schema.as_str(), fk.table.as_str(), fk.column.as_str()),
-            ("main", "cliente", "id")
+            ("main", "customer", "id")
         );
-        let nome = &c.columns("main", "cliente").unwrap()[1];
-        assert!(!nome.nullable && !nome.has_default);
+        let name_col = &c.columns("main", "customer").unwrap()[1];
+        assert!(!name_col.nullable && !name_col.has_default);
         assert!(
             c.all_columns()
                 .unwrap()
                 .iter()
-                .any(|c| c.table == "resumo" && c.column == "n")
+                .any(|c| c.table == "summary" && c.column == "n")
         );
         assert_eq!(c.all_fks().unwrap().len(), 1);
-        let inc = c.incoming_fks("main", "cliente").unwrap();
+        let inc = c.incoming_fks("main", "customer").unwrap();
         assert_eq!(
             (
                 inc[0].table.as_str(),
                 inc[0].column.as_str(),
                 inc[0].target.as_str()
             ),
-            ("pedido", "cliente_id", "id")
+            ("purchase", "customer_id", "id")
         );
         let objs = c.objects().unwrap();
         assert_eq!(objs.len(), 2, "{objs:?}");
-        let trig = objs.iter().find(|o| o.name == "pedido_obs").unwrap();
-        assert_eq!(trig.table, "pedido");
+        let trig = objs.iter().find(|o| o.name == "purchase_note").unwrap();
+        assert_eq!(trig.table, "purchase");
         assert!(c.object_source(trig).unwrap().contains("END;"));
         let (dbs, here, schema) = c.location().unwrap();
         assert!(dbs.is_empty() && here.starts_with("dblite-catalog") && schema.is_empty());
-        let st = c.structure("main", "pedido").unwrap();
+        let st = c.structure("main", "purchase").unwrap();
         assert!(
-            st.ddl.contains("CREATE TABLE pedido") && st.ddl.contains("CREATE INDEX pedido_cliente"),
+            st.ddl.contains("CREATE TABLE purchase") && st.ddl.contains("CREATE INDEX purchase_customer"),
             "{}",
             st.ddl
         );
         assert_eq!(st.foreign_keys.len(), 1);
-        assert!(st.indexes.iter().any(|(n, _)| n == "pedido_cliente"));
+        assert!(st.indexes.iter().any(|(n, _)| n == "purchase_customer"));
         // Values as the grid shows them.
-        let r = c.query("SELECT total, foto FROM pedido ORDER BY id").unwrap();
+        let r = c.query("SELECT total, photo FROM purchase ORDER BY id").unwrap();
         assert_eq!(r.rows[0], vec![Some("10.5".into()), Some("\\x00ff".into())]);
         assert_eq!(r.rows[1][0].as_deref(), Some("20.0"), "REAL stays a real number");
         // Generated SQL runs here: a page, the count, search, stats, value filter, FK picker.
         let pk = vec!["id".to_string()];
         let q = sql::PageQuery {
             schema: "main",
-            table: "pedido",
+            table: "purchase",
             filter: "total > 5",
             order: Some(("total", false)),
             pk: &pk,
             page: 0,
         };
         assert_eq!(c.query(&sql::select_page(k, &q)).unwrap().rows.len(), 3);
-        assert_eq!(c.count(&sql::count(k, "main", "pedido", "total > 8")).unwrap(), 2);
-        let found = sql::search_condition(k, &["obs".to_string()], "AUT");
+        assert_eq!(c.count(&sql::count(k, "main", "purchase", "total > 8")).unwrap(), 2);
+        let found = sql::search_condition(k, &["note".to_string()], "AUT");
         assert_eq!(
-            c.query(&format!("SELECT count(*) FROM pedido WHERE {found}"))
+            c.query(&format!("SELECT count(*) FROM purchase WHERE {found}"))
                 .unwrap()
                 .rows[0][0]
                 .as_deref(),
             Some("3")
         );
-        let (summary, top) = sql::column_stats(k, "main", "pedido", "cliente_id", "", true);
+        let (summary, top) = sql::column_stats(k, "main", "purchase", "customer_id", "", true);
         c.query(&summary).unwrap();
         assert_eq!(
             c.query(&top).unwrap().rows[0],
             vec![Some("1".into()), Some("2".into())]
         );
-        let expr = sql::value_expr(k, "cliente_id", "INTEGER");
+        let expr = sql::value_expr(k, "customer_id", "INTEGER");
         assert_eq!(
-            c.query(&sql::distinct_values(k, "main", "pedido", &expr, "", ""))
+            c.query(&sql::distinct_values(k, "main", "purchase", &expr, "", ""))
                 .unwrap()
                 .rows
                 .len(),
             2
         );
-        let opts = sql::fk_options(k, &fk, Some("nome"), true, false, "bi");
+        let opts = sql::fk_options(k, &fk, Some("name"), true, false, "be");
         assert_eq!(
             c.query(&opts).unwrap().rows,
-            vec![vec![Some("2".into()), Some("Bia".into())]]
+            vec![vec![Some("2".into()), Some("Beth".into())]]
         );
         // Grid edits: values stored verbatim, the batch all or nothing.
-        for v in [r"a\", "it's", r"x\'; DROP TABLE pedido; --", "ção 🚀"] {
+        for v in [r"a\", "it's", r"x\'; DROP TABLE purchase; --", "café 🚀"] {
             let wh = sql::pk_where(k, &pk, &pk, &[Some("1".into())]);
             c.run_batch(
-                &[sql::update_cell(k, "main", "cliente", "nome", Some(v), wh)],
+                &[sql::update_cell(k, "main", "customer", "name", Some(v), wh)],
                 false,
             )
             .unwrap();
             assert_eq!(
-                c.query("SELECT nome FROM cliente WHERE id = 1").unwrap().rows[0][0].as_deref(),
+                c.query("SELECT name FROM customer WHERE id = 1").unwrap().rows[0][0].as_deref(),
                 Some(v)
             );
         }
         let wh = |id: &str| sql::pk_where(k, &pk, &pk, &[Some(id.into())]);
         let batch = [
-            sql::update_cell(k, "main", "cliente", "nome", Some("X"), wh("2")),
-            sql::update_cell(k, "main", "cliente", "nome", Some("Y"), wh("99")),
+            sql::update_cell(k, "main", "customer", "name", Some("X"), wh("2")),
+            sql::update_cell(k, "main", "customer", "name", Some("Y"), wh("99")),
         ];
         assert!(c.run_batch(&batch, false).is_err());
         assert_eq!(
-            c.query("SELECT nome FROM cliente WHERE id = 2").unwrap().rows[0][0].as_deref(),
-            Some("Bia")
+            c.query("SELECT name FROM customer WHERE id = 2").unwrap().rows[0][0].as_deref(),
+            Some("Beth")
         );
         // Foreign keys are enforced; the trigger ran.
-        assert!(c.query("INSERT INTO pedido (cliente_id) VALUES (999)").is_err());
+        assert!(c.query("INSERT INTO purchase (customer_id) VALUES (999)").is_err());
         assert_eq!(
-            c.query("SELECT obs FROM pedido WHERE id = 3").unwrap().rows[0][0].as_deref(),
+            c.query("SELECT note FROM purchase WHERE id = 3").unwrap().rows[0][0].as_deref(),
             Some("auto")
         );
         // Table actions.
         for (action, name) in [
-            (sql::TableAction::Duplicate(true), "copia"),
-            (sql::TableAction::Rename, "copia2"),
+            (sql::TableAction::Duplicate(true), "copy"),
+            (sql::TableAction::Rename, "copy2"),
             (sql::TableAction::Truncate, ""),
         ] {
             let table = if matches!(action, sql::TableAction::Duplicate(_)) {
-                "cliente"
+                "customer"
             } else {
-                "copia"
+                "copy"
             };
             let table = if matches!(action, sql::TableAction::Truncate) {
-                "copia2"
+                "copy2"
             } else {
                 table
             };
             c.query(&sql::table_action(k, "main", table, action, name))
                 .unwrap();
         }
-        assert_eq!(c.count("SELECT count(*) FROM copia2").unwrap(), 0);
+        assert_eq!(c.count("SELECT count(*) FROM copy2").unwrap(), 0);
         c.query(&sql::table_action(
             k,
             "main",
-            "copia2",
+            "copy2",
             sql::TableAction::Drop,
             "",
         ))
@@ -459,8 +459,8 @@ pub(crate) mod tests {
             ..cfg.clone()
         };
         let mut r = Conn::connect(&ro, None).unwrap();
-        assert!(r.query("SELECT count(*) FROM cliente").is_ok());
-        assert!(r.query("DELETE FROM cliente").is_err());
+        assert!(r.query("SELECT count(*) FROM customer").is_ok());
+        assert!(r.query("DELETE FROM customer").is_err());
         // A missing file or one that isn't a database: clear errors, nothing created.
         let missing = crate::db::ConnConfig {
             database: format!("{}.does-not-exist", cfg.database),

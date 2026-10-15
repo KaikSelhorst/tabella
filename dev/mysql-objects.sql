@@ -1,73 +1,73 @@
--- Functions, procedures, triggers and views for the "dev-mysql" connection (database `loja`),
+-- Functions, procedures, triggers and views for the "dev-mysql" connection (database `shop`),
 -- on top of dev/mysql.sql. Rerunnable. MySQL has no sequences.
 --
---   docker exec -i dblite-dev-mysql-1 mysql -uroot -pmysql loja < dev/mysql-objects.sql
+--   docker exec -i dblite-dev-mysql-1 mysql -uroot -pmysql shop < dev/mysql-objects.sql
 
 -- Functions need this when binary logging is on (MySQL 8's default) unless they are
 -- declared DETERMINISTIC / READS SQL DATA, which these are; kept off for the session anyway,
 -- like the seed.
 SET SESSION sql_log_bin = 0;
 
-DROP FUNCTION IF EXISTS preco_com_desconto;
-DROP FUNCTION IF EXISTS faixa_de_preco;
-DROP PROCEDURE IF EXISTS repor_estoque;
-DROP PROCEDURE IF EXISTS vendas_do_mes;
-DROP TRIGGER IF EXISTS vendas_baixa_estoque;
-DROP TRIGGER IF EXISTS produtos_valida_preco;
+DROP FUNCTION IF EXISTS discounted_price;
+DROP FUNCTION IF EXISTS price_band;
+DROP PROCEDURE IF EXISTS restock;
+DROP PROCEDURE IF EXISTS monthly_sales;
+DROP TRIGGER IF EXISTS sales_reduce_stock;
+DROP TRIGGER IF EXISTS products_check_price;
 
 DELIMITER //
 
 -- Functions --------------------------------------------------------------------------------
 
-CREATE FUNCTION preco_com_desconto(preco DECIMAL(10, 2), pct INT) RETURNS DECIMAL(10, 2)
+CREATE FUNCTION discounted_price(price DECIMAL(10, 2), pct INT) RETURNS DECIMAL(10, 2)
 DETERMINISTIC
 BEGIN
   IF pct < 0 OR pct > 90 THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'desconto entre 0 e 90%';
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'discount must be between 0 and 90%';
   END IF;
-  RETURN ROUND(preco * (100 - pct) / 100, 2);
+  RETURN ROUND(price * (100 - pct) / 100, 2);
 END //
 
-CREATE FUNCTION faixa_de_preco(preco DECIMAL(10, 2)) RETURNS VARCHAR(10)
+CREATE FUNCTION price_band(price DECIMAL(10, 2)) RETURNS VARCHAR(10)
 DETERMINISTIC
 RETURN CASE
-  WHEN preco < 100 THEN 'barato'
-  WHEN preco < 1000 THEN 'médio'
-  ELSE 'caro'
+  WHEN price < 100 THEN 'cheap'
+  WHEN price < 1000 THEN 'mid'
+  ELSE 'expensive'
 END //
 
 -- Procedures -------------------------------------------------------------------------------
 
-CREATE PROCEDURE repor_estoque(IN pid INT, IN qtd INT)
+CREATE PROCEDURE restock(IN pid INT, IN qty INT)
 BEGIN
-  UPDATE produtos SET estoque = estoque + qtd, em_estoque = TRUE WHERE id = pid;
-  SELECT id, nome, estoque FROM produtos WHERE id = pid;
+  UPDATE products SET stock = stock + qty, in_stock = TRUE WHERE id = pid;
+  SELECT id, name, stock FROM products WHERE id = pid;
 END //
 
-CREATE PROCEDURE vendas_do_mes(IN ano INT, IN mes INT)
+CREATE PROCEDURE monthly_sales(IN yr INT, IN mon INT)
 READS SQL DATA
 BEGIN
-  SELECT canal, COUNT(*) AS vendas, ROUND(SUM(valor), 2) AS total
-  FROM vendas
-  WHERE YEAR(vendido_em) = ano AND MONTH(vendido_em) = mes
-  GROUP BY canal;
+  SELECT channel, COUNT(*) AS sales, ROUND(SUM(amount), 2) AS total
+  FROM sales
+  WHERE YEAR(sold_at) = yr AND MONTH(sold_at) = mon
+  GROUP BY channel;
 END //
 
 -- Triggers ---------------------------------------------------------------------------------
 
 -- A sale takes its quantity out of stock.
-CREATE TRIGGER vendas_baixa_estoque AFTER INSERT ON vendas
+CREATE TRIGGER sales_reduce_stock AFTER INSERT ON sales
 FOR EACH ROW
 BEGIN
-  UPDATE produtos SET estoque = GREATEST(estoque - NEW.quantidade, 0) WHERE id = NEW.produto_id;
+  UPDATE products SET stock = GREATEST(stock - NEW.quantity, 0) WHERE id = NEW.product_id;
 END //
 
 -- No negative prices.
-CREATE TRIGGER produtos_valida_preco BEFORE UPDATE ON produtos
+CREATE TRIGGER products_check_price BEFORE UPDATE ON products
 FOR EACH ROW
 BEGIN
-  IF NEW.preco < 0 THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'preço não pode ser negativo';
+  IF NEW.price < 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'price can''t be negative';
   END IF;
 END //
 
@@ -75,12 +75,12 @@ DELIMITER ;
 
 -- Views ------------------------------------------------------------------------------------
 
-CREATE OR REPLACE VIEW produtos_em_falta AS
-  SELECT id, sku, nome, categoria, estoque
-  FROM produtos
-  WHERE NOT em_estoque OR estoque = 0;
+CREATE OR REPLACE VIEW products_out_of_stock AS
+  SELECT id, sku, name, category, stock
+  FROM products
+  WHERE NOT in_stock OR stock = 0;
 
-CREATE OR REPLACE VIEW vendas_por_canal AS
-  SELECT canal, COUNT(*) AS vendas, ROUND(SUM(valor), 2) AS total
-  FROM vendas
-  GROUP BY canal;
+CREATE OR REPLACE VIEW sales_by_channel AS
+  SELECT channel, COUNT(*) AS sales, ROUND(SUM(amount), 2) AS total
+  FROM sales
+  GROUP BY channel;

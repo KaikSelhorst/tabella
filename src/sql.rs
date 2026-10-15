@@ -120,7 +120,7 @@ pub enum FilterOp {
     Ne,
 }
 
-/// One condition on a column, e.g. `"name" = 'ana'`. A NULL value becomes IS (NOT) NULL.
+/// One condition on a column, e.g. `"name" = 'anna'`. A NULL value becomes IS (NOT) NULL.
 pub fn filter_condition(kind: Kind, column: &str, op: FilterOp, value: Option<&str>) -> String {
     let col = kind.quote_ident(column);
     match (op, value) {
@@ -207,8 +207,8 @@ pub fn insert_row(kind: Kind, table: &str, columns: &[String], row: &[Option<Str
 /// Parses what a user typed into a boolean cell. `None` if it isn't a recognizable boolean.
 pub fn parse_bool(input: &str) -> Option<bool> {
     match input.trim().to_lowercase().as_str() {
-        "true" | "t" | "1" | "yes" | "y" | "on" | "sim" | "s" => Some(true),
-        "false" | "f" | "0" | "no" | "n" | "off" | "não" | "nao" => Some(false),
+        "true" | "t" | "1" | "yes" | "y" | "on" => Some(true),
+        "false" | "f" | "0" | "no" | "n" | "off" => Some(false),
         _ => None,
     }
 }
@@ -444,7 +444,7 @@ pub fn column_stats(
     )
 }
 
-/// Named parameters (`:id`, `:nome`) in a script: char ranges of each occurrence (colon
+/// Named parameters (`:id`, `:name`) in a script: char ranges of each occurrence (colon
 /// included) with the name. Not parameters: `::` casts, MySQL's `:=`, `a[1:2]` slices, and
 /// anything inside quotes, comments or `$$` bodies.
 pub fn param_spans(script: &str) -> Vec<(usize, usize, String)> {
@@ -592,7 +592,7 @@ pub struct RoutineArg {
     pub data_type: String,
 }
 
-/// `a integer, OUT total numeric, numeric(10,2)` (Postgres) or `IN pid int, IN qtd int` (MySQL)
+/// `a integer, OUT total numeric, numeric(10,2)` (Postgres) or `IN pid int, IN qty int` (MySQL)
 /// into its arguments. Unnamed ones are called `p1`, `p2`…
 pub fn parse_args(args: &str) -> Vec<RoutineArg> {
     let mut parts = Vec::new();
@@ -671,7 +671,7 @@ pub fn call_template(kind: Kind, schema: &str, name: &str, args: &[RoutineArg], 
     let call = format!("{target}({})", values.join(", "));
     match (procedure, kind) {
         (false, Kind::Postgres) => format!("SELECT * FROM {call};"),
-        (false, Kind::MySql | Kind::Sqlite) => format!("SELECT {call} AS resultado;"),
+        (false, Kind::MySql | Kind::Sqlite) => format!("SELECT {call} AS result;"),
         (true, _) if outs.is_empty() => format!("CALL {call};"),
         (true, _) => format!("CALL {call};\nSELECT {};", outs.join(", ")),
     }
@@ -1384,20 +1384,15 @@ pub fn fk_options(
 /// its first text column.
 pub fn fk_label(columns: &[(String, String)], key: &str) -> Option<String> {
     const NAMES: &[&str] = &[
-        "nome",
         "name",
-        "razao_social",
-        "nome_fantasia",
-        "titulo",
+        "full_name",
+        "display_name",
         "title",
-        "descricao",
         "description",
         "email",
         "login",
         "username",
-        "usuario",
         "sku",
-        "codigo",
         "code",
         "label",
         "slug",
@@ -1463,10 +1458,10 @@ mod tests {
             "SELECT * FROM \"s\".\"t\" ORDER BY \"id\" ASC LIMIT 200 OFFSET 0"
         );
         let q = PageQuery {
-            order: Some(("nome", false)),
+            order: Some(("name", false)),
             ..q
         };
-        assert!(select_page(Kind::MySql, &q).contains("ORDER BY `nome` DESC, `id` ASC"));
+        assert!(select_page(Kind::MySql, &q).contains("ORDER BY `name` DESC, `id` ASC"));
         let q = PageQuery {
             order: Some(("id", false)),
             ..q
@@ -1488,11 +1483,11 @@ mod tests {
 
     #[test]
     fn insert_copy() {
-        let cols = vec!["id".to_string(), "nome".to_string()];
+        let cols = vec!["id".to_string(), "name".to_string()];
         let row = vec![Some("1".to_string()), None];
         assert_eq!(
             insert_row(Kind::Postgres, "\"public\".\"t\"", &cols, &row),
-            "INSERT INTO \"public\".\"t\" (\"id\", \"nome\") VALUES ('1', NULL);"
+            "INSERT INTO \"public\".\"t\" (\"id\", \"name\") VALUES ('1', NULL);"
         );
     }
 
@@ -1500,7 +1495,7 @@ mod tests {
     fn booleans_per_engine() {
         assert_eq!(parse_bool(" TRUE "), Some(true));
         assert_eq!(parse_bool("f"), Some(false));
-        assert_eq!(parse_bool("talvez"), None);
+        assert_eq!(parse_bool("maybe"), None);
         assert_eq!(bool_value(Kind::Postgres, false), "false");
         assert_eq!(bool_value(Kind::MySql, true), "1");
     }
@@ -1532,8 +1527,8 @@ mod tests {
 
     #[test]
     fn filter_must_be_one_condition() {
-        assert!(check_filter("id > 10 AND nome LIKE 'a%'").is_ok());
-        assert!(check_filter("nome = 'a;b' OR \"we;ird\" = 1").is_ok());
+        assert!(check_filter("id > 10 AND name LIKE 'a%'").is_ok());
+        assert!(check_filter("name = 'a;b' OR \"we;ird\" = 1").is_ok());
         assert!(check_filter("1=1; DELETE FROM t; SELECT 1 AS id").is_err());
         assert!(check_filter("1=1 -- ").is_err());
         assert!(check_filter("x = 'it''s -- fine'").is_ok());
@@ -1542,12 +1537,12 @@ mod tests {
     #[test]
     fn insert_only_filled_columns() {
         let v = vec![
-            ("nome".to_string(), Some("ana".to_string())),
-            ("ativo".to_string(), None),
+            ("name".to_string(), Some("anna".to_string())),
+            ("active".to_string(), None),
         ];
         let (sql, vals) = insert_values(Kind::MySql, "s", "t", &v).with_placeholders();
-        assert_eq!(sql, "INSERT INTO `s`.`t` (`nome`, `ativo`) VALUES (?, NULL)");
-        assert_eq!(vals, ["ana"]);
+        assert_eq!(sql, "INSERT INTO `s`.`t` (`name`, `active`) VALUES (?, NULL)");
+        assert_eq!(vals, ["anna"]);
         assert_eq!(
             insert_values(Kind::Postgres, "s", "t", &[]).render(Kind::Postgres),
             "INSERT INTO \"s\".\"t\" DEFAULT VALUES"
@@ -1556,7 +1551,7 @@ mod tests {
 
     #[test]
     fn formatting() {
-        let raw = "select id, nome from clientes c join pedidos p on p.cliente_id = c.id where nome = 'select from' and ativo order by id";
+        let raw = "select id, name from customers c join orders p on p.customer_id = c.id where name = 'select from' and active order by id";
         let out = format_sql(Kind::Postgres, raw);
         assert!(out.starts_with("SELECT"), "{out}");
         assert!(out.lines().count() > 3, "one clause per line:\n{out}");
@@ -1573,14 +1568,14 @@ mod tests {
 
     #[test]
     fn column_stats_queries() {
-        let (sum, top) = column_stats(Kind::Postgres, "public", "t", "pre ço", "a > 1", true);
+        let (sum, top) = column_stats(Kind::Postgres, "public", "t", "unit price", "a > 1", true);
         assert_eq!(
             sum,
-            "SELECT count(*), count(\"pre ço\"), count(DISTINCT \"pre ço\"::text), min(\"pre ço\"), max(\"pre ço\") FROM \"public\".\"t\" WHERE (a > 1)"
+            "SELECT count(*), count(\"unit price\"), count(DISTINCT \"unit price\"::text), min(\"unit price\"), max(\"unit price\") FROM \"public\".\"t\" WHERE (a > 1)"
         );
         assert_eq!(
             top,
-            "SELECT \"pre ço\"::text, count(*) FROM \"public\".\"t\" WHERE (a > 1) GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10"
+            "SELECT \"unit price\"::text, count(*) FROM \"public\".\"t\" WHERE (a > 1) GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10"
         );
         let (sum, _) = column_stats(Kind::MySql, "db", "t", "c", "", false);
         assert_eq!(
@@ -1591,16 +1586,16 @@ mod tests {
 
     #[test]
     fn named_parameters() {
-        let q = "SELECT x::text, ':nao' AS s, a[1:2], @v := 1 -- :tambem_nao\nFROM t WHERE id = :id AND (nome = :nome OR :id IS NULL)";
-        assert_eq!(param_names(q), ["id", "nome"]);
+        let q = "SELECT x::text, ':no' AS s, a[1:2], @v := 1 -- :also_not\nFROM t WHERE id = :id AND (name = :name OR :id IS NULL)";
+        assert_eq!(param_names(q), ["id", "name"]);
         let bound = bind_params(Kind::Postgres, q, |n| {
             if n == "id" { "42".into() } else { "O'Neil".into() }
         });
         assert!(
-            bound.ends_with("WHERE id = 42 AND (nome = 'O''Neil' OR 42 IS NULL)"),
+            bound.ends_with("WHERE id = 42 AND (name = 'O''Neil' OR 42 IS NULL)"),
             "{bound}"
         );
-        assert!(bound.starts_with("SELECT x::text, ':nao'"));
+        assert!(bound.starts_with("SELECT x::text, ':no'"));
         assert_eq!(bind_params(Kind::MySql, "a = :v", |_| "null".into()), "a = NULL");
         assert_eq!(bind_params(Kind::MySql, "a = :v", |_| "-1.5".into()), "a = -1.5");
         assert_eq!(
@@ -1614,20 +1609,20 @@ mod tests {
     fn table_actions() {
         let a = |k, w, n: &str| table_action(k, "s", "t", w, n);
         assert_eq!(
-            a(Kind::Postgres, TableAction::Rename, "novo"),
-            "ALTER TABLE \"s\".\"t\" RENAME TO \"novo\";"
+            a(Kind::Postgres, TableAction::Rename, "new"),
+            "ALTER TABLE \"s\".\"t\" RENAME TO \"new\";"
         );
         assert_eq!(
-            a(Kind::MySql, TableAction::Rename, "novo"),
-            "RENAME TABLE `s`.`t` TO `s`.`novo`;"
+            a(Kind::MySql, TableAction::Rename, "new"),
+            "RENAME TABLE `s`.`t` TO `s`.`new`;"
         );
         assert_eq!(
-            a(Kind::Postgres, TableAction::Duplicate(true), "copia"),
-            "CREATE TABLE \"s\".\"copia\" (LIKE \"s\".\"t\" INCLUDING ALL);\nINSERT INTO \"s\".\"copia\" OVERRIDING SYSTEM VALUE SELECT * FROM \"s\".\"t\";"
+            a(Kind::Postgres, TableAction::Duplicate(true), "copy"),
+            "CREATE TABLE \"s\".\"copy\" (LIKE \"s\".\"t\" INCLUDING ALL);\nINSERT INTO \"s\".\"copy\" OVERRIDING SYSTEM VALUE SELECT * FROM \"s\".\"t\";"
         );
         assert_eq!(
-            a(Kind::MySql, TableAction::Duplicate(false), "copia"),
-            "CREATE TABLE `s`.`copia` LIKE `s`.`t`;"
+            a(Kind::MySql, TableAction::Duplicate(false), "copy"),
+            "CREATE TABLE `s`.`copy` LIKE `s`.`t`;"
         );
         assert_eq!(a(Kind::MySql, TableAction::Drop, ""), "DROP TABLE `s`.`t`;");
     }
@@ -1654,14 +1649,14 @@ mod tests {
             call_template(Kind::Postgres, "public", "p", &a, true),
             "CALL \"public\".\"p\"(:a, NULL, :p3, :p4);"
         );
-        let my = parse_args("IN pid int, OUT novo int");
+        let my = parse_args("IN pid int, OUT new int");
         assert_eq!(
-            call_template(Kind::MySql, "loja", "repor", &my, true),
-            "CALL `loja`.`repor`(:pid, @novo);\nSELECT @novo;"
+            call_template(Kind::MySql, "shop", "restock", &my, true),
+            "CALL `shop`.`restock`(:pid, @new);\nSELECT @new;"
         );
         assert_eq!(
-            call_template(Kind::MySql, "loja", "f", &[], false),
-            "SELECT `loja`.`f`() AS resultado;"
+            call_template(Kind::MySql, "shop", "f", &[], false),
+            "SELECT `shop`.`f`() AS result;"
         );
         assert_eq!(
             param_names(&call_template(Kind::Postgres, "public", "p", &a, true)),
@@ -1673,25 +1668,25 @@ mod tests {
     fn templates_for_a_table() {
         let cols = [
             ("id".to_string(), true),
-            ("nome".to_string(), false),
-            ("data nasc".to_string(), false),
+            ("name".to_string(), false),
+            ("birth date".to_string(), false),
         ];
-        let t = |w| template(Kind::Postgres, "public", "clientes", &cols, w);
+        let t = |w| template(Kind::Postgres, "public", "customers", &cols, w);
         assert_eq!(
             t(Template::Update),
-            "UPDATE \"public\".\"clientes\"\nSET \"nome\" = :nome,\n    \"data nasc\" = :data_nasc\nWHERE \"id\" = :id;"
+            "UPDATE \"public\".\"customers\"\nSET \"name\" = :name,\n    \"birth date\" = :birth_date\nWHERE \"id\" = :id;"
         );
         assert_eq!(
             t(Template::Delete),
-            "DELETE FROM \"public\".\"clientes\"\nWHERE \"id\" = :id;"
+            "DELETE FROM \"public\".\"customers\"\nWHERE \"id\" = :id;"
         );
         assert_eq!(
             t(Template::Insert),
-            "INSERT INTO \"public\".\"clientes\" (\"id\", \"nome\", \"data nasc\")\nVALUES (:id, :nome, :data_nasc);"
+            "INSERT INTO \"public\".\"customers\" (\"id\", \"name\", \"birth date\")\nVALUES (:id, :name, :birth_date);"
         );
-        assert!(t(Template::Select).starts_with("SELECT \"id\",\n       \"nome\""));
+        assert!(t(Template::Select).starts_with("SELECT \"id\",\n       \"name\""));
         // The parameters are the ones the editor will ask for.
-        assert_eq!(param_names(&t(Template::Update)), ["nome", "data_nasc", "id"]);
+        assert_eq!(param_names(&t(Template::Update)), ["name", "birth_date", "id"]);
         // No key: every column identifies the row.
         let nokey = [("a".to_string(), false), ("b".to_string(), false)];
         assert_eq!(
@@ -1702,13 +1697,13 @@ mod tests {
 
     #[test]
     fn words_under_the_pointer() {
-        let text = "SELECT * FROM public.\"Clientes\" c WHERE c.id = 1";
+        let text = "SELECT * FROM public.\"Customers\" c WHERE c.id = 1";
         let w =
             |i: usize| word_at(text, i).map(|(a, b)| text.chars().skip(a).take(b - a).collect::<String>());
-        assert_eq!(w(16).as_deref(), Some("public.\"Clientes\""));
+        assert_eq!(w(16).as_deref(), Some("public.\"Customers\""));
         assert_eq!(
             w(31).as_deref(),
-            Some("public.\"Clientes\""),
+            Some("public.\"Customers\""),
             "right after the word"
         );
         assert_eq!(w(7), None, "on punctuation");
@@ -1719,30 +1714,30 @@ mod tests {
     fn finds_the_table_of_editable_selects() {
         let t = |s: &str| editable_select(s);
         assert_eq!(
-            t("SELECT * FROM clientes WHERE uf = 'SP' ORDER BY id LIMIT 10;"),
-            Some((None, "clientes".into()))
+            t("SELECT * FROM customers WHERE state = 'NY' ORDER BY id LIMIT 10;"),
+            Some((None, "customers".into()))
         );
         assert_eq!(
-            t("select id, nome from public.clientes c where c.ativo"),
-            Some((Some("public".into()), "clientes".into()))
+            t("select id, name from public.customers c where c.active"),
+            Some((Some("public".into()), "customers".into()))
         );
         assert_eq!(
-            t("SELECT * FROM \"Meu Esquema\".\"Tabela.X\" AS t"),
-            Some((Some("Meu Esquema".into()), "Tabela.X".into()))
+            t("SELECT * FROM \"My Schema\".\"Table.X\" AS t"),
+            Some((Some("My Schema".into()), "Table.X".into()))
         );
         assert_eq!(
-            t("SELECT * FROM `loja`.`produtos`"),
-            Some((Some("loja".into()), "produtos".into()))
+            t("SELECT * FROM `shop`.`products`"),
+            Some((Some("shop".into()), "products".into()))
         );
         // A subquery in WHERE is fine; it isn't in FROM.
         assert!(
-            t("SELECT * FROM pedidos WHERE cliente_id IN (SELECT id FROM clientes JOIN x ON true)").is_some()
+            t("SELECT * FROM orders WHERE customer_id IN (SELECT id FROM customers JOIN x ON true)").is_some()
         );
         for no in [
             "SELECT * FROM a JOIN b ON a.id = b.id",
             "SELECT * FROM a, b",
-            "SELECT uf, count(*) FROM clientes GROUP BY uf",
-            "SELECT DISTINCT uf FROM clientes",
+            "SELECT state, count(*) FROM customers GROUP BY state",
+            "SELECT DISTINCT state FROM customers",
             "SELECT * FROM (SELECT 1) x",
             "WITH x AS (SELECT 1) SELECT * FROM x",
             "SELECT 1 UNION SELECT 2",
@@ -1756,19 +1751,19 @@ mod tests {
 
     #[test]
     fn previews_rewrite_writes_as_reads() {
-        let p = preview_queries("UPDATE clientes c SET saldo = (SELECT 1 WHERE x) WHERE c.uf = 'SP' AND (a OR b) ORDER BY id LIMIT 10;").unwrap();
+        let p = preview_queries("UPDATE customers c SET balance = (SELECT 1 WHERE x) WHERE c.state = 'NY' AND (a OR b) ORDER BY id LIMIT 10;").unwrap();
         assert_eq!(
             p.count,
-            "SELECT count(*) FROM clientes c WHERE c.uf = 'SP' AND (a OR b)"
+            "SELECT count(*) FROM customers c WHERE c.state = 'NY' AND (a OR b)"
         );
         assert_eq!(
             p.sample,
-            "SELECT * FROM clientes c WHERE c.uf = 'SP' AND (a OR b) LIMIT 50"
+            "SELECT * FROM customers c WHERE c.state = 'NY' AND (a OR b) LIMIT 50"
         );
-        let p = preview_queries("delete from public.pedidos where status = 'where' returning id").unwrap();
+        let p = preview_queries("delete from public.orders where status = 'where' returning id").unwrap();
         assert_eq!(
             p.count,
-            "SELECT count(*) FROM public.pedidos where status = 'where'"
+            "SELECT count(*) FROM public.orders where status = 'where'"
         );
         // Everything: no WHERE.
         assert_eq!(
@@ -1852,8 +1847,8 @@ mod tests {
     fn quick_filters() {
         let k = Kind::Postgres;
         assert_eq!(
-            filter_condition(k, "nome", FilterOp::Eq, Some("O'Neil")),
-            "\"nome\" = 'O''Neil'"
+            filter_condition(k, "name", FilterOp::Eq, Some("O'Neil")),
+            "\"name\" = 'O''Neil'"
         );
         assert_eq!(filter_condition(k, "x", FilterOp::Eq, None), "\"x\" IS NULL");
         assert_eq!(
@@ -1874,10 +1869,10 @@ mod tests {
         assert_eq!(and("", "a = 1"), "a = 1");
         assert_eq!(and("b OR c", "a = 1"), "(b OR c) AND a = 1");
         assert_eq!(and("b", ""), "b");
-        let s = search_condition(k, &["id".into(), "nome".into()], " ana ");
+        let s = search_condition(k, &["id".into(), "name".into()], " anna ");
         assert_eq!(
             s,
-            "(CAST(\"id\" AS TEXT) ILIKE '%ana%' OR CAST(\"nome\" AS TEXT) ILIKE '%ana%')"
+            "(CAST(\"id\" AS TEXT) ILIKE '%anna%' OR CAST(\"name\" AS TEXT) ILIKE '%anna%')"
         );
         assert_eq!(search_condition(k, &["id".into()], "  "), "");
     }
@@ -1918,8 +1913,8 @@ mod tests {
         let cols = vec!["id".to_string()];
         let row = vec![Some("5".to_string())];
         let wh = pk_where(Kind::MySql, &cols, &cols, &row);
-        let (sql, values) = update_cell(Kind::MySql, "s", "t", "nome", Some("a'b\\"), wh).with_placeholders();
-        assert_eq!(sql, "UPDATE `s`.`t` SET `nome` = ? WHERE `id` = ?");
+        let (sql, values) = update_cell(Kind::MySql, "s", "t", "name", Some("a'b\\"), wh).with_placeholders();
+        assert_eq!(sql, "UPDATE `s`.`t` SET `name` = ? WHERE `id` = ?");
         assert_eq!(values, ["a'b\\", "5"]);
         let (sql, values) = delete_row(
             Kind::MySql,
@@ -1936,42 +1931,42 @@ mod tests {
     fn value_filters() {
         let k = Kind::Postgres;
         let v = |x: &str| Some(x.to_string());
-        let sql = distinct_values(k, "public", "clientes", "\"uf\"", "ativo", "s");
+        let sql = distinct_values(k, "public", "customers", "\"state\"", "active", "s");
         assert_eq!(
             sql,
-            "SELECT \"uf\", count(*) FROM \"public\".\"clientes\" WHERE (ativo) AND CAST(\"uf\" AS TEXT) ILIKE '%s%' \
+            "SELECT \"state\", count(*) FROM \"public\".\"customers\" WHERE (active) AND CAST(\"state\" AS TEXT) ILIKE '%s%' \
              GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 1001"
         );
-        let c = "\"uf\"";
-        assert_eq!(values_condition(k, c, &[v("SP"), v("RJ")], &[], true), None);
+        let c = "\"state\"";
+        assert_eq!(values_condition(k, c, &[v("NY"), v("CA")], &[], true), None);
         assert_eq!(
-            values_condition(k, c, &[v("SP")], &[v("RJ"), None], true).as_deref(),
-            Some("\"uf\" IN ('SP')")
+            values_condition(k, c, &[v("NY")], &[v("CA"), None], true).as_deref(),
+            Some("\"state\" IN ('NY')")
         );
         // Fewer unchecked than checked: listed instead, NULL kept.
         assert_eq!(
-            values_condition(k, c, &[v("SP"), v("RJ"), None], &[v("MG")], true).as_deref(),
-            Some("(\"uf\" NOT IN ('MG') OR \"uf\" IS NULL)")
+            values_condition(k, c, &[v("NY"), v("CA"), None], &[v("TX")], true).as_deref(),
+            Some("(\"state\" NOT IN ('TX') OR \"state\" IS NULL)")
         );
         assert_eq!(
-            values_condition(k, c, &[v("SP"), v("RJ")], &[None], true).as_deref(),
-            Some("\"uf\" IS NOT NULL")
+            values_condition(k, c, &[v("NY"), v("CA")], &[None], true).as_deref(),
+            Some("\"state\" IS NOT NULL")
         );
         // Not every value was listed: only IN is safe.
         assert_eq!(
-            values_condition(k, c, &[v("SP"), v("RJ"), None], &[v("MG")], false).as_deref(),
-            Some("(\"uf\" IN ('SP', 'RJ') OR \"uf\" IS NULL)")
+            values_condition(k, c, &[v("NY"), v("CA"), None], &[v("TX")], false).as_deref(),
+            Some("(\"state\" IN ('NY', 'CA') OR \"state\" IS NULL)")
         );
         assert_eq!(
-            values_condition(k, c, &[], &[v("SP")], true).as_deref(),
+            values_condition(k, c, &[], &[v("NY")], true).as_deref(),
             Some("1 = 0")
         );
 
-        let cond = "\"uf\" IN ('SP')";
+        let cond = "\"state\" IN ('NY')";
         assert_eq!(remove_condition(cond, cond).as_deref(), Some(""));
         assert_eq!(
-            remove_condition(&and("ativo", cond), cond).as_deref(),
-            Some("ativo")
+            remove_condition(&and("active", cond), cond).as_deref(),
+            Some("active")
         );
         assert_eq!(
             remove_condition(&and("a OR b", cond), cond).as_deref(),
@@ -1989,25 +1984,25 @@ mod tests {
     fn foreign_key_picker_queries() {
         let fk = crate::db::FkRef {
             schema: "public".into(),
-            table: "clientes".into(),
+            table: "customers".into(),
             column: "id".into(),
         };
         let k = Kind::Postgres;
         assert_eq!(
-            fk_options(k, &fk, Some("nome"), true, true, ""),
-            "SELECT \"id\", \"nome\" FROM \"public\".\"clientes\" ORDER BY \"nome\" LIMIT 10001"
+            fk_options(k, &fk, Some("name"), true, true, ""),
+            "SELECT \"id\", \"name\" FROM \"public\".\"customers\" ORDER BY \"name\" LIMIT 10001"
         );
         assert_eq!(
-            fk_options(k, &fk, Some("nome"), true, false, "42"),
-            "SELECT \"id\", \"nome\" FROM \"public\".\"clientes\" \
-             WHERE CAST(\"nome\" AS TEXT) ILIKE '%42%' OR \"id\" = 42 LIMIT 50"
+            fk_options(k, &fk, Some("name"), true, false, "42"),
+            "SELECT \"id\", \"name\" FROM \"public\".\"customers\" \
+             WHERE CAST(\"name\" AS TEXT) ILIKE '%42%' OR \"id\" = 42 LIMIT 50"
         );
         // Text that isn't a number never meets a numeric key (it would be an error).
-        assert!(!fk_options(k, &fk, Some("nome"), true, false, "maria").contains("\"id\" ="));
+        assert!(!fk_options(k, &fk, Some("name"), true, false, "mary").contains("\"id\" ="));
         let my = fk_options(Kind::MySql, &fk, None, false, false, "a'b");
         assert!(
             my.starts_with(
-                "SELECT /*+ MAX_EXECUTION_TIME(2000) */ `id`, NULL FROM `public`.`clientes` WHERE"
+                "SELECT /*+ MAX_EXECUTION_TIME(2000) */ `id`, NULL FROM `public`.`customers` WHERE"
             ),
             "{my}"
         );
@@ -2020,19 +2015,19 @@ mod tests {
         };
         assert_eq!(
             fk_label(
-                &cols(&[("id", "integer"), ("email", "text"), ("Nome", "text")]),
+                &cols(&[("id", "integer"), ("email", "text"), ("Name", "text")]),
                 "id"
             )
             .as_deref(),
-            Some("Nome")
+            Some("Name")
         );
         assert_eq!(
             fk_label(
-                &cols(&[("id", "integer"), ("total", "numeric"), ("obs", "varchar(20)")]),
+                &cols(&[("id", "integer"), ("total", "numeric"), ("note", "varchar(20)")]),
                 "id"
             )
             .as_deref(),
-            Some("obs")
+            Some("note")
         );
         assert_eq!(
             fk_label(&cols(&[("id", "integer"), ("total", "numeric")]), "id"),

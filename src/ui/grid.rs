@@ -903,7 +903,7 @@ fn cell_menu(
             event = Some(GridEvent::DuplicateRow(ri));
             ui.close();
         }
-        if ui.button("Definir NULL").clicked() {
+        if ui.button("Set NULL").clicked() {
             event = Some(GridEvent::Commit(ri, ci, None));
             ui.close();
         }
@@ -961,10 +961,10 @@ mod tests {
         let wide = column_width("email", Some("text"), [Some(40)].into_iter());
         assert_eq!(narrow, MIN_COL_WIDTH);
         assert!(wide > 300.0, "{wide}");
-        // The type shouldn't get cut: "criado_em" + "timestamp without time zone" fits.
+        // The type shouldn't get cut: "created_at" + "timestamp without time zone" fits.
         assert!(
             column_width(
-                "criado_em",
+                "created_at",
                 Some("timestamp without time zone"),
                 std::iter::empty()
             ) > 300.0
@@ -976,7 +976,7 @@ mod tests {
         QueryResult {
             columns: vec!["id".into(), "name".into()],
             rows: vec![
-                vec![Some("1".into()), Some("ana".into())],
+                vec![Some("1".into()), Some("anna".into())],
                 vec![Some("2".into()), None],
             ],
             ..Default::default()
@@ -1015,7 +1015,7 @@ mod tests {
                 &mut Vec::new(),
             );
         });
-        harness.get_by_label("ana");
+        harness.get_by_label("anna");
         harness.get_by_label("NULL");
         harness.get_by_label("id");
     }

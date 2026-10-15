@@ -367,10 +367,10 @@ mod tests {
         let (mut v, path) = temp_vault();
         assert!(!v.exists());
         assert_eq!(v.set("dev", "x"), Err(SecretError::Locked));
-        assert!(v.create("curta").is_err());
+        assert!(v.create("short").is_err());
         v.create("good-master-password").unwrap();
-        v.set("dev", "s3cr3t ção").unwrap();
-        assert_eq!(v.get("dev").as_deref(), Some("s3cr3t ção"));
+        v.set("dev", "s3cr3t café").unwrap();
+        assert_eq!(v.get("dev").as_deref(), Some("s3cr3t café"));
 
         // The file never contains the password.
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -381,11 +381,11 @@ mod tests {
         assert!(again.exists() && !again.is_unlocked() && again.has("dev"));
         assert_eq!(again.get("dev"), None);
         assert_eq!(
-            again.unlock("errada-errada"),
+            again.unlock("wrong-wrong"),
             Err("Wrong master password".into())
         );
         again.unlock("good-master-password").unwrap();
-        assert_eq!(again.get("dev").as_deref(), Some("s3cr3t ção"));
+        assert_eq!(again.get("dev").as_deref(), Some("s3cr3t café"));
         again.delete("dev").unwrap();
         assert!(!again.has("dev"));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

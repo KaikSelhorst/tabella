@@ -253,7 +253,7 @@ fn open_trigger(buf: &str) -> bool {
     is_trigger && last != "END"
 }
 
-/// `COPY tabela (…) FROM stdin`: its data comes inline, right after it.
+/// `COPY table (…) FROM stdin`: its data comes inline, right after it.
 fn is_copy_from_stdin(sql: &str) -> bool {
     let upper = sql.to_uppercase();
     let words: Vec<&str> = upper.split_whitespace().collect();
@@ -346,20 +346,20 @@ mod tests {
 
     #[test]
     fn pg_dump_copy_blocks_and_meta_commands() {
-        let dump = "\\connect loja\nCOPY public.t (id, nome) FROM stdin;\n1\tana\n2\tbia;\n\\.\nSELECT pg_catalog.setval('s', 2, true);\n";
+        let dump = "\\connect shop\nCOPY public.t (id, name) FROM stdin;\n1\tanna\n2\tbeth;\n\\.\nSELECT pg_catalog.setval('s', 2, true);\n";
         let items = read(Kind::Postgres, dump);
         assert_eq!(
             items[0],
             Item::Skipped {
-                text: "\\connect loja".into(),
+                text: "\\connect shop".into(),
                 line: 1
             }
         );
         assert_eq!(
             items[1],
             Item::Copy {
-                sql: "COPY public.t (id, nome) FROM stdin".into(),
-                data: b"1\tana\n2\tbia;\n".to_vec(),
+                sql: "COPY public.t (id, name) FROM stdin".into(),
+                data: b"1\tanna\n2\tbeth;\n".to_vec(),
                 line: 2
             }
         );
@@ -378,12 +378,12 @@ mod tests {
 
     #[test]
     fn sqlite_triggers_stay_whole() {
-        let text = "CREATE TABLE t (id INTEGER);\n-- registra\nCREATE TRIGGER t_ai AFTER INSERT ON t\nBEGIN\n  UPDATE t SET id = id + 1;\n  SELECT 1;\nEND;\nINSERT INTO t VALUES (1);\n";
+        let text = "CREATE TABLE t (id INTEGER);\n-- logs\nCREATE TRIGGER t_ai AFTER INSERT ON t\nBEGIN\n  UPDATE t SET id = id + 1;\n  SELECT 1;\nEND;\nINSERT INTO t VALUES (1);\n";
         assert_eq!(
             stmts(&read(Kind::Sqlite, text)),
             [
                 "CREATE TABLE t (id INTEGER)",
-                "-- registra\nCREATE TRIGGER t_ai AFTER INSERT ON t\nBEGIN\n  UPDATE t SET id = id + 1;\n  SELECT 1;\nEND",
+                "-- logs\nCREATE TRIGGER t_ai AFTER INSERT ON t\nBEGIN\n  UPDATE t SET id = id + 1;\n  SELECT 1;\nEND",
                 "INSERT INTO t VALUES (1)",
             ]
         );

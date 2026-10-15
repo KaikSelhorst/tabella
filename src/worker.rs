@@ -94,7 +94,7 @@ pub enum Job {
     /// A table action (rename, duplicate, truncate, drop) confirmed in its dialog.
     Admin {
         sql: String,
-        /// What to say when it's done, e.g. "clientes renomeada".
+        /// What to say when it's done, e.g. "customers renamed to clients".
         done: String,
     },
     /// The code of a function, trigger, view…
@@ -439,7 +439,7 @@ pub(crate) fn run_script(
     let mut last_report = std::time::Instant::now();
     let error = loop {
         if cancel.load(Ordering::Relaxed) {
-            break Some(fail("cancelado".into(), p.line, "", true));
+            break Some(fail("cancelled".into(), p.line, "", true));
         }
         let Some(item) = reader.next() else { break None };
         p.bytes = reader.bytes;
@@ -978,7 +978,7 @@ impl<S: Fn(Reply)> Worker<'_, S> {
                 tab,
                 progress: Default::default(),
                 res: Err(if cancel.load(Ordering::Relaxed) {
-                    "cancelado".into()
+                    "cancelled".into()
                 } else {
                     e.to_string()
                 }),
@@ -1311,7 +1311,7 @@ mod tests {
         };
         jobs.send(Job::Query {
             tab: 1,
-            sql: "UPDATE cliente SET nome = 'Z' WHERE id = 1".into(),
+            sql: "UPDATE customer SET name = 'Z' WHERE id = 1".into(),
         })
         .unwrap();
         wait(&rows);
@@ -1324,10 +1324,10 @@ mod tests {
         wait(&|r| matches!(r, Reply::TxEnded { .. }).then(String::new));
         jobs.send(Job::Query {
             tab: 1,
-            sql: "SELECT nome FROM cliente WHERE id = 1".into(),
+            sql: "SELECT name FROM customer WHERE id = 1".into(),
         })
         .unwrap();
-        assert_eq!(wait(&rows), "Ana", "undone");
+        assert_eq!(wait(&rows), "Anna", "undone");
         drop(jobs);
         let _ = std::fs::remove_file(&cfg.database);
     }
@@ -1356,12 +1356,12 @@ mod tests {
         let pg = kind == Kind::Postgres;
         let body = if pg {
             "\\set ON_ERROR_STOP on\nCREATE TABLE dbl_script (id int PRIMARY KEY, v text);\n\
-             COPY dbl_script (id, v) FROM stdin;\n1\tum\n2\tdois; ainda\n\\.\n\
+             COPY dbl_script (id, v) FROM stdin;\n1\tone\n2\ttwo; still\n\\.\n\
              CREATE FUNCTION dbl_script_f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql;\n\
              DROP FUNCTION dbl_script_f();\n"
         } else {
             "CREATE TABLE dbl_script (id int PRIMARY KEY, v text);\n\
-             INSERT INTO dbl_script VALUES (1, 'um'), (2, 'dois; ainda');\n\
+             INSERT INTO dbl_script VALUES (1, 'one'), (2, 'two; still');\n\
              DELIMITER //\nCREATE PROCEDURE dbl_script_p() BEGIN SELECT 1; SELECT 2; END //\nDELIMITER ;\n\
              DROP PROCEDURE dbl_script_p;\n"
         };
@@ -1398,10 +1398,10 @@ mod tests {
         c.query("DROP TABLE dbl_script").unwrap();
 
         // Fails on line 3 of the tail: rolled back as a whole (Postgres undoes the CREATE too).
-        let broken = format!("{body}INSERT INTO dbl_script VALUES (3, 'tres');\nSELECT * FROM nao_existe;\n");
+        let broken = format!("{body}INSERT INTO dbl_script VALUES (3, 'three');\nSELECT * FROM does_not_exist;\n");
         let (_, err) = run(&mut c, &broken, true);
         let err = err.expect("error");
-        assert!(err.statement.contains("nao_existe") && !err.cancelled, "{err:?}");
+        assert!(err.statement.contains("does_not_exist") && !err.cancelled, "{err:?}");
         assert_eq!(err.line, broken.lines().count() as u64);
         if pg {
             assert_eq!(count(&mut c), None, "the table went away with the rollback");
@@ -1480,7 +1480,7 @@ mod tests {
             ok.starts_with("Connected in ") && ok.contains("PostgreSQL 1"),
             "{ok}"
         );
-        cfg.password = "errada".into();
+        cfg.password = "wrong".into();
         let err = test_connection(cfg.clone(), ctx.clone())
             .recv()
             .unwrap()
@@ -1510,7 +1510,7 @@ mod tests {
             "DROP SCHEMA IF EXISTS cw_b CASCADE",
             "CREATE SCHEMA cw_a",
             "CREATE SCHEMA cw_b",
-            "CREATE TABLE cw_a.t (id int PRIMARY KEY, nome text NOT NULL)",
+            "CREATE TABLE cw_a.t (id int PRIMARY KEY, name text NOT NULL)",
             "CREATE TABLE cw_b.t (id int PRIMARY KEY)",
         ] {
             c.query(sql).unwrap();
@@ -1519,7 +1519,7 @@ mod tests {
         let there = compare_with(&mut c, "cw_a", Some(&cfg), "cw_b").unwrap();
         assert_eq!(here, there);
         assert_eq!(here.len(), 1);
-        assert!(here[0].items[0].sql.contains("ADD COLUMN \"nome\" text NOT NULL"));
+        assert!(here[0].items[0].sql.contains("ADD COLUMN \"name\" text NOT NULL"));
         let mut other = cfg.clone();
         other.kind = Kind::MySql;
         assert!(compare_with(&mut c, "cw_a", Some(&other), "cw_b").is_err());

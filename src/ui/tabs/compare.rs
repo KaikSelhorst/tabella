@@ -194,7 +194,7 @@ pub(super) fn compare_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     ui.add_space(8.0);
                     for d in diffs {
                         let (badge, color) = match d.status {
-                            Status::Changed => ("diferente", t.info),
+                            Status::Changed => ("changed", t.info),
                             Status::New => ("new", t.lime),
                             Status::Extra => ("only in target", t.warning),
                         };
@@ -219,7 +219,7 @@ pub(super) fn compare_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         cx.request = Some(Request::Sql(app::compare_script(st)));
     }
     if save && let TabKind::Compare(st) = &mut tab.kind {
-        let path = export::target_path("comparacao", Format::Sql);
+        let path = export::target_path("comparison", Format::Sql);
         match std::fs::write(&path, app::compare_script(st)) {
             Ok(()) => {
                 st.saved = Some(path);

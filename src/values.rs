@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn tsv_round_trip() {
         let res = QueryResult {
-            columns: vec!["id".into(), "obs".into()],
+            columns: vec!["id".into(), "note".into()],
             rows: vec![
                 vec![Some("1".into()), Some("a\tb \"c\"".into())],
                 vec![Some("2".into()), None],
@@ -593,8 +593,8 @@ mod tests {
             },
             true,
         );
-        assert_eq!(all, "id\tobs\n1\t\"a\tb \"\"c\"\"\"\n2\t\n");
-        assert_eq!(parse_tsv(&all), [["id", "obs"], ["1", "a\tb \"c\""], ["2", ""]]);
+        assert_eq!(all, "id\tnote\n1\t\"a\tb \"\"c\"\"\"\n2\t\n");
+        assert_eq!(parse_tsv(&all), [["id", "note"], ["1", "a\tb \"c\""], ["2", ""]]);
         assert_eq!(to_tsv(&res, &CellRange::single(1, 0), false), "2");
         // On-screen order, not the query's.
         assert_eq!(
@@ -607,7 +607,7 @@ mod tests {
                 },
                 true
             ),
-            "obs\tid\n\"a\tb \"\"c\"\"\"\t1\n"
+            "note\tid\n\"a\tb \"\"c\"\"\"\t1\n"
         );
         // Excel ends with \r\n and quotes cells with line breaks.
         assert_eq!(
@@ -637,7 +637,7 @@ mod tests {
     #[test]
     fn markdown_tables() {
         let res = QueryResult {
-            columns: vec!["id".into(), "nota".into()],
+            columns: vec!["id".into(), "note".into()],
             rows: vec![
                 vec![Some("1".into()), Some("a|b\nc".into())],
                 vec![Some("2".into()), None],
@@ -651,7 +651,7 @@ mod tests {
         };
         assert_eq!(
             to_markdown(&res, &all, &[ValueKind::Number, ValueKind::Text]),
-            "| id | nota |\n| ---: | --- |\n| 1 | a\\|b c |\n| 2 |  |\n"
+            "| id | note |\n| ---: | --- |\n| 1 | a\\|b c |\n| 2 |  |\n"
         );
     }
 
@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn json_keeps_types() {
         let res = QueryResult {
-            columns: vec!["id".into(), "ativo".into(), "nome".into()],
+            columns: vec!["id".into(), "active".into(), "name".into()],
             rows: vec![vec![Some("7".into()), Some("t".into()), None]],
             ..Default::default()
         };
@@ -730,7 +730,7 @@ mod tests {
                 references: None,
             },
             ColumnInfo {
-                name: "ativo".into(),
+                name: "active".into(),
                 data_type: "boolean".into(),
                 pk: false,
                 nullable: true,
@@ -738,7 +738,7 @@ mod tests {
                 references: None,
             },
             ColumnInfo {
-                name: "nome".into(),
+                name: "name".into(),
                 data_type: "text".into(),
                 pk: false,
                 nullable: true,
@@ -747,23 +747,23 @@ mod tests {
             },
         ];
         let v: serde_json::Value = serde_json::from_str(&row_json(&res, &cols, 0)).unwrap();
-        assert_eq!(v, serde_json::json!({"id": 7, "ativo": true, "nome": null}));
+        assert_eq!(v, serde_json::json!({"id": 7, "active": true, "name": null}));
     }
 
     #[test]
     fn json_layout_keeps_every_value() {
-        let src = r#"{"preco":1520.30,"id":12345678901234567890,"tags":[],"o":{},"s":"a, {b} \"c\": d","l":[1, 2]}"#;
+        let src = r#"{"price":1520.30,"id":12345678901234567890,"tags":[],"o":{},"s":"a, {b} \"c\": d","l":[1, 2]}"#;
         let pretty = json_pretty(src);
         assert_eq!(
             pretty,
-            "{\n  \"preco\": 1520.30,\n  \"id\": 12345678901234567890,\n  \"tags\": [],\n  \"o\": {},\n  \
+            "{\n  \"price\": 1520.30,\n  \"id\": 12345678901234567890,\n  \"tags\": [],\n  \"o\": {},\n  \
              \"s\": \"a, {b} \\\"c\\\": d\",\n  \"l\": [\n    1,\n    2\n  ]\n}"
         );
         assert!(json_check(&pretty).is_ok());
         assert_eq!(json_compact(&pretty), src.replace(", 2", ",2"));
         let (line, col, _) = json_check("{\n  \"a\": 1,\n  \"b\" 2\n}").unwrap_err();
         assert_eq!((line, col), (3, 7));
-        assert!(looks_like_json(" [1]") && !looks_like_json("\"x\"") && !looks_like_json("{ruim"));
+        assert!(looks_like_json(" [1]") && !looks_like_json("\"x\"") && !looks_like_json("{bad"));
     }
 
     #[test]
@@ -781,23 +781,23 @@ mod tests {
             ..Default::default()
         };
         let a = r(
-            &["id", "nome", "saldo"],
-            &[&["1", "ana", "10"], &["2", "bia", "20"], &["3", "caio", "30"]],
+            &["id", "name", "balance"],
+            &[&["1", "anna", "10"], &["2", "beth", "20"], &["3", "cole", "30"]],
         );
         // Reordered, one changed, one gone, one new, a new column, one column dropped.
         let b = r(
-            &["id", "nome", "uf"],
-            &[&["3", "caio", "SP"], &["1", "ANA", "RJ"], &["4", "duda", "MG"]],
+            &["id", "name", "state"],
+            &[&["3", "cole", "NY"], &["1", "ANNA", "CA"], &["4", "dora", "TX"]],
         );
         let d = diff_results(&a, &b, Some("id"));
-        assert_eq!(d.columns, ["id", "nome", "uf", "saldo"]);
+        assert_eq!(d.columns, ["id", "name", "state", "balance"]);
         assert_eq!((d.removed, d.added, d.changed, d.same), (1, 1, 1, 1));
         assert_eq!(d.rows[0], RowDiff::Same(2, 0));
         assert_eq!(d.rows[1], RowDiff::Changed(0, 1, vec![1]));
         assert_eq!(d.rows[2], RowDiff::Added(2));
         assert_eq!(d.rows[3], RowDiff::Removed(1));
         let (old, new) = d.cell(&a, &b, &d.rows[1], 1);
-        assert_eq!((old, new), (Some(&Some("ana".into())), Some(&Some("ANA".into()))));
+        assert_eq!((old, new), (Some(&Some("anna".into())), Some(&Some("ANNA".into()))));
         // By position: row 0 against row 0, and so on.
         let p = diff_results(&a, &b, None);
         assert_eq!((p.removed, p.added, p.changed, p.same), (0, 0, 3, 0));

@@ -165,16 +165,16 @@ mod tests {
 
     #[test]
     fn looks_only_where_the_value_could_be() {
-        let tables = [table("clientes", 1_000), table("pedidos", 5_000_000)];
+        let tables = [table("customers", 1_000), table("orders", 5_000_000)];
         let cols = [
-            col("clientes", "id", "integer"),
-            col("clientes", "email", "text"),
-            col("clientes", "ativo", "boolean"),
-            col("clientes", "criado_em", "timestamp without time zone"),
-            col("clientes", "foto", "bytea"),
-            col("pedidos", "status", "text"),
+            col("customers", "id", "integer"),
+            col("customers", "email", "text"),
+            col("customers", "active", "boolean"),
+            col("customers", "created_at", "timestamp without time zone"),
+            col("customers", "photo", "bytea"),
+            col("orders", "status", "text"),
         ];
-        let (t, skipped) = targets(&tables, &cols, "ana@exemplo.com", false);
+        let (t, skipped) = targets(&tables, &cols, "anna@example.com", false);
         assert_eq!(skipped, 1, "the big table waits for \"include large tables\"");
         assert_eq!(t[0].columns, ["email"]);
         let (t, _) = targets(&tables, &cols, "42", true);
@@ -183,9 +183,9 @@ mod tests {
             ["id", "email"],
             "numbers search numeric columns too"
         );
-        assert_eq!(t[1].table, "pedidos");
+        assert_eq!(t[1].table, "orders");
         let (t, _) = targets(&tables, &cols, "2024-01-02", false);
-        assert_eq!(t[0].columns, ["email", "criado_em"]);
+        assert_eq!(t[0].columns, ["email", "created_at"]);
     }
 
     #[test]

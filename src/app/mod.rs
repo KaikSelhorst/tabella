@@ -418,7 +418,7 @@ pub struct CompareState {
     pub target_schema: String,
     pub running: bool,
     pub result: Option<Result<Vec<crate::compare::TableDiff>, String>>,
-    /// What was compared, as shown with the result ("dev · public → homolog · public").
+    /// What was compared, as shown with the result ("dev · public → staging · public").
     pub compared: String,
     /// The SQL runs here (same connection and database), or must be run on the target.
     pub same_connection: bool,
@@ -1444,7 +1444,7 @@ impl App {
         dev_mysql.name = "dev-mysql".into();
         dev_mysql.port = 3307;
         dev_mysql.password = "mysql".into();
-        dev_mysql.database = "loja".into();
+        dev_mysql.database = "shop".into();
         self.saved
             .retain(|c| c.name != dev.name && c.name != dev_mysql.name);
         self.saved.insert(0, dev_mysql);
@@ -3237,13 +3237,13 @@ pub mod tests {
         let mut ts = TableState::new("public", "t", None);
         ts.cols = vec![
             col("id", "integer", true),
-            col("ativo", "boolean", false),
-            col("nome", "text", false),
+            col("active", "boolean", false),
+            col("name", "text", false),
         ];
         let mut tab = Tab::new(1, "t".into(), TabKind::Table(Box::new(ts)));
         tab.result = Some(QueryResult {
-            columns: vec!["id".into(), "ativo".into(), "nome".into()],
-            rows: vec![vec![Some("7".into()), Some("f".into()), Some("ana".into())]],
+            columns: vec!["id".into(), "active".into(), "name".into()],
+            rows: vec![vec![Some("7".into()), Some("f".into()), Some("anna".into())]],
             ..Default::default()
         });
         tab
@@ -3253,7 +3253,7 @@ pub mod tests {
     fn commit_writes_one_row_and_expects_it() {
         let (s, jobs, _replies) = fake_session(Kind::Postgres);
         let mut tab = table_tab();
-        handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 2, Some("bia".into())), true);
+        handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 2, Some("beth".into())), true);
         assert!(jobs.try_recv().is_err(), "edits wait for Save");
         handle_grid_event(&mut tab, &s, GridEvent::DeleteRow(0), true);
         save_changes(&mut tab, &s);
@@ -3264,7 +3264,7 @@ pub mod tests {
         assert_eq!(
             sql,
             [
-                "UPDATE \"public\".\"t\" SET \"nome\" = 'bia' WHERE \"id\" = '7'",
+                "UPDATE \"public\".\"t\" SET \"name\" = 'beth' WHERE \"id\" = '7'",
                 "DELETE FROM \"public\".\"t\" WHERE \"id\" = '7'"
             ]
         );
@@ -3288,7 +3288,7 @@ pub mod tests {
             "1",
             "MySQL booleans are written as 1/0"
         );
-        handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 1, Some("talvez".into())), true);
+        handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 1, Some("maybe".into())), true);
         assert!(tab.error.is_some());
     }
 
@@ -3298,11 +3298,11 @@ pub mod tests {
         let mut tab = table_tab();
         if let Some(r) = &mut tab.result {
             r.rows
-                .push(vec![Some("8".into()), Some("t".into()), Some("bia".into())]);
+                .push(vec![Some("8".into()), Some("t".into()), Some("beth".into())]);
         }
         handle_grid_event(&mut tab, &s, GridEvent::Select(0, 1), true);
-        // Two rows of (ativo, nome) from a spreadsheet; the third column overflows the page.
-        let text = "sim\tcarla\textra\r\nNULL\tdani\r\n".to_string();
+        // Two rows of (active, name) from a spreadsheet; the third column overflows the page.
+        let text = "yes\tcarol\textra\r\nNULL\tdan\r\n".to_string();
         handle_grid_event(&mut tab, &s, GridEvent::Paste(text), true);
         let TabKind::Table(ts) = &tab.kind else { panic!() };
         let sets: Vec<(String, Option<String>)> = ts
@@ -3316,10 +3316,10 @@ pub mod tests {
         assert_eq!(
             sets,
             [
-                ("ativo".into(), Some("true".into())),
-                ("nome".into(), Some("carla".into())),
-                ("ativo".into(), None),
-                ("nome".into(), Some("dani".into())),
+                ("active".into(), Some("true".into())),
+                ("name".into(), Some("carol".into())),
+                ("active".into(), None),
+                ("name".into(), Some("dan".into())),
             ]
         );
         assert!(tab.error.as_deref().is_some_and(|e| e.contains("1 pasted cell")));
@@ -3338,7 +3338,7 @@ pub mod tests {
         else {
             panic!()
         };
-        assert_eq!(tsv, "ativo\tnome\ntrue\tcarla\n\tdani\n");
+        assert_eq!(tsv, "active\tname\ntrue\tcarol\n\tdan\n");
         handle_grid_event(&mut tab, &s, GridEvent::SelectAll, true);
         assert_eq!(
             tab.range(),
@@ -3349,8 +3349,8 @@ pub mod tests {
             })
         );
         // Hidden and pinned columns: ranges follow what's on screen.
-        tab.hidden_cols = vec!["ativo".into()];
-        tab.pinned_cols = vec!["nome".into()];
+        tab.hidden_cols = vec!["active".into()];
+        tab.pinned_cols = vec!["name".into()];
         assert_eq!(tab.view(), [2, 0]);
         handle_grid_event(&mut tab, &s, GridEvent::SelectAll, true);
         assert_eq!(
@@ -3370,10 +3370,10 @@ pub mod tests {
         let (mut s, _jobs, _replies) = fake_session(Kind::Postgres);
         let mut edited = s.cfg.clone();
         edited.preview_writes = true;
-        edited.name = "produção".into();
+        edited.name = "production".into();
         assert!(apply_live_settings(&mut s, &edited), "nothing needs a reconnect");
-        assert!(s.cfg.preview_writes && s.cfg.name == "produção");
-        edited.host = "outro-servidor".into();
+        assert!(s.cfg.preview_writes && s.cfg.name == "production");
+        edited.host = "other-server".into();
         assert!(
             !apply_live_settings(&mut s, &edited),
             "a new host waits for a reconnect"
@@ -3387,9 +3387,9 @@ pub mod tests {
         let mut tab = table_tab();
         if let Some(r) = &mut tab.result {
             r.rows
-                .push(vec![Some("8".into()), Some("t".into()), Some("bia".into())]);
+                .push(vec![Some("8".into()), Some("t".into()), Some("beth".into())]);
             r.rows
-                .push(vec![Some("9".into()), Some("f".into()), Some("caio".into())]);
+                .push(vec![Some("9".into()), Some("f".into()), Some("cole".into())]);
         }
         let sets = |tab: &Tab| -> Vec<(Vec<Option<String>>, String, Option<String>)> {
             let TabKind::Table(ts) = &tab.kind else { panic!() };
@@ -3402,22 +3402,22 @@ pub mod tests {
                 .collect()
         };
         let key = |id: &str| vec![Some(id.to_string())];
-        // "nome" of the first two rows set to one value.
+        // "name" of the first two rows set to one value.
         handle_grid_event(&mut tab, &s, GridEvent::Select(0, 2), true);
         handle_grid_event(&mut tab, &s, GridEvent::Extend(1, 2), true);
-        handle_grid_event(&mut tab, &s, GridEvent::FillSelection(Some("igual".into())), true);
+        handle_grid_event(&mut tab, &s, GridEvent::FillSelection(Some("same".into())), true);
         assert_eq!(
             sets(&tab),
             [
-                (key("7"), "nome".into(), Some("igual".into())),
-                (key("8"), "nome".into(), Some("igual".into()))
+                (key("7"), "name".into(), Some("same".into())),
+                (key("8"), "name".into(), Some("same".into()))
             ]
         );
         // Fill down takes the first row as shown (with its pending edit).
         handle_grid_event(&mut tab, &s, GridEvent::Select(0, 2), true);
         handle_grid_event(&mut tab, &s, GridEvent::Extend(2, 2), true);
         handle_grid_event(&mut tab, &s, GridEvent::FillDown, true);
-        assert!(sets(&tab).contains(&(key("9"), "nome".into(), Some("igual".into()))));
+        assert!(sets(&tab).contains(&(key("9"), "name".into(), Some("same".into()))));
         // Delete marks every selected row once.
         handle_grid_event(&mut tab, &s, GridEvent::DeleteRows, true);
         handle_grid_event(&mut tab, &s, GridEvent::DeleteRows, true);
@@ -3471,7 +3471,7 @@ pub mod tests {
         assert_eq!(fields[0].mode, FieldMode::Value);
         fields[0].text = "8".into();
         fields[1].mode = FieldMode::Value;
-        fields[1].text = "sim".into();
+        fields[1].text = "yes".into();
         fields[2].mode = FieldMode::Default;
         submit_insert(&mut tab, &s);
         let _count = jobs.try_recv().unwrap();
@@ -3479,7 +3479,7 @@ pub mod tests {
             panic!()
         };
         let (sql, values) = stmt.with_placeholders();
-        assert_eq!(sql, "INSERT INTO `public`.`t` (`id`, `ativo`) VALUES (?, ?)");
+        assert_eq!(sql, "INSERT INTO `public`.`t` (`id`, `active`) VALUES (?, ?)");
         assert_eq!(values, ["8", "1"]);
     }
 
@@ -3491,7 +3491,7 @@ pub mod tests {
         if let TabKind::Table(ts) = &mut tab.kind {
             let f = &mut ts.insert.as_mut().unwrap()[1];
             f.mode = FieldMode::Value;
-            f.text = "talvez".into();
+            f.text = "maybe".into();
         }
         submit_insert(&mut tab, &s);
         assert!(jobs.try_recv().is_err());
@@ -3522,7 +3522,7 @@ pub mod tests {
         let (s, jobs, _replies) = fake_session(Kind::Postgres);
         let mut tab = table_tab();
         for expected in [Some(true), Some(false), None] {
-            handle_grid_event(&mut tab, &s, GridEvent::Sort("nome".into()), true);
+            handle_grid_event(&mut tab, &s, GridEvent::Sort("name".into()), true);
             let TabKind::Table(ts) = &tab.kind else {
                 unreachable!()
             };
@@ -3565,12 +3565,12 @@ mod poll_tests {
         let (s, _jobs, _replies) = fake_session(Kind::Postgres);
         let mut app = app_with(s);
         app.open_sql("select 42".into());
-        app.open_table("public", "clientes");
+        app.open_table("public", "customers");
         if let TabKind::Table(ts) = &mut app.tabs[1].kind {
-            ts.filter = "ativo".into();
-            ts.order = Some(("nome".into(), false));
+            ts.filter = "active".into();
+            ts.order = Some(("name".into(), false));
         }
-        app.open_structure("public", "pedidos");
+        app.open_structure("public", "orders");
         app.active = 1;
         let snap = app.snapshot();
         assert_eq!(snap.conn.as_deref(), Some("t"));
@@ -3594,10 +3594,10 @@ mod poll_tests {
         let mut app = app_with(s);
         let dir = std::env::temp_dir().join(format!("dblite-tabfile-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("consulta.sql");
+        let path = dir.join("query.sql");
         std::fs::write(&path, "SELECT 1;").unwrap();
         app.open_file(path.clone());
-        assert_eq!(app.tabs[0].title, "consulta.sql");
+        assert_eq!(app.tabs[0].title, "query.sql");
         assert!(!file_dirty(&app.tabs[0]));
         if let Some(text) = app.tabs[0].editor_mut().map(|ed| &mut ed.text) {
             text.push_str("\nSELECT 2;");
@@ -3626,16 +3626,16 @@ mod poll_tests {
         app.open_sql("select 1".into());
         app.tabs[0].title = "Report".into();
         app.tabs[0].renamed = true;
-        app.open_table("public", "clientes");
+        app.open_table("public", "customers");
         if let TabKind::Table(ts) = &mut app.tabs[1].kind {
-            ts.filter = "ativo".into();
+            ts.filter = "active".into();
         }
         app.close_tab(0);
         app.close_tab(0);
         assert!(app.tabs.is_empty());
         app.reopen_closed_tab();
         assert!(
-            matches!(&app.tabs[0].kind, TabKind::Table(ts) if ts.filter == "ativo"),
+            matches!(&app.tabs[0].kind, TabKind::Table(ts) if ts.filter == "active"),
             "last closed first"
         );
         app.reopen_closed_tab();
@@ -3654,7 +3654,7 @@ mod poll_tests {
         let mut tab = super::tests::table_tab();
         if let TabKind::Table(ts) = &mut tab.kind {
             ts.cols.push(ColumnInfo {
-                name: "dados".into(),
+                name: "data".into(),
                 data_type: "jsonb".into(),
                 pk: false,
                 nullable: true,
@@ -3664,10 +3664,10 @@ mod poll_tests {
         }
         let res = tab.result.as_mut().unwrap();
         res.rows
-            .push(vec![Some("8".into()), Some("t".into()), Some("bia".into())]);
-        res.columns.push("dados".into());
+            .push(vec![Some("8".into()), Some("t".into()), Some("beth".into())]);
+        res.columns.push("data".into());
         for (i, row) in res.rows.iter_mut().enumerate() {
-            row.push((i == 0).then(|| r#"{"preco":1520.30,"tags":["a"]}"#.to_string()));
+            row.push((i == 0).then(|| r#"{"price":1520.30,"tags":["a"]}"#.to_string()));
         }
         let col = res.columns.len() - 1;
         handle_grid_event(&mut tab, &s, GridEvent::OpenValue(0, col), true);
@@ -3675,12 +3675,12 @@ mod poll_tests {
         assert!(ve.editable && ve.json_column && ve.compact);
         assert_eq!(
             ve.text,
-            "{\n  \"preco\": 1520.30,\n  \"tags\": [\n    \"a\"\n  ]\n}"
+            "{\n  \"price\": 1520.30,\n  \"tags\": [\n    \"a\"\n  ]\n}"
         );
         assert_eq!(ve.value(), ve.original, "opening alone changes nothing");
         ve.text = ve.text.replace("1520.30", "99.90");
         let v = ve.value();
-        assert_eq!(v.as_deref(), Some(r#"{"preco":99.90,"tags":["a"]}"#));
+        assert_eq!(v.as_deref(), Some(r#"{"price":99.90,"tags":["a"]}"#));
         tab.value_editor = None;
         handle_grid_event(&mut tab, &s, GridEvent::Commit(0, col, v), true);
         assert!(has_unsaved(&tab));
@@ -3703,7 +3703,7 @@ mod poll_tests {
             search_key: name.into(),
             size: None,
         };
-        s.tables = vec![table("clientes", 1_000_000), table("status", 5)];
+        s.tables = vec![table("customers", 1_000_000), table("status", 5)];
         let col = |t: &str, c: &str, ty: &str| crate::db::SchemaColumn {
             schema: "public".into(),
             table: t.into(),
@@ -3712,13 +3712,13 @@ mod poll_tests {
             pk: c == "id",
         };
         s.schema_cols = vec![
-            col("clientes", "id", "integer"),
-            col("clientes", "nome", "text"),
+            col("customers", "id", "integer"),
+            col("customers", "name", "text"),
             col("status", "id", "integer"),
-            col("status", "descricao", "text"),
+            col("status", "description", "text"),
         ];
         let mut app = app_with(s);
-        app.open_table_filtered("public", "pedidos", String::new());
+        app.open_table_filtered("public", "orders", String::new());
         let fk = |t: &str| crate::db::FkRef {
             schema: "public".into(),
             table: t.into(),
@@ -3735,12 +3735,12 @@ mod poll_tests {
                     references: None,
                 },
                 ColumnInfo {
-                    name: "cliente_id".into(),
+                    name: "customer_id".into(),
                     data_type: "integer".into(),
                     pk: false,
                     nullable: false,
                     has_default: false,
-                    references: Some(fk("clientes")),
+                    references: Some(fk("customers")),
                 },
                 ColumnInfo {
                     name: "status_id".into(),
@@ -3753,7 +3753,7 @@ mod poll_tests {
             ];
         }
         app.tabs[0].result = Some(QueryResult {
-            columns: vec!["id".into(), "cliente_id".into(), "status_id".into()],
+            columns: vec!["id".into(), "customer_id".into(), "status_id".into()],
             rows: vec![vec![Some("1".into()), Some("42".into()), Some("2".into())]],
             ..Default::default()
         });
@@ -3767,27 +3767,27 @@ mod poll_tests {
         let s = app.session.as_ref().unwrap();
         handle_grid_event(&mut app.tabs[0], s, GridEvent::StartEdit(0, 2), true);
         let p = app.tabs[0].fk_picker.as_ref().unwrap();
-        assert!(p.local && p.label.as_deref() == Some("descricao") && p.current.as_deref() == Some("2"));
+        assert!(p.local && p.label.as_deref() == Some("description") && p.current.as_deref() == Some("2"));
         assert!(
             fk_sql(&jobs)
                 .unwrap()
-                .contains("ORDER BY \"descricao\" LIMIT 10001")
+                .contains("ORDER BY \"description\" LIMIT 10001")
         );
         handle_grid_event(&mut app.tabs[0], s, GridEvent::StartEdit(0, 1), true);
         let p = app.tabs[0].fk_picker.as_ref().unwrap();
-        assert!(!p.local && p.numeric_key && p.label.as_deref() == Some("nome"));
+        assert!(!p.local && p.numeric_key && p.label.as_deref() == Some("name"));
         assert!(fk_sql(&jobs).unwrap().ends_with("LIMIT 50"));
         assert!(
             app.tabs[0].value_editor.is_none()
                 && matches!(&app.tabs[0].kind, TabKind::Table(ts) if ts.edit.is_none())
         );
-        // Typed "mar", then "maria": the answer for "mar" comes first and is ignored.
-        app.tabs[0].fk_picker.as_mut().unwrap().search = "maria".into();
+        // Typed "mar", then "mary": the answer for "mar" comes first and is ignored.
+        app.tabs[0].fk_picker.as_mut().unwrap().search = "mary".into();
         fk_search(&mut app.tabs[0], app.session.as_ref().unwrap());
         let row = |k: &str, l: &str| vec![Some(k.to_string()), Some(l.to_string())];
         for (search, rows) in [
-            ("mar", vec![row("7", "Marcos")]),
-            ("maria", vec![row("42", "Maria Souza")]),
+            ("mar", vec![row("7", "Mark")]),
+            ("mary", vec![row("42", "Mary Smith")]),
         ] {
             replies
                 .send(Reply::FkOptions {
@@ -3809,7 +3809,7 @@ mod poll_tests {
             if search == "mar" {
                 assert!(first.is_none(), "stale answer ignored");
             } else {
-                assert_eq!(first, Some(("42".into(), Some("Maria Souza".into()))));
+                assert_eq!(first, Some(("42".into(), Some("Mary Smith".into()))));
             }
         }
     }
@@ -3822,14 +3822,14 @@ mod poll_tests {
             ..Default::default()
         };
         let mut ed = Editor::new("SELECT 1".into());
-        ed.last_query = "SELECT codigo, ID FROM t".into();
-        ed.pin(&res(&["codigo", "ID"]), Some("codigo".into()));
-        assert_eq!(ed.compare_key.as_deref(), Some("codigo"));
-        assert_eq!(ed.pinned.as_ref().unwrap().sql, "SELECT codigo, ID FROM t");
-        ed.pin(&res(&["nome", "ID"]), None);
+        ed.last_query = "SELECT code, ID FROM t".into();
+        ed.pin(&res(&["code", "ID"]), Some("code".into()));
+        assert_eq!(ed.compare_key.as_deref(), Some("code"));
+        assert_eq!(ed.pinned.as_ref().unwrap().sql, "SELECT code, ID FROM t");
+        ed.pin(&res(&["name", "ID"]), None);
         assert_eq!(ed.compare_key.as_deref(), Some("ID"));
-        ed.pin(&res(&["nome", "uf"]), Some("id".into()));
-        assert_eq!(ed.compare_key.as_deref(), Some("nome"));
+        ed.pin(&res(&["name", "state"]), Some("id".into()));
+        assert_eq!(ed.compare_key.as_deref(), Some("name"));
         assert!(!ed.comparing);
     }
 
@@ -3846,7 +3846,7 @@ mod poll_tests {
             references: None,
         }];
         let res = QueryResult {
-            columns: vec!["id".into(), "nome".into()],
+            columns: vec!["id".into(), "name".into()],
             rows: vec![
                 vec![Some("1".into()), Some("a".into())],
                 vec![Some("2".into()), Some("b".into())],
@@ -3855,7 +3855,7 @@ mod poll_tests {
         };
         let set = |row: &str, v: &str| Change::Set {
             key: vec![Some(row.into())],
-            col: "nome".into(),
+            col: "name".into(),
             value: Some(v.into()),
             before: None,
         };
@@ -3886,8 +3886,8 @@ mod poll_tests {
             code: 1054,
         }));
         // The statement ran with Ctrl+Enter is the second one; accents before it count as chars.
-        let text = "-- report\nSELECT 1;\nSELECT nome, emial FROM clientes;";
-        let spot = locate_error(text, "SELECT nome, emial FROM clientes", &e).unwrap();
+        let text = "-- report\nSELECT 1;\nSELECT name, emial FROM customers;";
+        let spot = locate_error(text, "SELECT name, emial FROM customers", &e).unwrap();
         assert_eq!((spot.line, spot.column), (3, 14));
         let chars: String = text
             .chars()
@@ -3897,7 +3897,7 @@ mod poll_tests {
         assert_eq!(chars, "emial");
         // With :parameters bound, the SQL sent isn't in the editor: no place to mark.
         assert_eq!(
-            locate_error(text, "SELECT nome, emial FROM clientes WHERE id = 1", &e),
+            locate_error(text, "SELECT name, emial FROM customers WHERE id = 1", &e),
             None
         );
     }
@@ -3918,20 +3918,20 @@ mod poll_tests {
         let (mut s, jobs, replies) = fake_session(Kind::Postgres);
         s.tables = vec![TableRef {
             schema: "public".into(),
-            name: "clientes".into(),
+            name: "customers".into(),
             is_view: false,
             estimate: None,
-            search_key: "clientes".into(),
+            search_key: "customers".into(),
             size: None,
         }];
         let mut app = app_with(s);
         app.open_sql(String::new());
-        let sql = "SELECT id, nome, upper(nome) AS grito FROM Clientes WHERE ativo".to_string();
+        let sql = "SELECT id, name, upper(name) AS shout FROM Customers WHERE active".to_string();
         run_sql(&mut app.tabs[0], app.session.as_ref().unwrap(), sql.clone());
         let tab = app.tabs[0].id;
         let rows = QueryResult {
-            columns: vec!["id".into(), "nome".into(), "grito".into()],
-            rows: vec![vec![Some("7".into()), Some("ana".into()), Some("ANA".into())]],
+            columns: vec!["id".into(), "name".into(), "shout".into()],
+            rows: vec![vec![Some("7".into()), Some("anna".into()), Some("ANNA".into())]],
             ..Default::default()
         };
         replies
@@ -3943,7 +3943,7 @@ mod poll_tests {
             .unwrap();
         app.poll();
         // The unquoted name resolves to the sidebar's table and its columns are asked for.
-        let asked = jobs.try_iter().any(|j| matches!(j, Job::Columns { ref schema, ref table, .. } if schema == "public" && table == "clientes"));
+        let asked = jobs.try_iter().any(|j| matches!(j, Job::Columns { ref schema, ref table, .. } if schema == "public" && table == "customers"));
         assert!(asked);
         let col = |name: &str, pk| ColumnInfo {
             name: name.into(),
@@ -3956,17 +3956,17 @@ mod poll_tests {
         replies
             .send(Reply::Columns {
                 tab,
-                res: Ok(vec![col("id", true), col("nome", false)]),
+                res: Ok(vec![col("id", true), col("name", false)]),
                 incoming: vec![],
             })
             .unwrap();
         app.poll();
         let s = app.session.as_ref().unwrap();
         let t = &mut app.tabs[0];
-        handle_grid_event(t, s, GridEvent::Commit(0, 1, Some("bia".into())), true);
+        handle_grid_event(t, s, GridEvent::Commit(0, 1, Some("beth".into())), true);
         // An expression isn't a column of the table.
         handle_grid_event(t, s, GridEvent::Commit(0, 2, Some("X".into())), true);
-        assert!(t.error.as_deref().is_some_and(|e| e.contains("grito")));
+        assert!(t.error.as_deref().is_some_and(|e| e.contains("shout")));
         assert!(has_unsaved(t));
         // Running something else first would lose the edit: refused.
         run_sql(t, s, "SELECT 1".into());
@@ -3977,7 +3977,7 @@ mod poll_tests {
         };
         assert_eq!(
             stmts[0].render(Kind::Postgres),
-            "UPDATE \"public\".\"clientes\" SET \"nome\" = 'bia' WHERE \"id\" = '7'"
+            "UPDATE \"public\".\"customers\" SET \"name\" = 'beth' WHERE \"id\" = '7'"
         );
         assert_eq!(refresh, sql, "then the same SELECT runs again");
     }
@@ -3988,7 +3988,7 @@ mod poll_tests {
     fn value_filter_round_trip() {
         let (s, jobs, replies) = fake_session(Kind::Postgres);
         let mut app = app_with(s);
-        app.open_table_filtered("public", "clientes", "ativo".into());
+        app.open_table_filtered("public", "customers", "active".into());
         let tab = app.tabs[0].id;
         let distinct = |jobs: &Receiver<Job>| {
             jobs.try_iter()
@@ -4004,15 +4004,15 @@ mod poll_tests {
                 .send(Reply::Distinct {
                     tab,
                     res: Ok(QueryResult {
-                        rows: vec![row(Some("SP"), "50"), row(Some("RJ"), "30"), row(None, "2")],
+                        rows: vec![row(Some("NY"), "50"), row(Some("CA"), "30"), row(None, "2")],
                         ..Default::default()
                     }),
                 })
                 .unwrap();
         };
         let s = app.session.as_ref().unwrap();
-        open_value_filter(&mut app.tabs[0], s, "uf");
-        assert!(distinct(&jobs).contains("WHERE ativo GROUP BY 1"));
+        open_value_filter(&mut app.tabs[0], s, "state");
+        assert!(distinct(&jobs).contains("WHERE active GROUP BY 1"));
         reply(&replies);
         app.poll();
         fn t(app: &mut App) -> &mut TableState {
@@ -4023,29 +4023,29 @@ mod poll_tests {
         }
         let vf = t(&mut app).value_filter.as_mut().unwrap();
         assert!(vf.complete && vf.values.as_ref().unwrap().as_ref().unwrap().len() == 3);
-        vf.unchecked.insert(Some("RJ".into()));
+        vf.unchecked.insert(Some("CA".into()));
         let s = app.session.as_ref().unwrap();
         apply_value_filter(&mut app.tabs[0], s);
         assert_eq!(
             t(&mut app).filter,
-            "(ativo) AND (\"uf\" NOT IN ('RJ') OR \"uf\" IS NULL)"
+            "(active) AND (\"state\" NOT IN ('CA') OR \"state\" IS NULL)"
         );
         assert!(t(&mut app).value_filter.is_none());
 
         let s = app.session.as_ref().unwrap();
-        open_value_filter(&mut app.tabs[0], s, "uf");
+        open_value_filter(&mut app.tabs[0], s, "state");
         assert!(
-            distinct(&jobs).contains("WHERE ativo GROUP BY 1"),
+            distinct(&jobs).contains("WHERE active GROUP BY 1"),
             "its own condition is left out"
         );
         let vf = t(&mut app).value_filter.as_ref().unwrap();
-        assert!(vf.unchecked.contains(&Some("RJ".into())));
+        assert!(vf.unchecked.contains(&Some("CA".into())));
         reply(&replies);
         app.poll();
         t(&mut app).value_filter.as_mut().unwrap().unchecked.clear();
         let s = app.session.as_ref().unwrap();
         apply_value_filter(&mut app.tabs[0], s);
-        assert_eq!(t(&mut app).filter, "ativo");
+        assert_eq!(t(&mut app).filter, "active");
         assert!(t(&mut app).value_conds.is_empty());
     }
 

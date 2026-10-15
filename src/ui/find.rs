@@ -223,17 +223,17 @@ mod tests {
 
     #[test]
     fn finds_and_replaces() {
-        let text = "SELECT Nome, nome FROM t WHERE ção = 'NOME'";
-        let r = find_all(text, "nome", false);
+        let text = "SELECT Name, name FROM t WHERE café = 'NAME'";
+        let r = find_all(text, "name", false);
         assert_eq!(r.len(), 3);
-        assert_eq!(&text[r[2].clone()], "NOME");
-        assert_eq!(find_all(text, "nome", true).len(), 1);
+        assert_eq!(&text[r[2].clone()], "NAME");
+        assert_eq!(find_all(text, "name", true).len(), 1);
         // Multi-byte chars keep byte ranges valid.
-        let r = find_all(text, "ÇÃO", false);
-        assert_eq!(&text[r[0].clone()], "ção");
+        let r = find_all(text, "CAFÉ", false);
+        assert_eq!(&text[r[0].clone()], "café");
         let mut s = text.to_string();
-        assert_eq!(replace_all(&mut s, "nome", "x", false), 3);
-        assert_eq!(s, "SELECT x, x FROM t WHERE ção = 'x'");
+        assert_eq!(replace_all(&mut s, "name", "x", false), 3);
+        assert_eq!(s, "SELECT x, x FROM t WHERE café = 'x'");
         assert!(find_all("aaa", "", false).is_empty());
         assert_eq!(find_all("aaaa", "aa", false).len(), 2, "no overlaps");
     }
@@ -243,10 +243,10 @@ mod tests {
         let mut job = LayoutJob::default();
         let f = egui::TextFormat::default();
         job.append("SELECT ", 0.0, f.clone());
-        job.append("nome", 0.0, f.clone());
+        job.append("name", 0.0, f.clone());
         job.append(" FROM t", 0.0, f);
-        // "T no" spans two sections; "t" at the end is another match.
-        let ranges = find_all(&job.text, "t no", false);
+        // "T na" spans two sections; "t" at the end is another match.
+        let ranges = find_all(&job.text, "t na", false);
         assert_eq!(ranges, vec![5..9]);
         mark(&mut job, &ranges, 0);
         let marked: String = job
@@ -255,7 +255,7 @@ mod tests {
             .filter(|s| s.format.background != egui::Color32::TRANSPARENT)
             .map(|s| &job.text[s.byte_range.start.0..s.byte_range.end.0])
             .collect();
-        assert_eq!(marked, "T no");
+        assert_eq!(marked, "T na");
         let total: usize = job
             .sections
             .iter()

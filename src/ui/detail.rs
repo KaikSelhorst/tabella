@@ -60,7 +60,7 @@ fn parsed_json(ctx: &egui::Context, slot: egui::Id, v: &str) -> Option<Arc<Value
 }
 
 /// Collapsible tree: objects and arrays fold, leaves are colored by type. Right-click copies a
-/// value or its path (`$.itens[2].preco`).
+/// value or its path (`$.items[2].price`).
 fn json_tree(ui: &mut egui::Ui, id: egui::Id, key: Option<&str>, path: &str, v: &Value, depth: usize) {
     let t = theme::tokens();
     let key_text = |k: &str| RichText::new(k).monospace().size(12.0).color(t.muted_foreground);
@@ -258,7 +258,7 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                         if can_edit && nullable && value.is_some() && kinds[ci] != ValueKind::Bool {
                             let null = egui::Button::new(RichText::new("NULL").size(10.0).color(t.subtle))
                                 .frame(false);
-                            if ui.add(null).on_hover_text("Definir NULL").clicked() {
+                            if ui.add(null).on_hover_text("Set NULL").clicked() {
                                 action = Some(DetailAction::Commit(ci, None));
                             }
                         }

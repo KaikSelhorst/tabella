@@ -920,7 +920,7 @@ mod tests {
                 "{kind:?}: exact"
             );
             assert!(
-                search_table(&mut c, kind, t, "nada-disso", false)
+                search_table(&mut c, kind, t, "none-of-this", false)
                     .unwrap()
                     .is_none()
             );
@@ -961,7 +961,7 @@ mod tests {
             Kind::Sqlite => unreachable!("server test"),
         };
         c.query(risky).unwrap();
-        let nasty = [r"a\", r"x\'; DROP TABLE dbl_t; --", "it's", r"\n\0", "ção 🚀"];
+        let nasty = [r"a\", r"x\'; DROP TABLE dbl_t; --", "it's", r"\n\0", "café 🚀"];
         for v in nasty {
             let wh = crate::sql::pk_where(
                 kind,
@@ -1171,11 +1171,11 @@ mod tests {
             let mut holder = Conn::connect(&cfg, None).unwrap();
             holder.begin().unwrap();
             holder
-                .query("UPDATE dbl_t SET name = 'trava' WHERE id = 1")
+                .query("UPDATE dbl_t SET name = 'locker' WHERE id = 1")
                 .unwrap();
             let mut waiter = Conn::connect(&cfg, None).unwrap();
             let blocked = std::thread::spawn(move || {
-                let _ = waiter.query("UPDATE dbl_t SET name = 'espera' WHERE id = 1");
+                let _ = waiter.query("UPDATE dbl_t SET name = 'waiter' WHERE id = 1");
             });
             std::thread::sleep(std::time::Duration::from_millis(800));
             let locks = c.activity_view(ActivityView::Locks).unwrap();
@@ -1289,8 +1289,8 @@ mod tests {
         {
             use crate::sql::{TableAction, table_action};
             let schema = if kind == Kind::MySql { db } else { "public" };
-            c.query("DROP TABLE IF EXISTS dbl_copia").unwrap();
-            c.query("DROP TABLE IF EXISTS dbl_copia2").unwrap();
+            c.query("DROP TABLE IF EXISTS dbl_copy").unwrap();
+            c.query("DROP TABLE IF EXISTS dbl_copy2").unwrap();
             let count = |c: &mut Conn, t: &str| {
                 c.query(&format!("SELECT count(*) FROM {t}")).unwrap().rows[0][0]
                     .clone()
@@ -1302,30 +1302,30 @@ mod tests {
                 schema,
                 "dbl_t",
                 TableAction::Duplicate(true),
-                "dbl_copia",
+                "dbl_copy",
             ))
             .unwrap();
-            assert_eq!(count(&mut c, "dbl_copia"), n, "{kind:?}: rows copied");
+            assert_eq!(count(&mut c, "dbl_copy"), n, "{kind:?}: rows copied");
             c.query(&table_action(
                 kind,
                 schema,
-                "dbl_copia",
+                "dbl_copy",
                 TableAction::Rename,
-                "dbl_copia2",
+                "dbl_copy2",
             ))
             .unwrap();
             c.query(&table_action(
                 kind,
                 schema,
-                "dbl_copia2",
+                "dbl_copy2",
                 TableAction::Truncate,
                 "",
             ))
             .unwrap();
-            assert_eq!(count(&mut c, "dbl_copia2"), "0", "{kind:?}");
-            c.query(&table_action(kind, schema, "dbl_copia2", TableAction::Drop, ""))
+            assert_eq!(count(&mut c, "dbl_copy2"), "0", "{kind:?}");
+            c.query(&table_action(kind, schema, "dbl_copy2", TableAction::Drop, ""))
                 .unwrap();
-            assert!(c.query("SELECT 1 FROM dbl_copia2").is_err(), "{kind:?}: dropped");
+            assert!(c.query("SELECT 1 FROM dbl_copy2").is_err(), "{kind:?}: dropped");
         }
 
         // Switching where unqualified names go.
@@ -1335,27 +1335,27 @@ mod tests {
             match kind {
                 Kind::Postgres => {
                     assert_eq!(schema, "public");
-                    c.query("CREATE SCHEMA IF NOT EXISTS dbl_outro").unwrap();
-                    c.query("CREATE TABLE IF NOT EXISTS dbl_outro.so_aqui (x int)")
+                    c.query("CREATE SCHEMA IF NOT EXISTS dbl_other").unwrap();
+                    c.query("CREATE TABLE IF NOT EXISTS dbl_other.only_here (x int)")
                         .unwrap();
-                    c.use_schema("dbl_outro").unwrap();
-                    assert_eq!(c.location().unwrap().2, "dbl_outro");
-                    c.query("SELECT * FROM so_aqui").unwrap();
+                    c.use_schema("dbl_other").unwrap();
+                    assert_eq!(c.location().unwrap().2, "dbl_other");
+                    c.query("SELECT * FROM only_here").unwrap();
                     // public still answers after it.
                     c.query("SELECT * FROM dbl_t").unwrap();
                     c.use_schema("public").unwrap();
-                    assert!(c.query("SELECT * FROM so_aqui").is_err());
-                    c.query("DROP SCHEMA dbl_outro CASCADE").unwrap();
+                    assert!(c.query("SELECT * FROM only_here").is_err());
+                    c.query("DROP SCHEMA dbl_other CASCADE").unwrap();
                 }
                 Kind::MySql => {
-                    c.query("CREATE DATABASE IF NOT EXISTS dbl_outro").unwrap();
-                    c.query("CREATE TABLE IF NOT EXISTS dbl_outro.so_aqui (x int)")
+                    c.query("CREATE DATABASE IF NOT EXISTS dbl_other").unwrap();
+                    c.query("CREATE TABLE IF NOT EXISTS dbl_other.only_here (x int)")
                         .unwrap();
-                    c.use_schema("dbl_outro").unwrap();
-                    assert_eq!(c.location().unwrap().1, "dbl_outro");
-                    c.query("SELECT * FROM so_aqui").unwrap();
+                    c.use_schema("dbl_other").unwrap();
+                    assert_eq!(c.location().unwrap().1, "dbl_other");
+                    c.query("SELECT * FROM only_here").unwrap();
                     c.use_schema(db).unwrap();
-                    c.query("DROP DATABASE dbl_outro").unwrap();
+                    c.query("DROP DATABASE dbl_other").unwrap();
                 }
                 Kind::Sqlite => unreachable!("server test"),
             }
@@ -1406,7 +1406,7 @@ mod tests {
                 crate::sql::pk_where(kind, &["id".to_string()], &["id".to_string()], &[Some(id.into())]),
             )
         };
-        c.run_batch(&[set("1", "lote-1"), set("2", "lote-2")], false)
+        c.run_batch(&[set("1", "batch-1"), set("2", "batch-2")], false)
             .unwrap();
         let names = c.query("SELECT name FROM dbl_t ORDER BY id").unwrap();
         assert_eq!(
@@ -1415,7 +1415,7 @@ mod tests {
                 .iter()
                 .map(|r| r[0].clone().unwrap())
                 .collect::<Vec<_>>(),
-            ["lote-1", "lote-2"]
+            ["batch-1", "batch-2"]
         );
         let err = c
             .run_batch(&[set("1", "not-saved"), set("999", "x")], false)
@@ -1424,7 +1424,7 @@ mod tests {
         let r = c.query("SELECT name FROM dbl_t WHERE id = 1").unwrap();
         assert_eq!(
             r.rows[0][0].as_deref(),
-            Some("lote-1"),
+            Some("batch-1"),
             "{kind:?}: first edit rolled back"
         );
 
@@ -1448,17 +1448,17 @@ mod tests {
             assert_eq!((p.count, p.sample.rows.len(), p.after), (1, 1, false), "{kind:?}");
             let p = c.preview("DELETE FROM dbl_t", false).unwrap();
             assert!(p.count >= 2, "{kind:?}");
-            let joined = "UPDATE dbl_t SET name = 'mudou' FROM (SELECT 1 AS one) o WHERE dbl_t.id = o.one";
+            let joined = "UPDATE dbl_t SET name = 'changed' FROM (SELECT 1 AS one) o WHERE dbl_t.id = o.one";
             if kind == Kind::Postgres {
                 let p = c.preview(joined, false).unwrap();
                 assert_eq!((p.count, p.after), (1, true));
                 assert_eq!(
                     p.sample.rows[0][1].as_deref(),
-                    Some("mudou"),
+                    Some("changed"),
                     "shows the values after"
                 );
                 let r = c.query("SELECT name FROM dbl_t WHERE id = 1").unwrap();
-                assert_ne!(r.rows[0][0].as_deref(), Some("mudou"), "and undoes it");
+                assert_ne!(r.rows[0][0].as_deref(), Some("changed"), "and undoes it");
             } else {
                 assert!(
                     c.preview(
@@ -1478,14 +1478,14 @@ mod tests {
             let mut d = Design::new_table(kind, schema);
             d.table = "dbl_design".into();
             d.columns.push(ColDef {
-                name: "nome".into(),
+                name: "name".into(),
                 data_type: "varchar(50)".into(),
                 ..ColDef::new()
             });
             d.indexes.push(IndexDef {
                 existing: false,
                 name: String::new(),
-                columns: "nome".into(),
+                columns: "name".into(),
                 unique: false,
                 dropped: false,
             });
@@ -1500,13 +1500,13 @@ mod tests {
                 "{kind:?}: only the non-key index: {:?}",
                 d.indexes
             );
-            let nome = d.columns.iter_mut().find(|c| c.name == "nome").unwrap();
-            nome.name = "nome_completo".into();
-            nome.nullable = false;
-            nome.default = "'x'".into();
+            let name_col = d.columns.iter_mut().find(|c| c.name == "name").unwrap();
+            name_col.name = "full_name".into();
+            name_col.nullable = false;
+            name_col.default = "'x'".into();
             d.indexes[0].dropped = true;
             d.columns.push(ColDef {
-                name: "ativo".into(),
+                name: "active".into(),
                 data_type: "boolean".into(),
                 ..ColDef::new()
             });
@@ -1514,7 +1514,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{kind:?}: {e}\n{}", d.script()));
             let st = c.structure(schema, "dbl_design").unwrap();
             let names: Vec<&str> = st.columns.iter().map(|c| c.name.as_str()).collect();
-            assert_eq!(names, ["id", "nome_completo", "ativo"], "{kind:?}");
+            assert_eq!(names, ["id", "full_name", "active"], "{kind:?}");
             assert!(!st.columns[1].nullable, "{kind:?}");
             c.query("DROP TABLE dbl_design").unwrap();
         }
@@ -1544,7 +1544,7 @@ mod tests {
             use crate::import::{ImportSpec, run};
             let path =
                 std::env::temp_dir().join(format!("dblite-import-{kind:?}-{}.csv", std::process::id()));
-            std::fs::write(&path, "codigo;nome\n10;dez\n11;\n").unwrap();
+            std::fs::write(&path, "code;name\n10;ten\n11;\n").unwrap();
             let schema = if kind == Kind::MySql { db } else { "public" };
             let mut spec = ImportSpec {
                 path: path.clone(),
@@ -1561,7 +1561,7 @@ mod tests {
             assert_eq!(run(&mut c, &spec, false).unwrap(), 2, "{kind:?}");
             let r = c.query("SELECT name FROM dbl_t WHERE id = 11").unwrap();
             assert_eq!(r.rows[0][0], None, "{kind:?}: empty cell is NULL");
-            std::fs::write(&path, "codigo;nome\n12;doze\n10;repetido\n").unwrap();
+            std::fs::write(&path, "code;name\n12;twelve\n10;repeated\n").unwrap();
             let err = run(&mut c, &spec, false).unwrap_err().to_string();
             assert!(err.contains("Nothing was imported"), "{kind:?}: {err}");
             let r = c.query("SELECT count(*) FROM dbl_t WHERE id = 12").unwrap();
@@ -1589,7 +1589,7 @@ mod tests {
             let r = c
                 .query("SELECT name, at FROM dbl_t WHERE id IN (20, 21) ORDER BY id")
                 .unwrap();
-            assert_eq!(r.rows[0][0].as_deref(), Some("João Ávila"), "{kind:?}");
+            assert_eq!(r.rows[0][0].as_deref(), Some("Zoë Brontë"), "{kind:?}");
             assert!(
                 r.rows[0][1]
                     .as_deref()
@@ -1642,8 +1642,8 @@ mod tests {
             "{kind:?}"
         );
         assert_eq!(
-            at(&mut c, "SELECT * FROM dbl_nada").as_deref(),
-            Some("dbl_nada"),
+            at(&mut c, "SELECT * FROM dbl_nothing").as_deref(),
+            Some("dbl_nothing"),
             "{kind:?}"
         );
         c.query("DROP TABLE dbl_t").unwrap();

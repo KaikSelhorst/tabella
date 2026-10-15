@@ -329,23 +329,23 @@ pub(crate) mod tests {
 
     #[test]
     fn previews_with_detected_delimiter_and_encoding() {
-        // Excel in Portuguese: semicolons, Windows-1252, quoted field with the delimiter inside.
+        // Excel in a European locale: semicolons, Windows-1252, quoted field with the delimiter inside.
         let p = file(
             "excel.csv",
-            b"Nome;Cidade;Ativo\r\nJo\xe3o;\"S\xe3o Paulo; SP\";sim\r\nAna;Recife;n\xe3o\r\n",
+            b"Name;City;Active\r\nZo\xeb;\"Z\xfcrich; ZH\";yes\r\nAnna;Boston;no\r\n",
         );
         let pv = preview(&p, true).unwrap();
         assert_eq!(pv.delimiter, b';');
-        assert_eq!(pv.headers, ["Nome", "Cidade", "Ativo"]);
-        assert_eq!(pv.rows[0], ["João", "São Paulo; SP", "sim"]);
+        assert_eq!(pv.headers, ["Name", "City", "Active"]);
+        assert_eq!(pv.rows[0], ["Zoë", "Zürich; ZH", "yes"]);
         assert_eq!(pv.rows.len(), 2);
         let pv = preview(&p, false).unwrap();
         assert_eq!(pv.headers, ["column 1", "column 2", "column 3"]);
         assert_eq!(pv.rows.len(), 3);
         let _ = std::fs::remove_file(p);
 
-        let p = file("bom.csv", "\u{feff}id,nome\n1,Zé\n".as_bytes());
-        assert_eq!(preview(&p, true).unwrap().headers, ["id", "nome"]);
+        let p = file("bom.csv", "\u{feff}id,name\n1,Zoë\n".as_bytes());
+        assert_eq!(preview(&p, true).unwrap().headers, ["id", "name"]);
         let _ = std::fs::remove_file(p);
     }
 
@@ -354,17 +354,17 @@ pub(crate) mod tests {
         use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
         let path = std::env::temp_dir().join(format!("dblite-import-{}-{name}.xlsx", std::process::id()));
         let mut book = Workbook::new();
-        let sheet = book.add_worksheet().set_name("Clientes").unwrap();
+        let sheet = book.add_worksheet().set_name("Customers").unwrap();
         let date = Format::new().set_num_format("yyyy-mm-dd");
         let stamp = Format::new().set_num_format("yyyy-mm-dd hh:mm:ss");
-        for (c, h) in ["codigo", "nome", "saldo", "ativo", "nascimento", "em"]
+        for (c, h) in ["code", "name", "balance", "active", "born", "at"]
             .iter()
             .enumerate()
         {
             sheet.write_string(0, c as u16, *h).unwrap();
         }
         sheet.write_number(1, 0, 20.0).unwrap();
-        sheet.write_string(1, 1, "João Ávila").unwrap();
+        sheet.write_string(1, 1, "Zoë Brontë").unwrap();
         sheet.write_number(1, 2, 1520.3).unwrap();
         sheet.write_boolean(1, 3, true).unwrap();
         let d = ExcelDateTime::from_ymd(1990, 5, 17).unwrap();
@@ -384,12 +384,12 @@ pub(crate) mod tests {
     fn reads_spreadsheets() {
         let path = xlsx("unit");
         let (sheet, rows) = sheet_rows(&path).unwrap();
-        assert_eq!(sheet, "Clientes");
+        assert_eq!(sheet, "Customers");
         assert_eq!(
             rows[1],
             [
                 "20",
-                "João Ávila",
+                "Zoë Brontë",
                 "1520.3",
                 "true",
                 "1990-05-17",
@@ -399,8 +399,8 @@ pub(crate) mod tests {
         assert_eq!(rows[2][0], "21");
         assert!(rows[2][1..].iter().all(String::is_empty), "{:?}", rows[2]);
         let pv = preview(&path, true).unwrap();
-        assert_eq!(pv.sheet.as_deref(), Some("Clientes"));
-        assert_eq!(pv.headers[0], "codigo");
+        assert_eq!(pv.sheet.as_deref(), Some("Customers"));
+        assert_eq!(pv.headers[0], "code");
         assert_eq!(pv.rows.len(), 2);
         // Numbers from the sheet are already plain: "1520.3" stays 1520.3.
         assert_eq!(normalize_number("1520.3"), "1520.3");
@@ -409,7 +409,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn reads_brazilian_numbers() {
+    fn reads_comma_decimal_numbers() {
         assert_eq!(normalize_number("1.520,30"), "1520.30");
         assert_eq!(normalize_number("1,520.30"), "1520.30");
         assert_eq!(normalize_number(" 88,5 "), "88.5");
@@ -419,11 +419,11 @@ pub(crate) mod tests {
 
     #[test]
     fn maps_columns_by_name() {
-        let cols = ["id".to_string(), "nome".into(), "data_nasc".into()];
-        let heads = ["Nome".to_string(), "Data Nasc".into(), "extra".into()];
+        let cols = ["id".to_string(), "name".into(), "birth_date".into()];
+        let heads = ["Name".to_string(), "Birth Date".into(), "extra".into()];
         assert_eq!(
             auto_mapping(&heads, &cols),
-            [Some("nome".to_string()), Some("data_nasc".into()), None]
+            [Some("name".to_string()), Some("birth_date".into()), None]
         );
     }
 

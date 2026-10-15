@@ -88,7 +88,7 @@ services:
   dev-mysql:
     profiles: [dev]
     image: mysql:8
-    environment: { MYSQL_ROOT_PASSWORD: mysql, MYSQL_DATABASE: loja }
+    environment: { MYSQL_ROOT_PASSWORD: mysql, MYSQL_DATABASE: shop }
     ports: ["3307:3306"]
     volumes:
       - ./dev/mysql.sql:/docker-entrypoint-initdb.d/1-seed.sql:ro

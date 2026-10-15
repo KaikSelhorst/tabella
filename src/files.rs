@@ -101,13 +101,13 @@ mod tests {
     fn round_trips_and_reads_latin1() {
         let dir = std::env::temp_dir().join(format!("dblite-files-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let saved = write_sql(&dir.join("report"), "SELECT 'ação';").unwrap();
+        let saved = write_sql(&dir.join("report"), "SELECT 'café';").unwrap();
         assert_eq!(saved.extension().unwrap(), "sql");
-        assert_eq!(read_sql(&saved).unwrap(), "SELECT 'ação';");
+        assert_eq!(read_sql(&saved).unwrap(), "SELECT 'café';");
         assert_eq!(title(&saved), "report.sql");
-        let old = dir.join("antigo.sql");
-        std::fs::write(&old, b"SELECT 'a\xe7\xe3o';").unwrap();
-        assert_eq!(read_sql(&old).unwrap(), "SELECT 'ação';");
+        let old = dir.join("old.sql");
+        std::fs::write(&old, b"SELECT 'caf\xe9';").unwrap();
+        assert_eq!(read_sql(&old).unwrap(), "SELECT 'café';");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

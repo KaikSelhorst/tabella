@@ -396,7 +396,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
                 }
                 if ca.nullable != cb.nullable {
                     let (what, sql) = if ca.nullable {
-                        ("aceita NULL", "DROP NOT NULL")
+                        ("allows NULL", "DROP NOT NULL")
                     } else {
                         ("NOT NULL", "SET NOT NULL")
                     };
@@ -528,22 +528,22 @@ mod tests {
             schema: "public".into(),
             tables: [
                 (
-                    "clientes".to_string(),
+                    "customers".to_string(),
                     pg_table(
                         &[
                             ("id", "integer", false, None),
                             ("email", "character varying(120)", false, None),
-                            ("ativo", "boolean", true, Some("true")),
+                            ("active", "boolean", true, Some("true")),
                         ],
-                        &[("clientes_pkey", "PRIMARY KEY (id)")],
+                        &[("customers_pkey", "PRIMARY KEY (id)")],
                         &[(
-                            "clientes_email_idx",
-                            "CREATE INDEX clientes_email_idx ON public.clientes USING btree (email)",
+                            "customers_email_idx",
+                            "CREATE INDEX customers_email_idx ON public.customers USING btree (email)",
                         )],
                     ),
                 ),
                 (
-                    "nova".to_string(),
+                    "fresh".to_string(),
                     pg_table(&[("id", "integer", false, None)], &[], &[]),
                 ),
             ]
@@ -553,19 +553,19 @@ mod tests {
             schema: "staging".into(),
             tables: [
                 (
-                    "clientes".to_string(),
+                    "customers".to_string(),
                     pg_table(
                         &[
                             ("id", "integer", false, None),
                             ("email", "text", true, None),
-                            ("velha", "text", true, None),
+                            ("old", "text", true, None),
                         ],
-                        &[("clientes_pkey", "PRIMARY KEY (id)")],
+                        &[("customers_pkey", "PRIMARY KEY (id)")],
                         &[],
                     ),
                 ),
                 (
-                    "sobra".to_string(),
+                    "leftover".to_string(),
                     pg_table(&[("id", "integer", false, None)], &[], &[]),
                 ),
             ]
@@ -576,33 +576,33 @@ mod tests {
         assert_eq!(
             status,
             [
-                ("clientes", &Status::Changed),
-                ("nova", &Status::New),
-                ("sobra", &Status::Extra)
+                ("customers", &Status::Changed),
+                ("fresh", &Status::New),
+                ("leftover", &Status::Extra)
             ]
         );
         let sql = script(&d);
-        let t = "ALTER TABLE \"staging\".\"clientes\"";
+        let t = "ALTER TABLE \"staging\".\"customers\"";
         for expected in [
             format!(
                 "{t} ALTER COLUMN \"email\" TYPE character varying(120) USING \"email\"::character varying(120);"
             ),
             format!("{t} ALTER COLUMN \"email\" SET NOT NULL;"),
-            format!("{t} ADD COLUMN \"ativo\" boolean DEFAULT true;"),
-            format!("{t} DROP COLUMN \"velha\";"),
+            format!("{t} ADD COLUMN \"active\" boolean DEFAULT true;"),
+            format!("{t} DROP COLUMN \"old\";"),
             // The index points at the target schema.
-            "CREATE INDEX clientes_email_idx ON \"staging\".clientes USING btree (email);".to_string(),
+            "CREATE INDEX customers_email_idx ON \"staging\".customers USING btree (email);".to_string(),
             "CREATE TABLE \"staging\".\"t\" ();".to_string(),
-            "-- DROP TABLE \"staging\".\"sobra\";".to_string(),
+            "-- DROP TABLE \"staging\".\"leftover\";".to_string(),
         ] {
             assert!(sql.contains(&expected), "missing {expected}\n{sql}");
         }
         // The same primary key isn't touched.
-        assert!(!sql.contains("clientes_pkey"), "{sql}");
+        assert!(!sql.contains("customers_pkey"), "{sql}");
         assert!(
             d[0].items
                 .iter()
-                .any(|i| i.destructive && i.sql.contains("velha"))
+                .any(|i| i.destructive && i.sql.contains("old"))
         );
     }
 
@@ -624,33 +624,33 @@ mod tests {
     #[test]
     fn mysql_reads_show_create_table() {
         let st = TableStructure {
-            ddl: "CREATE TABLE `pedido` (\n  `id` int NOT NULL AUTO_INCREMENT,\n  `cliente_id` int NOT NULL,\n  `obs` text,\n  \
-                  PRIMARY KEY (`id`),\n  KEY `cliente_id` (`cliente_id`),\n  CONSTRAINT `pedido_ibfk_1` FOREIGN KEY (`cliente_id`) \
-                  REFERENCES `cliente` (`id`)\n) ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4;"
+            ddl: "CREATE TABLE `purchase` (\n  `id` int NOT NULL AUTO_INCREMENT,\n  `customer_id` int NOT NULL,\n  `note` text,\n  \
+                  PRIMARY KEY (`id`),\n  KEY `customer_id` (`customer_id`),\n  CONSTRAINT `purchase_ibfk_1` FOREIGN KEY (`customer_id`) \
+                  REFERENCES `customer` (`id`)\n) ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4;"
                 .into(),
             ..Default::default()
         };
         let a = table_def(Kind::MySql, &st);
         assert_eq!(
             a.columns.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
-            ["id", "cliente_id", "obs"]
+            ["id", "customer_id", "note"]
         );
-        assert_eq!(a.indexes.keys().collect::<Vec<_>>(), ["PRIMARY", "cliente_id"]);
-        assert!(a.constraints["pedido_ibfk_1"].contains("FOREIGN KEY"));
+        assert_eq!(a.indexes.keys().collect::<Vec<_>>(), ["PRIMARY", "customer_id"]);
+        assert!(a.constraints["purchase_ibfk_1"].contains("FOREIGN KEY"));
         let mut b = a.clone();
-        b.columns[2].1.line = "`obs` varchar(50) DEFAULT NULL".into();
+        b.columns[2].1.line = "`note` varchar(50) DEFAULT NULL".into();
         b.constraints.clear();
         let snap = |t: TableDef, schema: &str| Snapshot {
             schema: schema.into(),
-            tables: [("pedido".to_string(), t)].into(),
+            tables: [("purchase".to_string(), t)].into(),
         };
-        let sql = script(&diff(Kind::MySql, &snap(a, "loja"), &snap(b, "loja_teste")));
+        let sql = script(&diff(Kind::MySql, &snap(a, "shop"), &snap(b, "shop_test")));
         assert!(
-            sql.contains("ALTER TABLE `loja_teste`.`pedido` MODIFY COLUMN `obs` text;"),
+            sql.contains("ALTER TABLE `shop_test`.`purchase` MODIFY COLUMN `note` text;"),
             "{sql}"
         );
         assert!(
-            sql.contains("ALTER TABLE `loja_teste`.`pedido` ADD CONSTRAINT `pedido_ibfk_1` FOREIGN KEY"),
+            sql.contains("ALTER TABLE `shop_test`.`purchase` ADD CONSTRAINT `purchase_ibfk_1` FOREIGN KEY"),
             "{sql}"
         );
     }
@@ -680,26 +680,26 @@ mod tests {
             Kind::Postgres => (
                 "DROP SCHEMA IF EXISTS cmp_a CASCADE; DROP SCHEMA IF EXISTS cmp_b CASCADE; \
                  CREATE SCHEMA cmp_a; CREATE SCHEMA cmp_b;",
-                "CREATE TABLE cmp_a.cliente (id serial PRIMARY KEY, email varchar(120) NOT NULL UNIQUE, ativo boolean DEFAULT true); \
-                 CREATE INDEX cliente_ativo_idx ON cmp_a.cliente (ativo); \
-                 CREATE TABLE cmp_a.pedido (id int PRIMARY KEY, cliente_id int REFERENCES cmp_a.cliente (id), total numeric(10,2) CHECK (total >= 0)); \
-                 CREATE TABLE cmp_a.nova (id int PRIMARY KEY, cliente_id int REFERENCES cmp_a.cliente (id));",
-                "CREATE TABLE cmp_b.cliente (id serial PRIMARY KEY, email text, velha text); \
-                 CREATE TABLE cmp_b.pedido (id int PRIMARY KEY, cliente_id int, total numeric(8,2)); \
-                 CREATE INDEX pedido_total_idx ON cmp_b.pedido (total); \
-                 CREATE TABLE cmp_b.sobra (id int);",
+                "CREATE TABLE cmp_a.customer (id serial PRIMARY KEY, email varchar(120) NOT NULL UNIQUE, active boolean DEFAULT true); \
+                 CREATE INDEX customer_active_idx ON cmp_a.customer (active); \
+                 CREATE TABLE cmp_a.purchase (id int PRIMARY KEY, customer_id int REFERENCES cmp_a.customer (id), total numeric(10,2) CHECK (total >= 0)); \
+                 CREATE TABLE cmp_a.fresh (id int PRIMARY KEY, customer_id int REFERENCES cmp_a.customer (id));",
+                "CREATE TABLE cmp_b.customer (id serial PRIMARY KEY, email text, old text); \
+                 CREATE TABLE cmp_b.purchase (id int PRIMARY KEY, customer_id int, total numeric(8,2)); \
+                 CREATE INDEX purchase_total_idx ON cmp_b.purchase (total); \
+                 CREATE TABLE cmp_b.leftover (id int);",
             ),
             Kind::MySql => (
                 "DROP DATABASE IF EXISTS cmp_a; DROP DATABASE IF EXISTS cmp_b; CREATE DATABASE cmp_a; CREATE DATABASE cmp_b;",
-                "CREATE TABLE cmp_a.cliente (id int AUTO_INCREMENT PRIMARY KEY, email varchar(120) NOT NULL UNIQUE, ativo boolean DEFAULT true); \
-                 CREATE INDEX cliente_ativo_idx ON cmp_a.cliente (ativo); \
-                 CREATE TABLE cmp_a.pedido (id int PRIMARY KEY, cliente_id int, total decimal(10,2), \
-                 CONSTRAINT pedido_cliente FOREIGN KEY (cliente_id) REFERENCES cmp_a.cliente (id)); \
-                 CREATE TABLE cmp_a.nova (id int PRIMARY KEY);",
-                "CREATE TABLE cmp_b.cliente (id int AUTO_INCREMENT PRIMARY KEY, email text, velha text); \
-                 CREATE TABLE cmp_b.pedido (id int PRIMARY KEY, cliente_id int, total decimal(8,2)); \
-                 CREATE INDEX pedido_total_idx ON cmp_b.pedido (total); \
-                 CREATE TABLE cmp_b.sobra (id int);",
+                "CREATE TABLE cmp_a.customer (id int AUTO_INCREMENT PRIMARY KEY, email varchar(120) NOT NULL UNIQUE, active boolean DEFAULT true); \
+                 CREATE INDEX customer_active_idx ON cmp_a.customer (active); \
+                 CREATE TABLE cmp_a.purchase (id int PRIMARY KEY, customer_id int, total decimal(10,2), \
+                 CONSTRAINT purchase_customer FOREIGN KEY (customer_id) REFERENCES cmp_a.customer (id)); \
+                 CREATE TABLE cmp_a.fresh (id int PRIMARY KEY);",
+                "CREATE TABLE cmp_b.customer (id int AUTO_INCREMENT PRIMARY KEY, email text, old text); \
+                 CREATE TABLE cmp_b.purchase (id int PRIMARY KEY, customer_id int, total decimal(8,2)); \
+                 CREATE INDEX purchase_total_idx ON cmp_b.purchase (total); \
+                 CREATE TABLE cmp_b.leftover (id int);",
             ),
             Kind::Sqlite => unreachable!("server test"),
         };
@@ -724,7 +724,7 @@ mod tests {
                 .unwrap();
             let defaults = d.rows[0][0].clone().unwrap_or_default();
             assert!(
-                defaults.contains("cmp_b.cliente_id_seq") && !defaults.contains("cmp_a"),
+                defaults.contains("cmp_b.customer_id_seq") && !defaults.contains("cmp_a"),
                 "{defaults}"
             );
         }
@@ -764,8 +764,8 @@ mod tests {
         let mut a = Conn::connect(&a_cfg, None).unwrap();
         let mut b = Conn::connect(&b_cfg, None).unwrap();
         b.query(
-            "CREATE TABLE cliente (id INTEGER PRIMARY KEY, nome TEXT, velha TEXT);
-             CREATE TABLE sobra (x INTEGER);",
+            "CREATE TABLE customer (id INTEGER PRIMARY KEY, name TEXT, old TEXT);
+             CREATE TABLE spare (x INTEGER);",
         )
         .unwrap();
         let d = diff(
@@ -777,16 +777,16 @@ mod tests {
         assert_eq!(
             status,
             [
-                ("cliente", &Status::Changed),
-                ("pedido", &Status::New),
-                ("sobra", &Status::Extra)
+                ("customer", &Status::Changed),
+                ("purchase", &Status::New),
+                ("spare", &Status::Extra)
             ]
         );
         let sql = script(&d);
         assert!(sql.contains("ADD COLUMN \"email\" TEXT"), "{sql}");
-        assert!(sql.contains("ADD COLUMN \"ativo\" BOOLEAN DEFAULT 1"), "{sql}");
-        assert!(sql.contains("DROP COLUMN \"velha\""), "{sql}");
-        // "nome" became NOT NULL: SQLite can't, and the script says so instead of failing.
+        assert!(sql.contains("ADD COLUMN \"active\" BOOLEAN DEFAULT 1"), "{sql}");
+        assert!(sql.contains("DROP COLUMN \"old\""), "{sql}");
+        // "name" became NOT NULL: SQLite can't, and the script says so instead of failing.
         assert!(sql.contains("-- SQLite can't alter an existing column"), "{sql}");
         b.query(&sql).unwrap_or_else(|e| panic!("{e}\n{sql}"));
         let left = diff(
@@ -796,7 +796,7 @@ mod tests {
         );
         // Left: the column SQLite can't alter, and the table only the target has.
         let left: Vec<&str> = left.iter().map(|t| t.table.as_str()).collect();
-        assert_eq!(left, ["cliente", "sobra"]);
+        assert_eq!(left, ["customer", "spare"]);
         let _ = std::fs::remove_file(&a_cfg.database);
         let _ = std::fs::remove_file(&b_cfg.database);
     }

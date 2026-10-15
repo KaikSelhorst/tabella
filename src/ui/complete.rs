@@ -89,7 +89,7 @@ pub struct Catalog<'a> {
 }
 
 /// `(alias or table name, table)` for each table the query names after FROM / JOIN / UPDATE /
-/// INTO, lowercase: `FROM pedidos p JOIN clientes AS c` → (p, pedidos), (c, clientes); a table
+/// INTO, lowercase: `FROM orders p JOIN customers AS c` → (p, orders), (c, customers); a table
 /// without alias answers to its own name.
 pub fn query_tables(text: &str) -> Vec<(String, String)> {
     // Words (identifiers, possibly dotted and quoted) and single punctuation chars.
@@ -504,7 +504,7 @@ mod tests {
     use super::*;
 
     fn tables() -> Vec<TableRef> {
-        ["clientes", "pedidos", "produtos"]
+        ["customers", "orders", "products"]
             .iter()
             .map(|n| TableRef {
                 schema: "public".into(),
@@ -519,10 +519,10 @@ mod tests {
 
     fn columns() -> Vec<(String, String)> {
         vec![
-            ("clientes".into(), "id".into()),
-            ("clientes".into(), "nome".into()),
-            ("pedidos".into(), "id".into()),
-            ("pedidos".into(), "produto_id".into()),
+            ("customers".into(), "id".into()),
+            ("customers".into(), "name".into()),
+            ("orders".into(), "id".into()),
+            ("orders".into(), "product_id".into()),
         ]
     }
 
@@ -544,7 +544,7 @@ mod tests {
                 fks: &[],
             },
         );
-        assert_eq!(texts(&s)[..2], ["pedidos", "produtos"]);
+        assert_eq!(texts(&s)[..2], ["products", "product_id"]);
         assert_eq!(s.unwrap().start, 14);
     }
 
@@ -561,7 +561,7 @@ mod tests {
                     fks: &[]
                 }
             ))[0],
-            "produto_id"
+            "product_id"
         );
         let text = "sel";
         assert_eq!(
@@ -615,21 +615,21 @@ mod tests {
     fn aliases_and_joins_by_foreign_key() {
         assert_eq!(
             query_tables(
-                "SELECT * FROM public.pedidos p, produtos JOIN clientes AS c ON c.id = p.cliente_id WHERE 1"
+                "SELECT * FROM public.orders p, products JOIN customers AS c ON c.id = p.customer_id WHERE 1"
             ),
             [
-                ("p".to_string(), "pedidos".to_string()),
-                ("produtos".into(), "produtos".into()),
-                ("c".into(), "clientes".into())
+                ("p".to_string(), "orders".to_string()),
+                ("products".into(), "products".into()),
+                ("c".into(), "customers".into())
             ]
         );
         let cols = columns();
         let fks = [FkEdge {
             schema: "public".into(),
-            table: "pedidos".into(),
-            column: "cliente_id".into(),
+            table: "orders".into(),
+            column: "customer_id".into(),
             ref_schema: "public".into(),
-            ref_table: "clientes".into(),
+            ref_table: "customers".into(),
             ref_column: "id".into(),
         }];
         let cat = Catalog {
@@ -637,31 +637,31 @@ mod tests {
             columns: &cols,
             fks: &fks,
         };
-        // `p.` is pedidos: its columns, not every table's.
-        let text = "SELECT p. FROM pedidos p";
-        assert_eq!(texts(&suggest(text, 9, cat)), ["id", "produto_id"]);
+        // `p.` is orders: its columns, not every table's.
+        let text = "SELECT p. FROM orders p";
+        assert_eq!(texts(&suggest(text, 9, cat)), ["id", "product_id"]);
         // Right after JOIN: the join the foreign key allows, ON clause included.
-        let text = "SELECT * FROM pedidos p JOIN ";
+        let text = "SELECT * FROM orders p JOIN ";
         assert_eq!(
             texts(&suggest(text, text.chars().count(), cat)),
-            ["clientes c ON c.id = p.cliente_id"]
+            ["customers c ON c.id = p.customer_id"]
         );
         // From the other side, and the alias avoids the ones in use.
-        let text = "SELECT * FROM clientes c JOIN ";
+        let text = "SELECT * FROM customers c JOIN ";
         assert_eq!(
             texts(&suggest(text, text.chars().count(), cat)),
-            ["pedidos p ON p.cliente_id = c.id"]
+            ["orders o ON o.customer_id = c.id"]
         );
-        let text = "SELECT * FROM clientes p JOIN pe";
+        let text = "SELECT * FROM customers o JOIN or";
         assert_eq!(
             texts(&suggest(text, text.chars().count(), cat))[0],
-            "pedidos p2 ON p2.cliente_id = p.id"
+            "orders o2 ON o2.customer_id = o.id"
         );
     }
 
     #[test]
     fn qualified_columns_only() {
-        let text = "SELECT clientes.";
+        let text = "SELECT customers.";
         assert_eq!(
             texts(&suggest(
                 text,
@@ -672,7 +672,7 @@ mod tests {
                     fks: &[]
                 }
             )),
-            ["id", "nome"]
+            ["id", "name"]
         );
     }
 
@@ -692,7 +692,7 @@ mod tests {
         );
         assert!(
             suggest(
-                "clientes",
+                "customers",
                 3,
                 Catalog {
                     tables: &tables(),
@@ -704,7 +704,7 @@ mod tests {
         ); // mid-word
         assert!(
             suggest(
-                "clientes",
+                "customers",
                 8,
                 Catalog {
                     tables: &tables(),

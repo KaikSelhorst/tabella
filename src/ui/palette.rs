@@ -483,10 +483,10 @@ mod tests {
 
     #[test]
     fn fuzzy_ranks_prefix_and_runs() {
-        assert!(fuzzy_score("cli", "clientes").unwrap() > fuzzy_score("cli", "pedidos_clientes").unwrap());
+        assert!(fuzzy_score("cus", "customers").unwrap() > fuzzy_score("cus", "orders_customers").unwrap());
         assert!(fuzzy_score("users", "users").unwrap() > fuzzy_score("users", "users_archive").unwrap());
         assert!(fuzzy_score("pc", "pedidos_clientes").is_some());
-        assert!(fuzzy_score("xyz", "clientes").is_none());
+        assert!(fuzzy_score("xyz", "customers").is_none());
     }
 
     #[test]

@@ -65,14 +65,14 @@ mod tests {
                 SavedTab::Sql {
                     text: "select 1".into(),
                     title: Some("Report".into()),
-                    file: Some("/tmp/relatorio.sql".into()),
+                    file: Some("/tmp/report.sql".into()),
                 },
                 SavedTab::Table {
                     schema: "public".into(),
                     table: "t".into(),
                     filter: "id > 1".into(),
                     order: Some(("id".into(), false)),
-                    hidden: vec!["obs".into()],
+                    hidden: vec!["note".into()],
                     pinned: vec!["id".into()],
                 },
             ],

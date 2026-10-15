@@ -92,7 +92,7 @@ pub fn plan_view(ui: &mut egui::Ui, plan: &Plan, hints: &[(String, String)]) -> 
                     row_layout(
                         ui,
                         |ui| {
-                            ui.label(RichText::new("ETAPA").size(11.0).color(t.subtle));
+                            ui.label(RichText::new("STEP").size(11.0).color(t.subtle));
                         },
                         |ui| {
                             for h in numbers.iter().rev() {

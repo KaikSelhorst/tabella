@@ -117,7 +117,7 @@ fn frame_times() {
         let tab = &mut app.tabs[1];
         tab.result = Some(res.clone());
         let ed = tab.editor_mut().unwrap();
-        let mut src = TableState::new("public", "grande", None);
+        let mut src = TableState::new("public", "large", None);
         src.cols = info.clone();
         ed.source = Some(Box::new(src));
         app.active = 1;

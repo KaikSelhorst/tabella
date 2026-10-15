@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn picks_labels_and_values() {
         let res = QueryResult {
-            columns: vec!["id".into(), "cidade".into(), "total".into()],
+            columns: vec!["id".into(), "city".into(), "total".into()],
             ..Default::default()
         };
         let kinds = [ValueKind::Number, ValueKind::Text, ValueKind::Number];

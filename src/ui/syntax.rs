@@ -313,23 +313,23 @@ mod tests {
             ]
         );
         // Nothing is lost: spans concatenate back to the input.
-        let src = "SELECT ç, 1.5 /* x */ FROM t";
+        let src = "SELECT é, 1.5 /* x */ FROM t";
         assert_eq!(tokens(src).iter().map(|(_, s)| *s).collect::<String>(), src);
     }
 
     #[test]
     fn marks_parameters_but_not_casts() {
-        let params: Vec<&str> = tokens("WHERE id = :id AND x::text = :nome AND a[1:2]")
+        let params: Vec<&str> = tokens("WHERE id = :id AND x::text = :name AND a[1:2]")
             .into_iter()
             .filter(|(k, _)| *k == Kind::Param)
             .map(|(_, s)| s)
             .collect();
-        assert_eq!(params, [":id", ":nome"]);
+        assert_eq!(params, [":id", ":name"]);
     }
 
     #[test]
     fn json_colors_cover_every_byte() {
-        let text = "{\"nome\": \"João \\\"Zé\\\" Ávila\", \"v\": -1.5e3, \"ok\": true, \"x\": null, \"l\": [1, \"é\"]}";
+        let text = "{\"name\": \"Zoë \\\"Zed\\\" Brontë\", \"v\": -1.5e3, \"ok\": true, \"x\": null, \"l\": [1, \"é\"]}";
         let job = highlight_json(text, FontId::monospace(12.0));
         let covered: String = job
             .sections

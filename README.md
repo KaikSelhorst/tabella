@@ -172,9 +172,9 @@ cargo test                                    # unit and UI tests
 cargo test -- --ignored db:: worker:: tunnel::   # tests against the real databases (and SSH)
 ```
 
-The sample data is large on purpose: in Postgres, `clientes` (1M), `pedidos` (5M), `eventos`
-(300k, a wide table with JSON, arrays and IPs) and 200 small tables in the `arquivo` schema; in
-MySQL, `produtos` (1M), `vendas` (3M), `logs` (200k) and 150 tables in the `arquivo` database.
+The sample data is large on purpose: in Postgres, `customers` (1M), `orders` (5M), `events`
+(300k, a wide table with JSON, arrays and IPs) and 200 small tables in the `archive` schema; in
+MySQL, `products` (1M), `sales` (3M), `logs` (200k) and 150 tables in the `archive` database.
 The scripts in `dev/` can be run again on an existing database (they recreate what they own).
 
 The `test` profile includes a throwaway SSH server (port 52222) that reaches the test Postgres;

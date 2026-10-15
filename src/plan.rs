@@ -15,9 +15,9 @@ pub struct Plan {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Node {
-    /// "Seq Scan on pedidos", "Hash Join", "Index lookup on c using PRIMARY"...
+    /// "Seq Scan on orders", "Hash Join", "Index lookup on c using PRIMARY"...
     pub label: String,
-    /// Conditions and other notes: "Filter: (ativo)", "Index Cond: (id = 3)".
+    /// Conditions and other notes: "Filter: (active)", "Index Cond: (id = 3)".
     pub details: Vec<String>,
     /// Planner cost of this node including its children.
     pub cost: Option<f64>,
@@ -274,7 +274,7 @@ pub fn index_hints(plan: &Plan) -> Vec<IndexHint> {
 }
 
 /// Columns a condition compares with `=`, `<`, `>`, `<=`, `>=`, LIKE (`~~` in Postgres) or IN,
-/// equality first, at most three. `(p.status = 'pago'::text) AND (total > 100)` → status, total.
+/// equality first, at most three. `(p.status = 'paid'::text) AND (total > 100)` → status, total.
 pub fn filter_columns(cond: &str) -> Vec<String> {
     let chars: Vec<char> = cond.chars().collect();
     let mut eq: Vec<String> = Vec::new();
@@ -296,7 +296,7 @@ pub fn filter_columns(cond: &str) -> Vec<String> {
             i += 1;
             continue;
         }
-        // Inside a function call (`lower(nome)`) a column isn't usable by a plain index.
+        // Inside a function call (`lower(name)`) a column isn't usable by a plain index.
         let in_call = {
             let mut k = i;
             while k > 0 && chars[k - 1] == ' ' {
@@ -405,13 +405,13 @@ mod tests {
     fn reads_postgres_json() {
         let json = r#"[{"Plan": {"Node Type": "Hash Join", "Join Type": "Left", "Total Cost": 120.5,
             "Plan Rows": 40, "Actual Total Time": 3.0, "Actual Rows": 38, "Actual Loops": 1,
-            "Hash Cond": "(p.cliente_id = c.id)",
+            "Hash Cond": "(p.customer_id = c.id)",
             "Plans": [
-              {"Node Type": "Seq Scan", "Relation Name": "pedidos", "Alias": "p", "Total Cost": 80,
+              {"Node Type": "Seq Scan", "Relation Name": "orders", "Alias": "p", "Total Cost": 80,
                "Plan Rows": 1000, "Actual Total Time": 1.5, "Actual Rows": 1000, "Actual Loops": 1,
-               "Filter": "(pago)", "Rows Removed by Filter": 12},
-              {"Node Type": "Index Scan", "Index Name": "clientes_pkey", "Relation Name": "clientes",
-               "Alias": "clientes", "Total Cost": 20, "Plan Rows": 1, "Actual Total Time": 0.25,
+               "Filter": "(paid)", "Rows Removed by Filter": 12},
+              {"Node Type": "Index Scan", "Index Name": "customers_pkey", "Relation Name": "customers",
+               "Alias": "customers", "Total Cost": 20, "Plan Rows": 1, "Actual Total Time": 0.25,
                "Actual Rows": 1, "Actual Loops": 2}
             ]},
             "Planning Time": 0.2, "Execution Time": 3.1}]"#;
@@ -419,14 +419,14 @@ mod tests {
         assert!(p.analyzed);
         assert_eq!(p.execution_ms, Some(3.1));
         assert_eq!(p.root.label, "Hash Join (Left)");
-        assert_eq!(p.root.details, ["Hash Cond: (p.cliente_id = c.id)"]);
+        assert_eq!(p.root.details, ["Hash Cond: (p.customer_id = c.id)"]);
         let [scan, idx] = &p.root.children[..] else {
             panic!()
         };
-        assert_eq!(scan.label, "Seq Scan on pedidos p");
+        assert_eq!(scan.label, "Seq Scan on orders p");
         assert!(scan.is_full_scan());
         assert_eq!(scan.details[1], "Rows removed by filter: 12");
-        assert_eq!(idx.label, "Index Scan using clientes_pkey on clientes");
+        assert_eq!(idx.label, "Index Scan using customers_pkey on customers");
         // Loops multiply time and rows.
         assert_eq!((idx.actual_ms, idx.actual_rows), (Some(0.5), Some(2.0)));
         assert_eq!(p.root.self_cost(), Some(20.5));
@@ -437,15 +437,15 @@ mod tests {
     fn suggests_indexes_for_filtered_full_scans() {
         assert_eq!(
             filter_columns(
-                "((p.status = 'pago'::text) AND (total > '100'::numeric) AND (lower(nome) = 'x'))"
+                "((p.status = 'paid'::text) AND (total > '100'::numeric) AND (lower(name) = 'x'))"
             ),
             ["status", "total"]
         );
         assert_eq!(
-            filter_columns("(criado_em >= '2024-01-01' AND uf IN ('SP', 'RJ'))"),
-            ["uf", "criado_em"]
+            filter_columns("(created_at >= '2024-01-01' AND state IN ('NY', 'CA'))"),
+            ["state", "created_at"]
         );
-        assert_eq!(filter_columns("(\"Nome\" ~~ 'a%'::text)"), ["Nome"]);
+        assert_eq!(filter_columns("(\"Name\" ~~ 'a%'::text)"), ["Name"]);
         // As Postgres prints them: the column wrapped and cast before the operator.
         assert_eq!(filter_columns("((name)::text = 'x'::text)"), ["name"]);
         assert_eq!(
@@ -454,20 +454,20 @@ mod tests {
         );
         assert!(filter_columns("(a <> 1)").is_empty(), "<> rarely uses an index");
 
-        let pg = from_pg_json(r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "pedidos", "Alias": "p", "Total Cost": 1, "Plan Rows": 5, "Filter": "(status = 'pago'::text)"}}]"#).unwrap();
+        let pg = from_pg_json(r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Alias": "p", "Total Cost": 1, "Plan Rows": 5, "Filter": "(status = 'paid'::text)"}}]"#).unwrap();
         assert_eq!(
             index_hints(&pg),
             [IndexHint {
-                table: "pedidos".into(),
+                table: "orders".into(),
                 columns: vec!["status".into()]
             }]
         );
-        let my = from_mysql_tree("-> Filter: (vendas.canal = 'app')  (cost=1 rows=3)\n    -> Table scan on vendas  (cost=1 rows=30)\n").unwrap();
+        let my = from_mysql_tree("-> Filter: (sales.channel = 'app')  (cost=1 rows=3)\n    -> Table scan on sales  (cost=1 rows=30)\n").unwrap();
         assert_eq!(
             index_hints(&my),
             [IndexHint {
-                table: "vendas".into(),
-                columns: vec!["canal".into()]
+                table: "sales".into(),
+                columns: vec!["channel".into()]
             }]
         );
         // An index scan needs nothing.

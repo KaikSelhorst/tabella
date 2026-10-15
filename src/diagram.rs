@@ -236,17 +236,17 @@ mod tests {
 
     #[test]
     fn hub_first_neighbours_next_column_loners_below() {
-        let tables = [t("clientes", 3), t("pedidos", 3), t("eventos", 3), t("solta", 2)];
-        let edges = [fk("pedidos", "clientes"), fk("eventos", "clientes")];
+        let tables = [t("customers", 3), t("orders", 3), t("events", 3), t("loose", 2)];
+        let edges = [fk("orders", "customers"), fk("events", "customers")];
         let p = layout(&tables, &edges);
-        assert_eq!(p["clientes"], (0.0, 0.0), "the most connected table leads");
+        assert_eq!(p["customers"], (0.0, 0.0), "the most connected table leads");
         assert_eq!(
-            p["pedidos"].0, p["eventos"].0,
+            p["orders"].0, p["events"].0,
             "its neighbours share the next column"
         );
-        assert!(p["pedidos"].0 > 0.0);
+        assert!(p["orders"].0 > 0.0);
         assert_ne!(
-            p["pedidos"].1, p["eventos"].1,
+            p["orders"].1, p["events"].1,
             "stacked, not on top of each other"
         );
         let below = tables
@@ -254,12 +254,12 @@ mod tests {
             .take(3)
             .map(|t| p[&t.name].1 + t.height())
             .fold(0.0f32, f32::max);
-        assert!(p["solta"].1 > below, "unlinked tables go under the groups");
+        assert!(p["loose"].1 > below, "unlinked tables go under the groups");
     }
 
     #[test]
     fn long_tables_list_some_columns() {
-        let big = t("larga", 40);
+        let big = t("wide", 40);
         assert_eq!(big.height(), ROW_H * (1 + MAX_COLS + 1) as f32 + 6.0);
         assert_eq!(big.column_y("c0"), ROW_H * 1.5);
         assert_eq!(
