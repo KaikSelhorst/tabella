@@ -2,7 +2,7 @@
 -- dev/mysql.sql). `products` exists in shop and in hr with different rows, so an unqualified
 -- SELECT shows which database the editor is pointing at. Rerunnable.
 --
---   docker exec -i dblite-dev-mysql-1 mysql -uroot -pmysql < dev/mysql-extra.sql
+--   docker compose exec -T dev-mysql mysql -uroot -pmysql < dev/mysql-extra.sql
 
 CREATE DATABASE IF NOT EXISTS hr CHARACTER SET utf8mb4;
 USE hr;

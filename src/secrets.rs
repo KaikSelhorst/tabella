@@ -19,8 +19,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::{self, Loaded, StoreError};
 
-const SERVICE: &str = "dblite";
-/// Encrypted with the vault key to tell a wrong master password from a corrupted file.
+const SERVICE: &str = "tabella";
+/// The app's name before it became tabella: passwords stored under it move over when read.
+const OLD_SERVICE: &str = "dblite";
+/// Encrypted with the vault key to tell a wrong master password from a corrupted file. Still the
+/// old name: changing it would make every existing vault refuse its master password.
 const CHECK: &[u8] = b"dblite-vault-ok";
 
 pub enum SecretStore {
@@ -304,10 +307,14 @@ fn open(cipher: &ChaCha20Poly1305, sealed: &Sealed) -> Option<Vec<u8>> {
 
 #[cfg(any(windows, target_os = "linux"))]
 mod os {
-    use super::SERVICE;
+    use super::{OLD_SERVICE, SERVICE};
 
     fn entry(name: &str) -> Option<keyring::Entry> {
         keyring::Entry::new(SERVICE, name).ok()
+    }
+
+    fn old_entry(name: &str) -> Option<keyring::Entry> {
+        keyring::Entry::new(OLD_SERVICE, name).ok()
     }
 
     /// On Linux the Secret Service may simply not be running (WSL, servers).
@@ -316,7 +323,7 @@ mod os {
             return true;
         }
         matches!(
-            entry("__dblite_probe__").map(|e| e.get_password()),
+            entry("__tabella_probe__").map(|e| e.get_password()),
             Some(Ok(_) | Err(keyring::Error::NoEntry))
         )
     }
@@ -326,12 +333,25 @@ mod os {
     }
 
     pub fn get(name: &str) -> Option<String> {
-        entry(name)?.get_password().ok()
+        if let Some(password) = entry(name).and_then(|e| e.get_password().ok()) {
+            return Some(password);
+        }
+        // Saved before the rename: copy it under the new name, then drop the old copy (only
+        // once the new one is stored, so a failure never loses it).
+        let old = old_entry(name)?;
+        let password = old.get_password().ok()?;
+        if set(name, &password) {
+            let _ = old.delete_credential();
+        }
+        Some(password)
     }
 
     /// True when the credential is gone (or never existed).
     pub fn delete(name: &str) -> bool {
-        entry(name).is_some_and(|e| matches!(e.delete_credential(), Ok(()) | Err(keyring::Error::NoEntry)))
+        let gone = |e: Option<keyring::Entry>| {
+            e.is_some_and(|e| matches!(e.delete_credential(), Ok(()) | Err(keyring::Error::NoEntry)))
+        };
+        gone(entry(name)) & gone(old_entry(name))
     }
 }
 
@@ -356,7 +376,7 @@ mod tests {
     use super::*;
 
     fn temp_vault() -> (Vault, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("dblite-vault-test-{}", Nonce::generate()[0]));
+        let dir = std::env::temp_dir().join(format!("tabella-vault-test-{}", Nonce::generate()[0]));
         let path = dir.join("vault.json");
         let _ = std::fs::remove_file(&path);
         (Vault::load(Some(path.clone())), path)

@@ -1,7 +1,7 @@
 -- Functions, procedures, triggers, views and sequences for the "dev" connection, on top of
 -- dev/postgres.sql. Rerunnable.
 --
---   docker exec -i dblite-dev-pg-1 psql -U postgres < dev/postgres-objects.sql
+--   docker compose exec -T dev-pg psql -U postgres < dev/postgres-objects.sql
 
 SET client_min_messages = warning;
 

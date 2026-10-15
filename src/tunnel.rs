@@ -45,7 +45,7 @@ impl Tunnel {
         .arg("-L")
         .arg(format!("127.0.0.1:{local_port}:{db_host}:{db_port}"));
         // Tests point this at a throwaway file instead of the user's ~/.ssh/known_hosts.
-        if let Some(known) = std::env::var_os("DBLITE_SSH_KNOWN_HOSTS") {
+        if let Some(known) = std::env::var_os("TABELLA_SSH_KNOWN_HOSTS") {
             cmd.arg("-o")
                 .arg(format!("UserKnownHostsFile={}", known.to_string_lossy()));
         }
@@ -178,7 +178,7 @@ mod tests {
     #[ignore]
     fn connects_through_a_real_ssh_server() {
         use crate::db::{Conn, ConnConfig, Kind};
-        let dir = std::env::temp_dir().join(format!("dblite-ssh-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tabella-ssh-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // ssh refuses private keys readable by others; git doesn't keep file modes.
         let key = dir.join("key");
@@ -189,7 +189,7 @@ mod tests {
             std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         // SAFETY: test-only override, set before ssh is spawned.
-        unsafe { std::env::set_var("DBLITE_SSH_KNOWN_HOSTS", dir.join("known_hosts")) };
+        unsafe { std::env::set_var("TABELLA_SSH_KNOWN_HOSTS", dir.join("known_hosts")) };
 
         let ssh = SshConfig {
             host: "127.0.0.1".into(),

@@ -89,7 +89,7 @@ fn write_dump(
     };
 
     out.line(&format!(
-        "-- Exported by dblite on {} (UTC)",
+        "-- Exported by tabella on {} (UTC)",
         crate::export::timestamp()
     ))?;
     match k {
@@ -646,7 +646,7 @@ mod tests {
             .map(|t| (t.schema, t.name))
             .collect();
         assert_eq!(tables.len(), 2, "{kind:?}");
-        let path = std::env::temp_dir().join(format!("dblite-dump-{kind:?}-{}.sql", std::process::id()));
+        let path = std::env::temp_dir().join(format!("tabella-dump-{kind:?}-{}.sql", std::process::id()));
         let spec = DumpSpec {
             path: path.clone(),
             tables,
@@ -698,7 +698,7 @@ mod tests {
         } else {
             q(&mut c, "DROP DATABASE dbl_dump");
         }
-        if std::env::var("DBLITE_KEEP_DUMP").is_err() {
+        if std::env::var("TABELLA_KEEP_DUMP").is_err() {
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -715,14 +715,14 @@ mod tests {
         round_trip(Kind::MySql, 53306);
     }
 
-    /// A real database, by hand: `DBLITE_DUMP_CHECK=host:port:user:password:database:schema`
+    /// A real database, by hand: `TABELLA_DUMP_CHECK=host:port:user:password:database:schema`
     /// (Postgres). Exports the schema, restores it into a new database `dbl_restore` on the
     /// same server, compares row counts and a checksum per table, then drops `dbl_restore`.
     #[test]
     #[ignore]
     fn round_trip_real_database() {
         use crate::db::ConnConfig;
-        let Ok(spec) = std::env::var("DBLITE_DUMP_CHECK") else {
+        let Ok(spec) = std::env::var("TABELLA_DUMP_CHECK") else {
             return;
         };
         let [host, port, user, password, database, schema] = spec.split(':').collect::<Vec<_>>()[..] else {
@@ -744,7 +744,7 @@ mod tests {
             .filter(|t| t.schema == schema && !t.is_view)
             .map(|t| (t.schema, t.name))
             .collect();
-        let path = std::env::temp_dir().join("dblite-dump-real.sql");
+        let path = std::env::temp_dir().join("tabella-dump-real.sql");
         let started = std::time::Instant::now();
         let spec = DumpSpec {
             path: path.clone(),
@@ -829,7 +829,7 @@ mod tests {
             .filter(|t| !t.is_view)
             .map(|t| (t.schema, t.name))
             .collect();
-        let path = std::env::temp_dir().join(format!("dblite-dump-sqlite-{}.sql", std::process::id()));
+        let path = std::env::temp_dir().join(format!("tabella-dump-sqlite-{}.sql", std::process::id()));
         let spec = DumpSpec {
             path: path.clone(),
             tables,

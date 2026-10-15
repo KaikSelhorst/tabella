@@ -1,7 +1,7 @@
 -- Functions, procedures, triggers and views for the "dev-mysql" connection (database `shop`),
 -- on top of dev/mysql.sql. Rerunnable. MySQL has no sequences.
 --
---   docker exec -i dblite-dev-mysql-1 mysql -uroot -pmysql shop < dev/mysql-objects.sql
+--   docker compose exec -T dev-mysql mysql -uroot -pmysql shop < dev/mysql-objects.sql
 
 -- Functions need this when binary logging is on (MySQL 8's default) unless they are
 -- declared DETERMINISTIC / READS SQL DATA, which these are; kept off for the session anyway,

@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn round_trips_and_reads_latin1() {
-        let dir = std::env::temp_dir().join(format!("dblite-files-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tabella-files-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let saved = write_sql(&dir.join("report"), "SELECT 'café';").unwrap();
         assert_eq!(saved.extension().unwrap(), "sql");

@@ -3,7 +3,7 @@
 
 const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="dblite" version="0.1.0.0"/>
+  <assemblyIdentity type="win32" name="tabella" version="0.1.0.0"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
@@ -26,10 +26,10 @@ fn main() {
         return;
     }
     let mut res = winresource::WindowsResource::new();
-    res.set("ProductName", "dblite")
-        .set("FileDescription", "dblite - lightweight PostgreSQL and MySQL client")
-        .set("InternalName", "dblite")
-        .set("OriginalFilename", "dblite.exe")
+    res.set("ProductName", "tabella")
+        .set("FileDescription", "tabella - lightweight PostgreSQL and MySQL client")
+        .set("InternalName", "tabella")
+        .set("OriginalFilename", "tabella.exe")
         .set_icon("assets/icon.ico")
         .set_manifest(MANIFEST);
     res.compile()

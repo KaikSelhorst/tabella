@@ -424,9 +424,9 @@ pub(crate) fn run_script(
     let nested = tx.open;
     let (begin, mut commit, mut rollback) = if nested {
         (
-            "SAVEPOINT dblite_script",
-            "RELEASE SAVEPOINT dblite_script",
-            "ROLLBACK TO SAVEPOINT dblite_script",
+            "SAVEPOINT tabella_script",
+            "RELEASE SAVEPOINT tabella_script",
+            "ROLLBACK TO SAVEPOINT tabella_script",
         )
     } else if kind == crate::db::Kind::MySql {
         ("START TRANSACTION", "COMMIT", "ROLLBACK")
@@ -509,8 +509,8 @@ fn capped_read(conn: &mut Conn, pg: bool, in_tx: bool, sql: &str) -> DbResult<Qu
     }
     let (open, close) = if in_tx {
         (
-            "SAVEPOINT dblite_read",
-            "ROLLBACK TO SAVEPOINT dblite_read; RELEASE SAVEPOINT dblite_read",
+            "SAVEPOINT tabella_read",
+            "ROLLBACK TO SAVEPOINT tabella_read; RELEASE SAVEPOINT tabella_read",
         )
     } else {
         ("BEGIN", "ROLLBACK")
@@ -1110,7 +1110,7 @@ mod tests {
             Kind::Sqlite => unreachable!("server test"),
         };
         c.query(fill).unwrap();
-        let path = std::env::temp_dir().join(format!("dblite-export-{kind:?}-{}.csv", std::process::id()));
+        let path = std::env::temp_dir().join(format!("tabella-export-{kind:?}-{}.csv", std::process::id()));
         let cols = c.columns(schema, "dbl_export").unwrap();
         let spec = ExportSpec {
             format: Format::Csv,
@@ -1301,7 +1301,7 @@ mod tests {
             Reply::Location(res) => Some(res.map(|(_, db, _)| db).unwrap_or_else(|e| e.to_string())),
             _ => None,
         });
-        assert!(here.starts_with("dblite-worker"), "{here}");
+        assert!(here.starts_with("tabella-worker"), "{here}");
         let rows = |r: Reply| match r {
             Reply::Rows { res, .. } => Some(match *res {
                 Ok(r) => r.rows.first().and_then(|row| row[0].clone()).unwrap_or_default(),
@@ -1365,7 +1365,7 @@ mod tests {
              DELIMITER //\nCREATE PROCEDURE dbl_script_p() BEGIN SELECT 1; SELECT 2; END //\nDELIMITER ;\n\
              DROP PROCEDURE dbl_script_p;\n"
         };
-        let path = std::env::temp_dir().join(format!("dblite-script-{kind:?}-{}.sql", std::process::id()));
+        let path = std::env::temp_dir().join(format!("tabella-script-{kind:?}-{}.sql", std::process::id()));
         let count = |c: &mut Conn| {
             c.query("SELECT count(*) FROM dbl_script")
                 .ok()
@@ -1539,12 +1539,12 @@ mod tests {
         script_file(Kind::MySql, 53306, "test");
     }
 
-    /// A real table, by hand: `DBLITE_EXPORT_CHECK=host:port:user:password:database:schema.table`
+    /// A real table, by hand: `TABELLA_EXPORT_CHECK=host:port:user:password:database:schema.table`
     /// (Postgres). Exports it whole as CSV and reports the time.
     #[test]
     #[ignore]
     fn export_real_table() {
-        let Ok(spec) = std::env::var("DBLITE_EXPORT_CHECK") else {
+        let Ok(spec) = std::env::var("TABELLA_EXPORT_CHECK") else {
             return;
         };
         let [host, port, user, password, database, qualified] = spec.split(':').collect::<Vec<_>>()[..]
@@ -1563,7 +1563,7 @@ mod tests {
         let mut c = Conn::connect(&cfg, None).expect("connect");
         let cols = c.columns(schema, table).unwrap();
         let pk = cols.iter().filter(|c| c.pk).map(|c| c.name.clone()).collect();
-        let path = std::env::temp_dir().join("dblite-export-real.csv");
+        let path = std::env::temp_dir().join("tabella-export-real.csv");
         let started = std::time::Instant::now();
         let (_, rows) = export(
             &mut c,

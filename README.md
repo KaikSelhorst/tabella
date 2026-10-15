@@ -1,4 +1,4 @@
-# dblite
+# tabella
 
 Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, written in Rust with
 [egui](https://github.com/emilk/egui). A single executable, no runtime.
@@ -198,10 +198,10 @@ The `test` profile includes a throwaway SSH server (port 52222) that reaches the
 the key in `dev/ssh/` is only for it.
 
 The UI screenshots (fake data, no database) are generated with
-`DBLITE_SHOTS=<folder> cargo test screenshots -- --ignored` and need a Vulkan driver
+`TABELLA_SHOTS=<folder> cargo test screenshots -- --ignored` and need a Vulkan driver
 (on WSL: `mesa-vulkan-drivers`).
 
 ## Configuration
 
-Files live in `%APPDATA%\dblite` (Windows) or `~/.config/dblite` (Linux); `DBLITE_CONFIG_DIR`
+Files live in `%APPDATA%\tabella` (Windows) or `~/.config/tabella` (Linux); `TABELLA_CONFIG_DIR`
 changes the location. `connections.json` holds no passwords.

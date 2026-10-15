@@ -42,7 +42,7 @@ fn main() -> eframe::Result {
     ui::theme::set_light(prefs.light);
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size(size)
-        .with_title("dblite");
+        .with_title("tabella");
     // Window and taskbar icon (the .exe's own comes from build.rs).
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
@@ -52,7 +52,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "dblite",
+        "tabella",
         opts,
         Box::new(|cc| {
             ui::theme::apply(&cc.egui_ctx);

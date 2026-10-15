@@ -3,7 +3,7 @@
 -- with different rows, so an unqualified SELECT shows which one the editor is pointing at.
 -- Rerunnable.
 --
---   docker exec -i dblite-dev-pg-1 psql -U postgres < dev/postgres-extra.sql
+--   docker compose exec -T dev-pg psql -U postgres < dev/postgres-extra.sql
 
 SET client_min_messages = warning;
 

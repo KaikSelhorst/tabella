@@ -67,7 +67,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Nowhere left to show it: the window is closing.
         if let Err(e) = crate::session::save(&self.snapshot()) {
-            eprintln!("dblite: couldn't save the session: {e}");
+            eprintln!("tabella: couldn't save the session: {e}");
         }
     }
 
@@ -490,7 +490,7 @@ impl App {
 }
 
 /// Renders the main screens to PNGs with fake data, for checking the look without a database.
-/// Run with `DBLITE_SHOTS=<dir> cargo test screenshots -- --ignored` (needs a Vulkan driver, e.g. lavapipe).
+/// Run with `TABELLA_SHOTS=<dir> cargo test screenshots -- --ignored` (needs a Vulkan driver, e.g. lavapipe).
 #[cfg(test)]
 pub(crate) mod screenshots {
     use std::time::Duration;
@@ -503,9 +503,9 @@ pub(crate) mod screenshots {
 
     pub fn fake_app(ctx: &egui::Context) -> App {
         // Keep the real config untouched: App::new reads (and may migrate) it.
-        let dir = std::env::temp_dir().join("dblite-screenshots-config");
+        let dir = std::env::temp_dir().join("tabella-screenshots-config");
         // SAFETY: set before any other thread reads the environment in this test binary's run.
-        unsafe { std::env::set_var("DBLITE_CONFIG_DIR", &dir) };
+        unsafe { std::env::set_var("TABELLA_CONFIG_DIR", &dir) };
         let mut app = App::new(ctx);
         app.max_fps = false;
         let mut cfg = ConnConfig::new(Kind::Postgres);
@@ -616,7 +616,7 @@ pub(crate) mod screenshots {
     #[test]
     #[ignore]
     fn screenshots() {
-        let dir = std::env::var("DBLITE_SHOTS").unwrap_or_else(|_| "target/shots".into());
+        let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
         std::fs::create_dir_all(&dir).unwrap();
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1280.0, 760.0))
@@ -657,7 +657,7 @@ pub(crate) mod screenshots {
         }
         // CSV import dialog with a semicolon file from a spreadsheet.
         {
-            let csv = std::env::temp_dir().join("dblite-shot-customers.csv");
+            let csv = std::env::temp_dir().join("tabella-shot-customers.csv");
             std::fs::write(
                 &csv,
                 "Name;Email;Active;Balance;Notes\nMary Smith;mary@example.com;yes;1520,30;longtime customer\nJohn Jones;john@example.com;no;;\nAnna Parker;anna@example.com;yes;88,00;referral\n",
@@ -2266,7 +2266,7 @@ pub(crate) mod screenshots {
 }
 
 /// The main screens at small sizes and larger zoom, where layouts break first:
-/// `DBLITE_SHOTS=<dir> cargo test ux_sweep -- --ignored` writes `<dir>/sweep/*.png`.
+/// `TABELLA_SHOTS=<dir> cargo test ux_sweep -- --ignored` writes `<dir>/sweep/*.png`.
 #[cfg(test)]
 mod ux_sweep {
     use eframe::egui;
@@ -2278,7 +2278,7 @@ mod ux_sweep {
     #[test]
     #[ignore]
     fn ux_sweep() {
-        let dir = std::env::var("DBLITE_SHOTS").unwrap_or_else(|_| "target/shots".into());
+        let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
         let out = format!("{dir}/sweep");
         std::fs::create_dir_all(&out).unwrap();
         for (w, h, zoom) in [(1024.0, 640.0, 1.0), (1366.0, 768.0, 1.25), (1920.0, 1080.0, 1.5)] {

@@ -1,7 +1,7 @@
 -- Sample data for the "dev-mysql" connection (MySQL on localhost:3307, database `shop`). Heavy on
 -- purpose, like dev/postgres.sql. Rerunnable: drops and recreates what it owns.
 --
---   docker exec -i dblite-mysql mysql -uroot -pmysql shop < dev/mysql.sql      (~2-4 min)
+--   docker compose exec -T dev-mysql mysql -uroot -pmysql shop < dev/mysql.sql      (~2-4 min)
 
 SET SESSION sql_log_bin = 0;
 DROP TABLE IF EXISTS sales, logs, products, digits, seq;

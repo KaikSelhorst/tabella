@@ -244,7 +244,7 @@ pub(crate) mod tests {
 
     /// A fresh database file with two related tables, an index, a view and a trigger.
     pub fn sample_db(name: &str) -> crate::db::ConnConfig {
-        let path = std::env::temp_dir().join(format!("dblite-{name}-{}.db", std::process::id()));
+        let path = std::env::temp_dir().join(format!("tabella-{name}-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         create(&path.display().to_string()).unwrap();
         let mut cfg = crate::db::ConnConfig::new(crate::db::Kind::Sqlite);
@@ -318,7 +318,7 @@ pub(crate) mod tests {
         assert_eq!(trig.table, "purchase");
         assert!(c.object_source(trig).unwrap().contains("END;"));
         let (dbs, here, schema) = c.location().unwrap();
-        assert!(dbs.is_empty() && here.starts_with("dblite-catalog") && schema.is_empty());
+        assert!(dbs.is_empty() && here.starts_with("tabella-catalog") && schema.is_empty());
         let st = c.structure("main", "purchase").unwrap();
         assert!(
             st.ddl.contains("CREATE TABLE purchase") && st.ddl.contains("CREATE INDEX purchase_customer"),

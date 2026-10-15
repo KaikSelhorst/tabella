@@ -1,7 +1,7 @@
 name: Release
 
 # Publishing a release on GitHub (with a tag matching Cargo.toml's version, e.g. v0.2.0) builds
-# dblite and attaches to that release:
+# tabella and attaches to that release:
 #   Windows: the .exe, and a .zip with it and the README
 #   Linux:   an AppImage, a .deb and a .tar.gz with the binary and the README
 # each with a SHA-256 checksum next to it.
@@ -54,10 +54,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "dblite-$env:TAG-${{ matrix.name }}"
+          $name = "tabella-$env:TAG-${{ matrix.name }}"
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/dblite.exe "dist/$name.exe"
-          Compress-Archive -Path target/release/dblite.exe, README.md -DestinationPath "dist/$name.zip"
+          Copy-Item target/release/tabella.exe "dist/$name.exe"
+          Compress-Archive -Path target/release/tabella.exe, README.md -DestinationPath "dist/$name.zip"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -66,11 +66,11 @@ jobs:
           # Pinned, checksum-verified AppImage tools: cargo-packager then downloads nothing.
           source .github/scripts/appimage-tools.sh
           cargo packager --release
-          name="dblite-$TAG-${{ matrix.name }}"
+          name="tabella-$TAG-${{ matrix.name }}"
           mkdir -p "dist/$name"
           mv target/packages/*.AppImage "dist/$name.AppImage"
           mv target/packages/*.deb "dist/$name.deb"
-          cp target/release/dblite README.md "dist/$name/"
+          cp target/release/tabella README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -r "dist/$name"
 

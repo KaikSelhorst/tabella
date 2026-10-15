@@ -1008,40 +1008,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
-name = "dblite"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "base64 0.23.1",
- "calamine",
- "chacha20poly1305",
- "csv",
- "dirs",
- "eframe",
- "egui-phosphor",
- "egui_extras",
- "egui_kittest",
- "fallible-iterator 0.3.0",
- "getrandom 0.3.4",
- "image",
- "keyring",
- "mysql",
- "postgres",
- "rfd",
- "rusqlite",
- "rust_xlsxwriter",
- "rustls",
- "serde",
- "serde_json",
- "sqlformat",
- "thiserror 2.0.21",
- "tokio-postgres-rustls",
- "webpki-roots",
- "winresource",
- "zip",
-]
-
-[[package]]
 name = "dbus"
 version = "0.9.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4290,6 +4256,40 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "tabella"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "base64 0.23.1",
+ "calamine",
+ "chacha20poly1305",
+ "csv",
+ "dirs",
+ "eframe",
+ "egui-phosphor",
+ "egui_extras",
+ "egui_kittest",
+ "fallible-iterator 0.3.0",
+ "getrandom 0.3.4",
+ "image",
+ "keyring",
+ "mysql",
+ "postgres",
+ "rfd",
+ "rusqlite",
+ "rust_xlsxwriter",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sqlformat",
+ "thiserror 2.0.21",
+ "tokio-postgres-rustls",
+ "webpki-roots",
+ "winresource",
+ "zip",
 ]
 
 [[package]]

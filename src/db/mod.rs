@@ -645,9 +645,9 @@ impl Conn {
     pub fn atomically<T>(&mut self, nested: bool, f: impl FnOnce(&mut Conn) -> DbResult<T>) -> DbResult<T> {
         let (begin, commit, rollback) = match (nested, self.kind()) {
             (true, _) => (
-                "SAVEPOINT dblite_batch",
-                "RELEASE SAVEPOINT dblite_batch",
-                "ROLLBACK TO SAVEPOINT dblite_batch",
+                "SAVEPOINT tabella_batch",
+                "RELEASE SAVEPOINT tabella_batch",
+                "ROLLBACK TO SAVEPOINT tabella_batch",
             ),
             (false, Kind::Postgres | Kind::Sqlite) => ("BEGIN", "COMMIT", "ROLLBACK"),
             (false, Kind::MySql) => ("START TRANSACTION", "COMMIT", "ROLLBACK"),
@@ -691,7 +691,7 @@ impl Conn {
             ));
         }
         let (begin, rollback) = if nested {
-            ("SAVEPOINT dblite_preview", "ROLLBACK TO SAVEPOINT dblite_preview")
+            ("SAVEPOINT tabella_preview", "ROLLBACK TO SAVEPOINT tabella_preview")
         } else {
             ("BEGIN", "ROLLBACK")
         };
@@ -1543,7 +1543,7 @@ mod tests {
         {
             use crate::import::{ImportSpec, run};
             let path =
-                std::env::temp_dir().join(format!("dblite-import-{kind:?}-{}.csv", std::process::id()));
+                std::env::temp_dir().join(format!("tabella-import-{kind:?}-{}.csv", std::process::id()));
             std::fs::write(&path, "code;name\n10;ten\n11;\n").unwrap();
             let schema = if kind == Kind::MySql { db } else { "public" };
             let mut spec = ImportSpec {

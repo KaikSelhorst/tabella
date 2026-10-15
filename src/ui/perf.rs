@@ -226,13 +226,13 @@ fn frame_times() {
 }
 
 /// Contact sheets of the screenshots, for reviewing many screens at once:
-/// `DBLITE_SHOTS=<dir> cargo test contact_sheets -- --ignored` writes `<dir>/sheets/NN.png`
+/// `TABELLA_SHOTS=<dir> cargo test contact_sheets -- --ignored` writes `<dir>/sheets/NN.png`
 /// (2 x 3 screens each, half size) and lists what is on each.
 #[test]
 #[ignore]
 fn contact_sheets() {
     use image::{GenericImage, RgbaImage, imageops};
-    let Ok(dir) = std::env::var("DBLITE_SHOTS") else {
+    let Ok(dir) = std::env::var("TABELLA_SHOTS") else {
         return;
     };
     let mut files: Vec<_> = std::fs::read_dir(&dir)
@@ -263,12 +263,12 @@ fn contact_sheets() {
 }
 
 /// A zoomed piece of a screenshot, to look at details:
-/// `DBLITE_CROP=<in.png>:<x>,<y>,<w>,<h>:<scale>:<out.png> cargo test crop_shot -- --ignored`.
+/// `TABELLA_CROP=<in.png>:<x>,<y>,<w>,<h>:<scale>:<out.png> cargo test crop_shot -- --ignored`.
 #[test]
 #[ignore]
 fn crop_shot() {
     use image::imageops;
-    let Ok(spec) = std::env::var("DBLITE_CROP") else {
+    let Ok(spec) = std::env::var("TABELLA_CROP") else {
         return;
     };
     let parts: Vec<&str> = spec.split(':').collect();

@@ -1,4 +1,4 @@
-# Databases for dblite.
+# Databases for tabella.
 #
 #   docker compose --profile test up -d --wait   # what `cargo test -- --ignored` expects
 #   docker compose --profile dev up -d --wait    # heavy sample data (millions of rows; ~3 min to seed)

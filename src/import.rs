@@ -322,7 +322,7 @@ pub(crate) mod tests {
     use super::*;
 
     fn file(name: &str, body: &[u8]) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("dblite-import-{}-{name}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("tabella-import-{}-{name}", std::process::id()));
         std::fs::write(&p, body).unwrap();
         p
     }
@@ -352,7 +352,7 @@ pub(crate) mod tests {
     /// A real .xlsx: numbers as typed, dates as ISO, booleans, accents and blanks.
     pub fn xlsx(name: &str) -> PathBuf {
         use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
-        let path = std::env::temp_dir().join(format!("dblite-import-{}-{name}.xlsx", std::process::id()));
+        let path = std::env::temp_dir().join(format!("tabella-import-{}-{name}.xlsx", std::process::id()));
         let mut book = Workbook::new();
         let sheet = book.add_worksheet().set_name("Customers").unwrap();
         let date = Format::new().set_num_format("yyyy-mm-dd");

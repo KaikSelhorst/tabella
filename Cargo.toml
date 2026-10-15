@@ -1,5 +1,5 @@
 [package]
-name = "dblite"
+name = "tabella"
 version = "0.1.0"
 edition = "2024"
 authors = ["Kaik Selhorst"]
@@ -57,8 +57,8 @@ winresource = "0.1"
 
 # Linux packages (AppImage, .deb) for releases: `cargo packager --release` after a release build.
 [package.metadata.packager]
-product-name = "dblite"
-identifier = "dev.dblite.app"
+product-name = "tabella"
+identifier = "dev.tabella.app"
 description = "Lightweight client for PostgreSQL, MySQL and SQLite"
 category = "DeveloperTool"
 icons = ["assets/icon.png"]

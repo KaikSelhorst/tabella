@@ -2,7 +2,7 @@
 -- tables for paging, counts and exports, a wide table with many types, and lots of small
 -- tables for the sidebar. Rerunnable: it drops and recreates everything it owns.
 --
---   docker exec -i dblite-pg psql -U postgres < dev/postgres.sql      (~1-2 min)
+--   docker compose exec -T dev-pg psql -U postgres < dev/postgres.sql      (~1-2 min)
 
 \timing on
 SET client_min_messages = warning;

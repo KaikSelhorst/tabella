@@ -1743,7 +1743,7 @@ impl App {
                 egui::UserAttentionType::Informational,
             ));
         self.ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-            "✓ {title} finished ({} s) · dblite",
+            "✓ {title} finished ({} s) · tabella",
             took.as_secs()
         )));
         self.title_changed = true;
@@ -1754,7 +1754,7 @@ impl App {
         if self.title_changed && self.ctx.input(|i| i.viewport().focused) == Some(true) {
             self.title_changed = false;
             self.ctx
-                .send_viewport_cmd(egui::ViewportCommand::Title("dblite".into()));
+                .send_viewport_cmd(egui::ViewportCommand::Title("tabella".into()));
         }
     }
 
@@ -3539,9 +3539,9 @@ mod poll_tests {
 
     fn app_with(session: Session) -> App {
         let ctx = egui::Context::default();
-        let dir = std::env::temp_dir().join("dblite-poll-tests-config");
+        let dir = std::env::temp_dir().join("tabella-poll-tests-config");
         // SAFETY: tests only point the config at a throwaway directory.
-        unsafe { std::env::set_var("DBLITE_CONFIG_DIR", &dir) };
+        unsafe { std::env::set_var("TABELLA_CONFIG_DIR", &dir) };
         let mut app = App::new(&ctx);
         app.session = Some(session);
         app
@@ -3592,7 +3592,7 @@ mod poll_tests {
     fn sql_files_open_save_and_guard_unsaved_changes() {
         let (s, _jobs, _replies) = fake_session(Kind::Postgres);
         let mut app = app_with(s);
-        let dir = std::env::temp_dir().join(format!("dblite-tabfile-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tabella-tabfile-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("query.sql");
         std::fs::write(&path, "SELECT 1;").unwrap();
@@ -4055,7 +4055,7 @@ mod poll_tests {
     fn replies_reach_their_tab_or_the_session() {
         let (s, _jobs, replies) = fake_session(Kind::Postgres);
         let mut app = app_with(s);
-        let file = std::env::temp_dir().join("dblite-poll-script.sql");
+        let file = std::env::temp_dir().join("tabella-poll-script.sql");
         std::fs::write(&file, "SELECT 1;").unwrap();
         app.open_script(file);
         let tab = app.tabs[0].id;

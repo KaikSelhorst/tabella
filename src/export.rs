@@ -286,7 +286,7 @@ mod tests {
     }
 
     fn export_bytes(format: Format) -> Vec<u8> {
-        let path = std::env::temp_dir().join(format!("dblite-export-{}-{format:?}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("tabella-export-{}-{format:?}", std::process::id()));
         let res = result();
         let cols = [
             ColumnInfo {

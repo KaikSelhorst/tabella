@@ -1,7 +1,7 @@
-//! Other programs dblite starts (`ssh`, the file manager), found by full path.
+//! Other programs tabella starts (`ssh`, the file manager), found by full path.
 //!
 //! On Windows a bare name is looked up in the app's own folder first, so a `ssh.exe` dropped
-//! next to `dblite.exe` would run instead of the real one. System programs come from the Windows
+//! next to `tabella.exe` would run instead of the real one. System programs come from the Windows
 //! folder; anything else from absolute `PATH` entries other than the app's folder.
 
 use std::path::PathBuf;

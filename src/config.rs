@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn passwords_never_reach_the_file() {
-        let dir = std::env::temp_dir().join(format!("dblite-config-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tabella-config-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut store = SecretStore::vault_at(dir.join("vault.json"));
         let mut c = ConnConfig::new(Kind::Postgres);

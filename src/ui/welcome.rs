@@ -37,7 +37,7 @@ impl App {
             ui.add_space((ui.available_height() * 0.16).max(24.0));
             ui.label(theme::icon(icon::DATABASE).size(36.0).color(t.lime));
             ui.add_space(4.0);
-            ui.label(RichText::new("dblite").size(22.0).color(t.foreground));
+            ui.label(RichText::new("tabella").size(22.0).color(t.foreground));
             ui.label(RichText::new("Lightweight client for PostgreSQL, MySQL and SQLite").color(t.muted_foreground));
             ui.add_space(24.0);
 

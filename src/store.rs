@@ -1,4 +1,4 @@
-//! dblite's own JSON files (connections, favorites, settings...): private to the user, written
+//! tabella's own JSON files (connections, favorites, settings...): private to the user, written
 //! atomically, and never silently replaced when they can't be read.
 
 use std::fs::OpenOptions;
@@ -18,12 +18,23 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
 }
 
-/// Where dblite keeps its files. `DBLITE_CONFIG_DIR` overrides it (tests, portable setups).
+/// Where tabella keeps its files. `TABELLA_CONFIG_DIR` overrides it (tests, portable setups).
 pub fn dir() -> Option<PathBuf> {
-    match std::env::var_os("DBLITE_CONFIG_DIR") {
+    match std::env::var_os("TABELLA_CONFIG_DIR") {
         Some(d) => Some(PathBuf::from(d)),
-        None => dirs::config_dir().map(|d| d.join("dblite")),
+        None => dirs::config_dir().map(|d| migrated(&d)),
     }
+}
+
+/// `tabella` inside `base`. The app used to be called dblite: its folder is renamed the first
+/// time, and kept in use if that fails (open by another program), so nothing is ever lost.
+fn migrated(base: &Path) -> PathBuf {
+    let dir = base.join("tabella");
+    let old = base.join("dblite");
+    if !dir.exists() && old.is_dir() && std::fs::rename(&old, &dir).is_err() {
+        return old;
+    }
+    dir
 }
 
 /// `name` inside the config directory.
@@ -146,10 +157,23 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("dblite-store-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tabella-store-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_old_folder_moves_to_the_new_name() {
+        let base = temp_dir("migrate");
+        std::fs::create_dir_all(base.join("dblite")).unwrap();
+        std::fs::write(base.join("dblite/connections.json"), "[]").unwrap();
+        assert_eq!(migrated(&base), base.join("tabella"));
+        assert!(base.join("tabella/connections.json").exists());
+        assert!(!base.join("dblite").exists());
+        // Already moved, or a fresh install: just the new name.
+        assert_eq!(migrated(&base), base.join("tabella"));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
