@@ -400,10 +400,7 @@ mod tests {
         let mut again = Vault::load(Some(path.clone()));
         assert!(again.exists() && !again.is_unlocked() && again.has("dev"));
         assert_eq!(again.get("dev"), None);
-        assert_eq!(
-            again.unlock("wrong-wrong"),
-            Err("Wrong master password".into())
-        );
+        assert_eq!(again.unlock("wrong-wrong"), Err("Wrong master password".into()));
         again.unlock("good-master-password").unwrap();
         assert_eq!(again.get("dev").as_deref(), Some("s3cr3t café"));
         again.delete("dev").unwrap();

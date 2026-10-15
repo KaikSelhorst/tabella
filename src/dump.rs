@@ -686,7 +686,10 @@ mod tests {
         assert_eq!(last(&mut c, "purchase"), last_purchase + 1, "{kind:?}");
         let obs = one(
             &mut c,
-            &format!("SELECT note FROM dbl_dump.purchase WHERE id = {}", last_purchase + 1),
+            &format!(
+                "SELECT note FROM dbl_dump.purchase WHERE id = {}",
+                last_purchase + 1
+            ),
         );
         assert_eq!(obs, "auto", "{kind:?}");
         if pg {

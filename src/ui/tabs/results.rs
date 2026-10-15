@@ -73,11 +73,7 @@ pub(super) fn summary(res: &QueryResult) -> String {
             res.elapsed.as_millis()
         )
     } else {
-        let truncated = if res.truncated {
-            " · result truncated"
-        } else {
-            ""
-        };
+        let truncated = if res.truncated { " · result truncated" } else { "" };
         format!(
             "{} row(s) · {} ms{truncated}",
             res.rows.len(),
@@ -126,9 +122,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
             ui.add_space(48.0);
             ui.vertical_centered(|ui| {
                 ui.label(theme::icon(icon::PLAY).size(20.0).color(t.subtle));
-                ui.label(
-                    egui::RichText::new("Run a query to see the result here").color(t.subtle),
-                );
+                ui.label(egui::RichText::new("Run a query to see the result here").color(t.subtle));
             });
         }
         return;
@@ -149,7 +143,10 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
                     src.table
                 ))
             } else {
-                Some(format!("· include {} in the SELECT to be able to edit", pk.join(", ")))
+                Some(format!(
+                    "· include {} in the SELECT to be able to edit",
+                    pk.join(", ")
+                ))
             }
         }
         _ => None,
@@ -1042,11 +1039,7 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
                         .color(t.subtle),
                 );
                 if !ve.editable {
-                    ui.label(
-                        egui::RichText::new("· read-only")
-                            .size(11.0)
-                            .color(t.subtle),
-                    );
+                    ui.label(egui::RichText::new("· read-only").size(11.0).color(t.subtle));
                 }
             });
             ui.add_space(8.0);

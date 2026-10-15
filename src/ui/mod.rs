@@ -149,7 +149,8 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(theme::icon(icon::WARNING).color(accent));
                     let text = if txn.failed {
-                        "Open transaction with an error: a statement failed, it can only be rolled back".to_string()
+                        "Open transaction with an error: a statement failed, it can only be rolled back"
+                            .to_string()
                     } else if txn.writes == 0 {
                         "Open transaction: nothing was written yet".to_string()
                     } else {
@@ -300,13 +301,9 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_width(480.0);
                 ui.label(
-                    egui::RichText::new(if saving {
-                        "Save as"
-                    } else {
-                        "Open SQL file"
-                    })
-                    .size(15.0)
-                    .color(t.foreground),
+                    egui::RichText::new(if saving { "Save as" } else { "Open SQL file" })
+                        .size(15.0)
+                        .color(t.foreground),
                 );
                 ui.add_space(8.0);
                 let r = ui.add(
@@ -322,10 +319,7 @@ impl App {
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add(theme::primary_button(
-                            None,
-                            if saving { "Save" } else { "Open" },
-                        ))
+                        .add(theme::primary_button(None, if saving { "Save" } else { "Open" }))
                         .clicked()
                     {
                         ok = true;
@@ -719,7 +713,11 @@ pub(crate) mod screenshots {
                 table: "customers".into(),
                 data: Some(data),
             };
-            let tab = Tab::new(3, "customers · structure".into(), TabKind::Structure(Box::new(st)));
+            let tab = Tab::new(
+                3,
+                "customers · structure".into(),
+                TabKind::Structure(Box::new(st)),
+            );
             harness.state_mut().tabs.push(tab);
             harness.state_mut().active = 2;
             harness.run();
@@ -1017,17 +1015,11 @@ pub(crate) mod screenshots {
                     distinct: 10,
                     min: None,
                     max: None,
-                    top: [
-                        "New York",
-                        "Los Angeles",
-                        "Chicago",
-                        "Chicago",
-                        "Boston",
-                    ]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| (Some(c.to_string()), 100_000 - i as i64 * 7_000))
-                    .collect(),
+                    top: ["New York", "Los Angeles", "Chicago", "Chicago", "Boston"]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| (Some(c.to_string()), 100_000 - i as i64 * 7_000))
+                        .collect(),
                 })),
             });
             harness.run();
@@ -1101,7 +1093,8 @@ pub(crate) mod screenshots {
             tab.selected = None;
             if let Some(text) = tab.editor_mut().map(|ed| &mut ed.text) {
                 *text =
-                    "SELECT id, name, balance\nFROM public.customers\nWHERE active\nORDER BY balance DESC;".into();
+                    "SELECT id, name, balance\nFROM public.customers\nWHERE active\nORDER BY balance DESC;"
+                        .into();
             }
         }
 
@@ -1192,7 +1185,8 @@ pub(crate) mod screenshots {
 
             let tab = &mut harness.state_mut().tabs[1];
             tab.editor_mut().unwrap().preview = Some(crate::app::PreviewState {
-                sql: "UPDATE customers SET active = false\nWHERE state = 'NY' AND created_at < '2023-01-01'".into(),
+                sql: "UPDATE customers SET active = false\nWHERE state = 'NY' AND created_at < '2023-01-01'"
+                    .into(),
                 data: Some(Ok(crate::db::PreviewData {
                     count: 18_342,
                     sample: QueryResult {
@@ -1725,7 +1719,8 @@ pub(crate) mod screenshots {
         harness.state_mut().active = 1;
         harness.state_mut().dialog = Some(crate::app::Dialog::Favorite(crate::app::FavPrompt {
             name: "Customers with the highest balance".into(),
-            sql: "SELECT id, name, balance\nFROM public.customers\nWHERE active\nORDER BY balance DESC;".into(),
+            sql: "SELECT id, name, balance\nFROM public.customers\nWHERE active\nORDER BY balance DESC;"
+                .into(),
             shared: false,
         }));
         harness.run();

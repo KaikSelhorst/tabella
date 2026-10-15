@@ -699,11 +699,7 @@ fn header_menu(
         ui.close();
     }
     ui.separator();
-    let pin = if vi < pinned {
-        "Unpin"
-    } else {
-        "Pin to the left"
-    };
+    let pin = if vi < pinned { "Unpin" } else { "Pin to the left" };
     if ui
         .button(pin)
         .on_hover_text("Pinned columns stay visible when scrolling sideways")
@@ -907,11 +903,7 @@ fn cell_menu(
             event = Some(GridEvent::Commit(ri, ci, None));
             ui.close();
         }
-        let label = if row_deleted {
-            "Restore row"
-        } else {
-            "Delete row"
-        };
+        let label = if row_deleted { "Restore row" } else { "Delete row" };
         if ui.button(label).clicked() {
             event = Some(GridEvent::DeleteRow(ri));
             ui.close();

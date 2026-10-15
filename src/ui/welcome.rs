@@ -38,7 +38,10 @@ impl App {
             ui.label(theme::icon(icon::DATABASE).size(36.0).color(t.lime));
             ui.add_space(4.0);
             ui.label(RichText::new("tabella").size(22.0).color(t.foreground));
-            ui.label(RichText::new("Lightweight client for PostgreSQL, MySQL and SQLite").color(t.muted_foreground));
+            ui.label(
+                RichText::new("Lightweight client for PostgreSQL, MySQL and SQLite")
+                    .color(t.muted_foreground),
+            );
             ui.add_space(24.0);
 
             match &self.session {
@@ -96,10 +99,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.add_space((ui.available_width() - 260.0) / 2.0);
                         open_palette = ui
-                            .add(theme::primary_button(
-                                Some(icon::MAGNIFYING_GLASS),
-                                "Open table",
-                            ))
+                            .add(theme::primary_button(Some(icon::MAGNIFYING_GLASS), "Open table"))
                             .clicked();
                         new_sql = ui.add(theme::outline_button("New SQL")).clicked();
                     });

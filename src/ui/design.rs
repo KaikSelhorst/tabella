@@ -36,7 +36,11 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
                     ui.add_space(8.0);
                     ui.add(
                         TextEdit::singleline(&mut d.schema)
-                            .hint_text(if d.kind == Kind::MySql { "database" } else { "schema" })
+                            .hint_text(if d.kind == Kind::MySql {
+                                "database"
+                            } else {
+                                "schema"
+                            })
                             .font(egui::FontId::monospace(12.5))
                             .desired_width(120.0),
                     );

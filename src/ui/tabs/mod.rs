@@ -206,9 +206,7 @@ impl App {
                                         let mut name = ui
                                             .data(|d| d.get_temp::<String>(name_id))
                                             .unwrap_or_else(|| tab.title.clone());
-                                        ui.label(
-                                            egui::RichText::new("Tab name").size(11.0).color(t.subtle),
-                                        );
+                                        ui.label(egui::RichText::new("Tab name").size(11.0).color(t.subtle));
                                         let r = ui.add(TextEdit::singleline(&mut name).desired_width(200.0));
                                         if r.lost_focus()
                                             && ui.input(|i| i.key_pressed(Key::Enter))
@@ -225,15 +223,16 @@ impl App {
                                             action = Some(TabAction::Duplicate(i));
                                             ui.close();
                                         }
-                                        if ui
-                                            .add_enabled(n > 1, egui::Button::new("Close others"))
-                                            .clicked()
+                                        if ui.add_enabled(n > 1, egui::Button::new("Close others")).clicked()
                                         {
                                             action = Some(TabAction::CloseOthers(i, false));
                                             ui.close();
                                         }
                                         if ui
-                                            .add_enabled(i + 1 < n, egui::Button::new("Close tabs to the right"))
+                                            .add_enabled(
+                                                i + 1 < n,
+                                                egui::Button::new("Close tabs to the right"),
+                                            )
                                             .clicked()
                                         {
                                             action = Some(TabAction::CloseOthers(i, true));
@@ -374,7 +373,8 @@ impl App {
                 match view {
                     Some(o) => self.open_object(o),
                     None => {
-                        self.notice = app::Notice::error(format!("Couldn't find the definition of view {name}"))
+                        self.notice =
+                            app::Notice::error(format!("Couldn't find the definition of view {name}"))
                     }
                 }
             }

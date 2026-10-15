@@ -691,7 +691,10 @@ impl Conn {
             ));
         }
         let (begin, rollback) = if nested {
-            ("SAVEPOINT tabella_preview", "ROLLBACK TO SAVEPOINT tabella_preview")
+            (
+                "SAVEPOINT tabella_preview",
+                "ROLLBACK TO SAVEPOINT tabella_preview",
+            )
         } else {
             ("BEGIN", "ROLLBACK")
         };

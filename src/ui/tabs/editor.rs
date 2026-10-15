@@ -467,13 +467,7 @@ fn repeat_menu(ui: &mut egui::Ui, repeat: &mut Option<u64>, enabled: bool, compa
         None if compact => theme::icon(icon::ARROWS_CLOCKWISE)
             .color(t.muted_foreground)
             .into(),
-        None => theme::icon_text(
-            icon::ARROWS_CLOCKWISE,
-            "Repeat",
-            t.muted_foreground,
-            t.foreground,
-        )
-        .into(),
+        None => theme::icon_text(icon::ARROWS_CLOCKWISE, "Repeat", t.muted_foreground, t.foreground).into(),
     };
     ui.add_enabled_ui(enabled || repeat.is_some(), |ui| {
         ui.menu_button(label, |ui| {
@@ -748,8 +742,7 @@ pub(super) fn run_now(tab: &mut Tab, s: &Session, sql: String, mode: RunMode) {
     }
     let risk = sql::script_risk(&sql);
     if s.cfg.read_only && risk.writes {
-        tab.error =
-            Some("Read-only connection: only queries (SELECT, SHOW, EXPLAIN…) can run.".into());
+        tab.error = Some("Read-only connection: only queries (SELECT, SHOW, EXPLAIN…) can run.".into());
     } else if !risk.dangers.is_empty() {
         tab.confirm_run = Some(sql);
     } else {
@@ -1066,11 +1059,7 @@ pub(super) fn favorites_menu(
         }
         egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
             for f in mine {
-                let scope = if f.conn.is_empty() {
-                    "all connections"
-                } else {
-                    ""
-                };
+                let scope = if f.conn.is_empty() { "all connections" } else { "" };
                 let r = ui.add(
                     egui::Button::new(egui::RichText::new(&f.name).color(t.foreground))
                         .frame_when_inactive(false)

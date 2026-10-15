@@ -1731,7 +1731,8 @@ mod tests {
         );
         // A subquery in WHERE is fine; it isn't in FROM.
         assert!(
-            t("SELECT * FROM orders WHERE customer_id IN (SELECT id FROM customers JOIN x ON true)").is_some()
+            t("SELECT * FROM orders WHERE customer_id IN (SELECT id FROM customers JOIN x ON true)")
+                .is_some()
         );
         for no in [
             "SELECT * FROM a JOIN b ON a.id = b.id",

@@ -599,11 +599,7 @@ mod tests {
         }
         // The same primary key isn't touched.
         assert!(!sql.contains("customers_pkey"), "{sql}");
-        assert!(
-            d[0].items
-                .iter()
-                .any(|i| i.destructive && i.sql.contains("old"))
-        );
+        assert!(d[0].items.iter().any(|i| i.destructive && i.sql.contains("old")));
     }
 
     #[test]

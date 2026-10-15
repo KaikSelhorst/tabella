@@ -412,10 +412,7 @@ pub(crate) fn run_script(
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            return (
-                p,
-                Some(fail(format!("couldn't open: {e}"), 0, "", false)),
-            );
+            return (p, Some(fail(format!("couldn't open: {e}"), 0, "", false)));
         }
     };
     let kind = conn.kind();
@@ -921,7 +918,10 @@ impl<S: Fn(Reply)> Worker<'_, S> {
             // Postgres refuses COMMIT after a failed statement anyway; say why nothing was kept.
             let rolled_back = self.conn.query("ROLLBACK");
             Err(DbError::Other(match rolled_back {
-                Ok(_) => "a statement in the transaction failed, so it was rolled back: nothing was committed".into(),
+                Ok(_) => {
+                    "a statement in the transaction failed, so it was rolled back: nothing was committed"
+                        .into()
+                }
                 Err(e) => format!("a statement in the transaction failed and so did the ROLLBACK: {e}"),
             }))
         } else {
@@ -1398,10 +1398,14 @@ mod tests {
         c.query("DROP TABLE dbl_script").unwrap();
 
         // Fails on line 3 of the tail: rolled back as a whole (Postgres undoes the CREATE too).
-        let broken = format!("{body}INSERT INTO dbl_script VALUES (3, 'three');\nSELECT * FROM does_not_exist;\n");
+        let broken =
+            format!("{body}INSERT INTO dbl_script VALUES (3, 'three');\nSELECT * FROM does_not_exist;\n");
         let (_, err) = run(&mut c, &broken, true);
         let err = err.expect("error");
-        assert!(err.statement.contains("does_not_exist") && !err.cancelled, "{err:?}");
+        assert!(
+            err.statement.contains("does_not_exist") && !err.cancelled,
+            "{err:?}"
+        );
         assert_eq!(err.line, broken.lines().count() as u64);
         if pg {
             assert_eq!(count(&mut c), None, "the table went away with the rollback");

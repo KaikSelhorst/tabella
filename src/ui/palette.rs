@@ -246,7 +246,9 @@ impl App {
                 items.push(Item {
                     icon: icon::PLAY,
                     label: "Run .sql file…".into(),
-                    detail: "dump or large migration, statement by statement, without opening it in the editor".into(),
+                    detail:
+                        "dump or large migration, statement by statement, without opening it in the editor"
+                            .into(),
                     cmd: Cmd::RunFile,
                 });
                 items.push(Item {

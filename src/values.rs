@@ -797,7 +797,10 @@ mod tests {
         assert_eq!(d.rows[2], RowDiff::Added(2));
         assert_eq!(d.rows[3], RowDiff::Removed(1));
         let (old, new) = d.cell(&a, &b, &d.rows[1], 1);
-        assert_eq!((old, new), (Some(&Some("anna".into())), Some(&Some("ANNA".into()))));
+        assert_eq!(
+            (old, new),
+            (Some(&Some("anna".into())), Some(&Some("ANNA".into())))
+        );
         // By position: row 0 against row 0, and so on.
         let p = diff_results(&a, &b, None);
         assert_eq!((p.removed, p.added, p.changed, p.same), (0, 0, 3, 0));

@@ -27,7 +27,10 @@ fn main() {
     }
     let mut res = winresource::WindowsResource::new();
     res.set("ProductName", "tabella")
-        .set("FileDescription", "tabella - lightweight PostgreSQL and MySQL client")
+        .set(
+            "FileDescription",
+            "tabella - lightweight PostgreSQL and MySQL client",
+        )
         .set("InternalName", "tabella")
         .set("OriginalFilename", "tabella.exe")
         .set_icon("assets/icon.ico")

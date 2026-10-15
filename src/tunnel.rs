@@ -25,8 +25,8 @@ impl Tunnel {
         check_arg("SSH host", &ssh.host, true)?;
         check_arg("database host", db_host, true)?;
         let local_port = free_port().map_err(|e| format!("no free local port: {e}"))?;
-        let mut cmd = crate::programs::command("ssh")
-            .ok_or("ssh client not found; install Windows' OpenSSH Client")?;
+        let mut cmd =
+            crate::programs::command("ssh").ok_or("ssh client not found; install Windows' OpenSSH Client")?;
         cmd.args([
             "-N",
             // Fail instead of prompting (there is no terminal) or silently not forwarding.
@@ -62,9 +62,9 @@ impl Tunnel {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let child = cmd.spawn().map_err(|e| {
-            format!("couldn't start ssh ({e}); is the OpenSSH client installed?")
-        })?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("couldn't start ssh ({e}); is the OpenSSH client installed?"))?;
         let mut tunnel = Tunnel { child, local_port };
         tunnel.wait_ready()?;
         Ok(tunnel)

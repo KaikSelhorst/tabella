@@ -41,10 +41,26 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 ui.label(theme::icon(icon::PULSE).size(15.0).color(t.muted_foreground));
                 ui.spacing_mut().item_spacing.x = 0.0;
                 for (view, label, tip) in [
-                    (ActivityView::Sessions, "Sessions", "Who is connected and what they're running"),
-                    (ActivityView::Locks, "Locks", "Sessions waiting on another one's locks (the first column is the blocker)"),
-                    (ActivityView::Slow, "Slow queries", "What took the most server time since the statistics were last reset"),
-                    (ActivityView::Server, "Server", "Version, size, connections, cache, biggest tables and unused indexes"),
+                    (
+                        ActivityView::Sessions,
+                        "Sessions",
+                        "Who is connected and what they're running",
+                    ),
+                    (
+                        ActivityView::Locks,
+                        "Locks",
+                        "Sessions waiting on another one's locks (the first column is the blocker)",
+                    ),
+                    (
+                        ActivityView::Slow,
+                        "Slow queries",
+                        "What took the most server time since the statistics were last reset",
+                    ),
+                    (
+                        ActivityView::Server,
+                        "Server",
+                        "Version, size, connections, cache, biggest tables and unused indexes",
+                    ),
                 ] {
                     let on = st.view == view;
                     let color = if on { t.foreground } else { t.muted_foreground };
@@ -80,24 +96,32 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     ui.separator();
                     if view == ActivityView::Slow {
                         if ui
-                            .add_enabled(!busy, egui::Button::new(theme::icon_text(
-                                icon::ERASER,
-                                "Reset statistics",
-                                t.muted_foreground,
-                                t.foreground,
-                            )))
-                            .on_hover_text("Restarts the count: useful to measure only what happens from now on")
+                            .add_enabled(
+                                !busy,
+                                egui::Button::new(theme::icon_text(
+                                    icon::ERASER,
+                                    "Reset statistics",
+                                    t.muted_foreground,
+                                    t.foreground,
+                                )),
+                            )
+                            .on_hover_text(
+                                "Restarts the count: useful to measure only what happens from now on",
+                            )
                             .clicked()
                         {
                             reset_stats = true;
                         }
                         if ui
-                            .add_enabled(selected_query.is_some(), egui::Button::new(theme::icon_text(
-                                icon::CODE,
-                                "Open in editor",
-                                t.muted_foreground,
-                                t.foreground,
-                            )))
+                            .add_enabled(
+                                selected_query.is_some(),
+                                egui::Button::new(theme::icon_text(
+                                    icon::CODE,
+                                    "Open in editor",
+                                    t.muted_foreground,
+                                    t.foreground,
+                                )),
+                            )
                             .on_disabled_hover_text("Select a query")
                             .clicked()
                             && let Some(q) = &selected_query
@@ -115,8 +139,7 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     {
                         st.confirm_kill = target.map(|id| (id, true));
                     }
-                    let stop =
-                        theme::icon_text(icon::STOP, "Cancel query", t.muted_foreground, t.foreground);
+                    let stop = theme::icon_text(icon::STOP, "Cancel query", t.muted_foreground, t.foreground);
                     if ui
                         .add_enabled(target.is_some() && !busy, egui::Button::new(stop))
                         .on_disabled_hover_text("Select a session")

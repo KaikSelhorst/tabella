@@ -494,9 +494,11 @@ fn color_picker(ui: &mut egui::Ui, color: &mut Option<Tag>) {
     let t = theme::tokens();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let none = egui::RichText::new("none")
-            .size(11.0)
-            .color(if color.is_none() { t.foreground } else { t.subtle });
+        let none = egui::RichText::new("none").size(11.0).color(if color.is_none() {
+            t.foreground
+        } else {
+            t.subtle
+        });
         if ui
             .add(egui::Button::new(none).selected(color.is_none()))
             .clicked()
@@ -536,11 +538,7 @@ impl App {
                 ui.set_width(420.0);
                 ui.horizontal(|ui| {
                     ui.label(theme::icon(icon::STAR).size(16.0).color(t.warning));
-                    ui.label(
-                        egui::RichText::new("Save query")
-                            .size(15.0)
-                            .color(t.foreground),
-                    );
+                    ui.label(egui::RichText::new("Save query").size(15.0).color(t.foreground));
                 });
                 ui.add_space(8.0);
                 let r = ui.add(

@@ -163,13 +163,8 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let start = ui.cursor().right();
                     if is_view {
-                        let code = theme::tool(
-                            icon::CODE,
-                            "View code",
-                            compact,
-                            t.muted_foreground,
-                            t.foreground,
-                        );
+                        let code =
+                            theme::tool(icon::CODE, "View code", compact, t.muted_foreground, t.foreground);
                         view_source = ui
                             .button(code)
                             .on_hover_text("The view's definition, in the editor")
@@ -178,10 +173,7 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         add_record = ui
                             .add_enabled(
                                 !s.cfg.read_only,
-                                theme::primary_button(
-                                    Some(icon::PLUS),
-                                    if compact { "" } else { "Record" },
-                                ),
+                                theme::primary_button(Some(icon::PLUS), if compact { "" } else { "Record" }),
                             )
                             .on_hover_text("New record")
                             .on_disabled_hover_text("Read-only connection")
@@ -494,8 +486,7 @@ pub(super) fn filters_menu(
             );
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             let ok = can_save && !name.trim().is_empty();
-            if (ui.add_enabled(ok, egui::Button::new("Save")).clicked() || (enter && ok))
-                && action.is_none()
+            if (ui.add_enabled(ok, egui::Button::new("Save")).clicked() || (enter && ok)) && action.is_none()
             {
                 action = Some(FilterAction::Save(name.trim().to_string()));
                 name.clear();

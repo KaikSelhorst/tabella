@@ -25,10 +25,7 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Close tab (right-click the tab: rename, duplicate, close others)",
             ),
             ("Ctrl+Shift+T", "Reopen the last closed tab"),
-            (
-                "Ctrl+O",
-                "Open .sql file (or drag the file onto the window)",
-            ),
+            ("Ctrl+O", "Open .sql file (or drag the file onto the window)"),
             (
                 "Ctrl+P → Run .sql file",
                 "Runs a large dump/migration statement by statement, with progress",
@@ -52,7 +49,10 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Editor SQL",
         &[
-            ("Ctrl+Enter", "Run the statement under the cursor (or the selection)"),
+            (
+                "Ctrl+Enter",
+                "Run the statement under the cursor (or the selection)",
+            ),
             ("F5", "Run all"),
             ("Ctrl+E", "Execution plan (EXPLAIN)"),
             (

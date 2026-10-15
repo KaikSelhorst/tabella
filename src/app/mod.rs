@@ -1704,14 +1704,16 @@ impl App {
     /// Closes the connection. Refused (returns false) while a tab has unsaved changes.
     pub fn disconnect(&mut self) -> bool {
         if self.session.as_ref().is_some_and(|s| s.txn.open) {
-            self.notice =
-                Notice::error("There's an open transaction: commit or roll back before switching connections.");
+            self.notice = Notice::error(
+                "There's an open transaction: commit or roll back before switching connections.",
+            );
             return false;
         }
         if let Some(i) = self.tabs.iter().position(has_unsaved) {
             self.active = i;
-            self.notice =
-                Notice::error("There are unsaved changes: save or discard them before switching connections.");
+            self.notice = Notice::error(
+                "There are unsaved changes: save or discard them before switching connections.",
+            );
             return false;
         }
         if let Some(s) = self.session.take() {
@@ -1846,9 +1848,8 @@ impl App {
         if let Some(t) = self.tabs.get_mut(i)
             && has_unsaved(t)
         {
-            t.error = Some(
-                "This tab has unsaved changes: save (Ctrl+S) or discard them before closing.".into(),
-            );
+            t.error =
+                Some("This tab has unsaved changes: save (Ctrl+S) or discard them before closing.".into());
             self.active = i;
             return;
         }
@@ -3068,10 +3069,8 @@ pub fn explain(tab: &mut Tab, s: &Session, sql: &str, analyze: bool) {
     };
     let one: String = sql.chars().skip(a).take(b - a).collect();
     if analyze && sql::script_risk(&one).writes {
-        tab.error = Some(
-            "EXPLAIN ANALYZE really runs the statement: here it's only used on read queries."
-                .into(),
-        );
+        tab.error =
+            Some("EXPLAIN ANALYZE really runs the statement: here it's only used on read queries.".into());
         return;
     }
     tab.error = None;

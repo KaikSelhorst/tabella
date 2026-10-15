@@ -160,11 +160,7 @@ mod tests {
         let mut c = ConnConfig::new(Kind::Postgres);
         assert!(apply(&mut c, "localhost:5432").is_err());
         assert!(apply(&mut c, "redis://x").unwrap_err().contains("redis"));
-        assert!(
-            apply(&mut c, "postgres://h:abc/db")
-                .unwrap_err()
-                .contains("port")
-        );
+        assert!(apply(&mut c, "postgres://h:abc/db").unwrap_err().contains("port"));
         assert!(apply(&mut c, "postgres://u:%zz@h/db").is_err());
     }
 

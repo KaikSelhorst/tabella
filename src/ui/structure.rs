@@ -214,9 +214,11 @@ pub fn insert_form(
                 );
             });
             ui.label(
-                RichText::new("\"Default\" lets the database fill it in (DEFAULT, sequence, auto_increment).")
-                    .size(11.0)
-                    .color(t.subtle),
+                RichText::new(
+                    "\"Default\" lets the database fill it in (DEFAULT, sequence, auto_increment).",
+                )
+                .size(11.0)
+                .color(t.subtle),
             );
             ui.add_space(8.0);
             // Short forms draw directly. Long ones scroll in a box of fixed height: a scroll area

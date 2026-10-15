@@ -275,7 +275,10 @@ pub(crate) mod tests {
         // Catalog.
         let tables = c.tables().unwrap();
         let names: Vec<(&str, bool)> = tables.iter().map(|t| (t.name.as_str(), t.is_view)).collect();
-        assert_eq!(names, [("customer", false), ("purchase", false), ("summary", true)]);
+        assert_eq!(
+            names,
+            [("customer", false), ("purchase", false), ("summary", true)]
+        );
         assert!(tables.iter().all(|t| t.schema == "main"));
         let cols = c.columns_with_fks("main", "purchase").unwrap();
         let id = &cols[0];
@@ -342,7 +345,10 @@ pub(crate) mod tests {
             page: 0,
         };
         assert_eq!(c.query(&sql::select_page(k, &q)).unwrap().rows.len(), 3);
-        assert_eq!(c.count(&sql::count(k, "main", "purchase", "total > 8")).unwrap(), 2);
+        assert_eq!(
+            c.count(&sql::count(k, "main", "purchase", "total > 8")).unwrap(),
+            2
+        );
         let found = sql::search_condition(k, &["note".to_string()], "AUT");
         assert_eq!(
             c.query(&format!("SELECT count(*) FROM purchase WHERE {found}"))
@@ -394,7 +400,10 @@ pub(crate) mod tests {
             Some("Beth")
         );
         // Foreign keys are enforced; the trigger ran.
-        assert!(c.query("INSERT INTO purchase (customer_id) VALUES (999)").is_err());
+        assert!(
+            c.query("INSERT INTO purchase (customer_id) VALUES (999)")
+                .is_err()
+        );
         assert_eq!(
             c.query("SELECT note FROM purchase WHERE id = 3").unwrap().rows[0][0].as_deref(),
             Some("auto")
@@ -419,14 +428,8 @@ pub(crate) mod tests {
                 .unwrap();
         }
         assert_eq!(c.count("SELECT count(*) FROM copy2").unwrap(), 0);
-        c.query(&sql::table_action(
-            k,
-            "main",
-            "copy2",
-            sql::TableAction::Drop,
-            "",
-        ))
-        .unwrap();
+        c.query(&sql::table_action(k, "main", "copy2", sql::TableAction::Drop, ""))
+            .unwrap();
         // What needs a server says so.
         assert!(c.activity().unwrap_err().to_string().contains("SQLite"));
         assert!(c.explain("SELECT 1", false).is_err());

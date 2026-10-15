@@ -158,9 +158,7 @@ impl App {
                             ui.separator();
                             if ui
                                 .checkbox(&mut on, "Manual commit in this session")
-                                .on_hover_text(
-                                    "Changes stay in a transaction until you commit or roll back",
-                                )
+                                .on_hover_text("Changes stay in a transaction until you commit or roll back")
                                 .changed()
                             {
                                 manual = Some(on);
@@ -372,11 +370,7 @@ fn tree_toolbar(ui: &mut egui::Ui, s: &Session, by_size: bool) -> Option<TreeAct
                 theme::icon(icon::SORT_DESCENDING).color(if by_size { tk.lime } else { tk.muted_foreground });
             if ui
                 .add(egui::Button::new(sort).frame(false))
-                .on_hover_text(if by_size {
-                    "Sort by name"
-                } else {
-                    "Sort by size"
-                })
+                .on_hover_text(if by_size { "Sort by name" } else { "Sort by size" })
                 .clicked()
             {
                 action = Some(TreeAction::ToggleSort);

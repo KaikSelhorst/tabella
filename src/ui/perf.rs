@@ -169,7 +169,10 @@ fn frame_times() {
         now.elapsed = Duration::from_millis(1);
         tab.result = Some(now);
     }
-    report("editor: comparing 5000 x 20 with the pinned one", harness.time(30));
+    report(
+        "editor: comparing 5000 x 20 with the pinned one",
+        harness.time(30),
+    );
     {
         let ed = harness.state_mut().tabs[1].editor_mut().unwrap();
         ed.pinned = None;
@@ -218,10 +221,7 @@ fn frame_times() {
         selected: 0,
         started: false,
     }));
-    report(
-        "Ctrl+P: 3000 tables + 40k columns, searching",
-        harness.time(30),
-    );
+    report("Ctrl+P: 3000 tables + 40k columns, searching", harness.time(30));
     harness.state_mut().dialog = None;
 }
 

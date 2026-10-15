@@ -245,10 +245,7 @@ mod tests {
             "its neighbours share the next column"
         );
         assert!(p["orders"].0 > 0.0);
-        assert_ne!(
-            p["orders"].1, p["events"].1,
-            "stacked, not on top of each other"
-        );
+        assert_ne!(p["orders"].1, p["events"].1, "stacked, not on top of each other");
         let below = tables
             .iter()
             .take(3)

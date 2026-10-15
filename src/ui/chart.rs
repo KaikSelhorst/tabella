@@ -283,11 +283,7 @@ pub fn chart(
             );
             painter.circle(p, 4.0, color, Stroke::new(2.0, t.background));
         }
-        let tip = format!(
-            "{x}\n{}: {}",
-            res.columns[spec.y],
-            values::format_number(*v)
-        );
+        let tip = format!("{x}\n{}: {}", res.columns[spec.y], values::format_number(*v));
         let galley = painter.layout_no_wrap(tip, FontId::proportional(12.0), t.foreground);
         let size = galley.size() + vec2(16.0, 10.0);
         let mut at = p + vec2(12.0, -size.y - 8.0);
