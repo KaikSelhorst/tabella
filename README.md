@@ -175,8 +175,10 @@ Bump `version` in `Cargo.toml`, commit, then publish a GitHub release tagged wit
 
 A tag that doesn't match `Cargo.toml` fails the workflow before anything is built. To make the
 Linux packages locally: `cargo install cargo-packager --locked`, then
-`cargo build --release && APPIMAGE_EXTRACT_AND_RUN=1 cargo packager --release` (output in
-`target/packages`).
+`cargo build --release && source .github/scripts/appimage-tools.sh && cargo packager --release`
+(output in `target/packages`). That script pins the AppImage tools (linuxdeploy, its AppImage
+plugin, AppRun and the AppImage runtime) to versioned releases checked by SHA-256, so no
+"continuous" build ever gets in; update them there.
 
 ## Databases for development and tests
 

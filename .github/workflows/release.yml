@@ -61,11 +61,10 @@ jobs:
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
-        env:
-          # The AppImage tools are AppImages themselves; runners have no FUSE to mount them.
-          APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
           cargo install cargo-packager --version 0.11.8 --locked
+          # Pinned, checksum-verified AppImage tools: cargo-packager then downloads nothing.
+          source .github/scripts/appimage-tools.sh
           cargo packager --release
           name="dblite-$TAG-${{ matrix.name }}"
           mkdir -p "dist/$name"
