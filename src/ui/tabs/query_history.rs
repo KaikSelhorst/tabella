@@ -155,7 +155,7 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 if r.clicked() {
                     select = Some((e.conn.clone(), e.sql.clone()));
                 }
-                if r.double_clicked() {
+                if r.double_clicked() || r.triple_clicked() {
                     open = Some(e.sql.clone());
                 }
             }

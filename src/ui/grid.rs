@@ -483,9 +483,17 @@ pub fn grid(
                 });
             }
         })
-        .body(|body| {
+        .body(|mut body| {
+            // The cells take the pointer, so the table can't see which row it is over: the cell
+            // under it says so (for the next frame) and the row is highlighted from that.
+            let ctx = body.ui_mut().ctx().clone();
+            let hover_id = egui::Id::new(("grid_hover_row", id));
+            let hovered_row: Option<usize> = ctx.data_mut(|d| d.remove_temp(hover_id));
             body.rows(row_height(), res.rows.len(), |mut row| {
                 let ri = row.index();
+                if hovered_row == Some(ri) {
+                    row.set_hovered(true);
+                }
                 row.col(|ui| {
                     row_background(ui, table_rect, t);
                     cell_chrome(ui, table_rect, t);
@@ -655,17 +663,37 @@ pub fn grid(
                         } else {
                             text
                         };
-                        let label = egui::Label::new(text).truncate().sense(Sense::click_and_drag());
-                        let r = if kind == ValueKind::Number {
+                        // The text only draws; the whole cell takes the clicks, double clicks, drags
+                        // and the context menu (short values and NULLs left little to aim at).
+                        let label = egui::Label::new(text).truncate().selectable(false);
+                        if kind == ValueKind::Number {
                             // A little room before the column's edge, like the left-aligned text has.
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add_space(NUMBER_PAD);
-                                ui.add(label)
-                            })
-                            .inner
+                                ui.add(label);
+                            });
                         } else {
-                            ui.add(label)
-                        };
+                            ui.add(label);
+                        }
+                        let cell = full_cell(ui);
+                        let mut r =
+                            ui.interact(cell, ui.id().with(("cell", ri, ci)), Sense::click_and_drag());
+                        if r.contains_pointer() {
+                            ui.ctx().data_mut(|d| d.insert_temp(hover_id, ri));
+                        }
+                        // A value cut with "…" shows whole under the pointer.
+                        if r.hovered()
+                            && let Some(v) = val
+                        {
+                            let width = ui
+                                .painter()
+                                .layout_no_wrap(v.to_string(), cell_font.clone(), t.foreground)
+                                .size()
+                                .x;
+                            if width > cell.width() - 8.0 {
+                                r = r.on_hover_text(egui::RichText::new(v.as_str()).monospace());
+                            }
+                        }
                         if bool_pick == Some((ri, ci)) {
                             let current = val.as_deref().and_then(crate::sql::parse_bool);
                             let nullable = info[ci].is_none_or(|c| c.nullable);
@@ -686,7 +714,9 @@ pub fn grid(
                         let shift = ui.input(|i| i.modifiers.shift);
                         if fk.is_some() && r.clicked() && ui.input(|i| i.modifiers.command) {
                             event = Some(GridEvent::FollowFk(ri, ci));
-                        } else if can_edit && r.double_clicked() {
+                        // A click to select and a quick double click after it reach egui as a
+                        // triple click: that one edits too.
+                        } else if can_edit && (r.double_clicked() || r.triple_clicked()) {
                             event = Some(GridEvent::StartEdit(ri, ci));
                         } else if r.clicked() && shift {
                             event = Some(GridEvent::Extend(ri, ci));
@@ -875,6 +905,12 @@ pub fn grid(
                     });
                 }
             });
+            // The pointer is over another row now (rows shifted under a still pointer): one more
+            // frame shows it. (Leaving the grid comes with pointer events, which redraw anyway.)
+            let now = ctx.data(|d| d.get_temp::<usize>(hover_id));
+            if now.is_some() && now != hovered_row {
+                ctx.request_repaint();
+            }
         });
     event
 }

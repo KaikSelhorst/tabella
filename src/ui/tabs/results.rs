@@ -510,7 +510,7 @@ pub(super) fn paint_frozen(
                 egui::Id::new(("frozen", tab_id, row, col)),
                 egui::Sense::click(),
             );
-            if r.double_clicked() {
+            if r.double_clicked() || r.triple_clicked() {
                 event = Some(GridEvent::StartEdit(row, col));
             } else if r.clicked() {
                 let shift = ui.input(|i| i.modifiers.shift);

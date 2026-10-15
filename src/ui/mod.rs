@@ -609,6 +609,9 @@ pub(crate) mod screenshots {
         std::fs::create_dir_all(&dir).unwrap();
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1280.0, 760.0))
+            // A screen that never stops redrawing still fails; a modal opening while the grid's
+            // row highlight follows shifted rows takes a few frames to settle.
+            .with_max_steps(8)
             .wgpu()
             .build_eframe(|cc| {
                 super::theme::apply(&cc.egui_ctx);
@@ -2275,6 +2278,56 @@ mod layout_tests {
     use egui_kittest::Harness;
 
     use super::screenshots::fake_app;
+
+    /// The whole cell answers, not just its text: a double click in the empty part of a cell
+    /// (right of a short value) starts editing it, a single one selects it.
+    #[test]
+    fn cells_answer_across_their_whole_width() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            // Frames at 60 Hz, like the app: double clicks depend on real intervals.
+            .with_step_dt(1.0 / 60.0)
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        use egui_kittest::kittest::Queryable;
+        let text = harness.get_by_label("Cliente 5").rect();
+        // 40 points right of the text: still the "nome" cell, nothing written there.
+        let spot = egui::pos2(text.right() + 40.0, text.center().y);
+        let click = |harness: &mut Harness<crate::app::App>| {
+            for pressed in [true, false] {
+                harness.event(egui::Event::PointerButton {
+                    pos: spot,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                });
+            }
+        };
+        harness.event(egui::Event::PointerMoved(spot));
+        click(&mut harness);
+        harness.run();
+        assert_eq!(
+            harness.state().tabs[0].selected,
+            Some((4, 1)),
+            "a click selects the cell"
+        );
+        // About 0.35 s later, a double click: egui reports it as a triple click (it pairs with
+        // the click above, within 0.6 s); that must edit too.
+        for _ in 0..20 {
+            harness.step();
+        }
+        click(&mut harness);
+        click(&mut harness);
+        harness.run();
+        let editing = match &harness.state().tabs[0].kind {
+            crate::app::TabKind::Table(ts) => ts.edit.as_ref().map(|e| (e.row, e.col)),
+            _ => None,
+        };
+        assert_eq!(editing, Some((4, 1)), "a double click there edits it");
+    }
 
     /// The sidebar must keep its width: content wider than the panel makes it grow a little on
     /// every frame (which looked like a slow-motion animation on startup).

@@ -184,7 +184,7 @@ pub fn diagram_tab(
             d.pan = (new_pan.x, new_pan.y);
         }
     }
-    if resp.double_clicked()
+    if (resp.double_clicked() || resp.triple_clicked())
         && let Some(i) = hovered
     {
         action = Some(DiagramAction::OpenTable(d.tables[i].name.clone()));
