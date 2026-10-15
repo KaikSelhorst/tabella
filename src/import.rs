@@ -54,8 +54,9 @@ pub fn preview(path: &Path, has_header: bool) -> Result<Preview, String> {
     let bytes = read_start(path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
     let text = decode(&bytes);
     let first = text.lines().next().unwrap_or("");
-    let delimiter = [b',', b';', b'\t']
-        .into_iter()
+    let delimiter = b",;\t"
+        .iter()
+        .copied()
         .max_by_key(|d| first.bytes().filter(|b| b == d).count())
         .unwrap_or(b',');
     let mut reader = csv::ReaderBuilder::new()
