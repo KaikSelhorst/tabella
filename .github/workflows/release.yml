@@ -1,65 +1,91 @@
 name: Release
 
-# Publishing a release on GitHub (with its tag, e.g. v0.2.0) builds dblite for Windows and
-# Linux and attaches the binaries, plus their SHA-256 checksums, to that release.
+# Publishing a release on GitHub (with a tag matching Cargo.toml's version, e.g. v0.2.0) builds
+# dblite and attaches to that release:
+#   Windows: the .exe, and a .zip with it and the README
+#   Linux:   an AppImage, a .deb and a .tar.gz with the binary and the README
+# each with a SHA-256 checksum next to it.
+#
+# Hardening: third-party actions are pinned to commit SHAs, nothing is restored from a cache
+# (a poisoned cache can't end up in a release), and only this workflow can write to releases.
 on:
   release:
     types: [published]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # upload the release assets
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: windows-x86_64
             os: windows-latest
-            target: x86_64-pc-windows-msvc
+          # The oldest supported Ubuntu: binaries run on distros with this glibc (2.35) or newer.
           - name: linux-x86_64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+    env:
+      TAG: ${{ github.event.release.tag_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.target }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+
+      - name: Check the tag matches Cargo.toml
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "::error::Tag $TAG doesn't match the version in Cargo.toml ($version). Bump Cargo.toml or retag."
+            exit 1
+          fi
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "dblite-${{ github.event.release.tag_name }}-${{ matrix.name }}"
+          $name = "dblite-$env:TAG-${{ matrix.name }}"
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/dblite.exe" "dist/$name.exe"
-          Compress-Archive -Path "target/${{ matrix.target }}/release/dblite.exe", README.md -DestinationPath "dist/$name.zip"
-          Get-ChildItem dist -File | ForEach-Object {
-            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-            "$hash  $($_.Name)" | Out-File -Encoding ascii -NoNewline "$($_.FullName).sha256"
-          }
+          Copy-Item target/release/dblite.exe "dist/$name.exe"
+          Compress-Archive -Path target/release/dblite.exe, README.md -DestinationPath "dist/$name.zip"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
+        env:
+          # The AppImage tools are AppImages themselves; runners have no FUSE to mount them.
+          APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
-          name="dblite-${{ github.event.release.tag_name }}-${{ matrix.name }}"
+          cargo install cargo-packager --version 0.11.8 --locked
+          cargo packager --release
+          name="dblite-$TAG-${{ matrix.name }}"
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/dblite" README.md "dist/$name/"
+          mv target/packages/*.AppImage "dist/$name.AppImage"
+          mv target/packages/*.deb "dist/$name.deb"
+          cp target/release/dblite README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -r "dist/$name"
-          cd dist && for f in *; do sha256sum "$f" > "$f.sha256"; done
+
+      - name: Checksums
+        shell: bash
+        run: |
+          cd dist
+          for f in *; do
+            if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi > "$f.sha256"
+          done
+          ls -l
 
       - name: Attach to the release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber --repo "${{ github.repository }}"
+        run: gh release upload "$TAG" dist/* --clobber --repo "${{ github.repository }}"

@@ -2,6 +2,7 @@
 name = "dblite"
 version = "0.1.0"
 edition = "2024"
+authors = ["Kaik Selhorst"]
 
 [dependencies]
 argon2 = "0.6.0"
@@ -53,3 +54,17 @@ dev-conn = []
 
 [build-dependencies]
 winresource = "0.1"
+
+# Linux packages (AppImage, .deb) for releases: `cargo packager --release` after a release build.
+[package.metadata.packager]
+product-name = "dblite"
+identifier = "dev.dblite.app"
+description = "Lightweight client for PostgreSQL, MySQL and SQLite"
+category = "DeveloperTool"
+icons = ["assets/icon.png"]
+out-dir = "target/packages"
+formats = ["appimage", "deb"]
+
+# What a desktop session already has: the window toolkit loads these at runtime.
+[package.metadata.packager.deb]
+depends = ["libc6", "libgl1", "libegl1", "libxkbcommon-x11-0", "libxcursor1", "libxrandr2", "libxi6"]

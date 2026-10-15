@@ -163,6 +163,21 @@ cargo build --release --target x86_64-pc-windows-gnu       # Windows (needs ming
 The `dev-conn` feature lists the connections of the sample databases (below). It embeds the test
 passwords in the binary: don't use it in distributed builds.
 
+## Releases
+
+Bump `version` in `Cargo.toml`, commit, then publish a GitHub release tagged with that version
+(`v0.2.0` for `0.2.0`). The release workflow builds and attaches:
+
+- Windows: `.exe` and a `.zip`
+- Linux: `.AppImage`, `.deb` and a `.tar.gz` (built on Ubuntu 22.04, so they run on distros
+  with glibc 2.35 or newer)
+- a `.sha256` checksum for each file
+
+A tag that doesn't match `Cargo.toml` fails the workflow before anything is built. To make the
+Linux packages locally: `cargo install cargo-packager --locked`, then
+`cargo build --release && APPIMAGE_EXTRACT_AND_RUN=1 cargo packager --release` (output in
+`target/packages`).
+
 ## Databases for development and tests
 
 ```sh
