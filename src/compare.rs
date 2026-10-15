@@ -63,6 +63,29 @@ pub fn table_def(kind: Kind, st: &TableStructure) -> TableDef {
         ..Default::default()
     };
     match kind {
+        // SQLite: the columns as read; indexes with their own SQL; foreign keys by what they say
+        // (their numbers aren't names).
+        Kind::Sqlite => {
+            def.columns = st
+                .columns
+                .iter()
+                .map(|c| {
+                    let col = Column {
+                        data_type: c.data_type.clone(),
+                        nullable: c.nullable,
+                        default: c.default.clone(),
+                        line: String::new(),
+                    };
+                    (c.name.clone(), col)
+                })
+                .collect();
+            for (name, sql) in st.indexes.iter().filter(|(_, sql)| sql.starts_with("CREATE")) {
+                def.indexes.insert(name.clone(), sql.clone());
+            }
+            for (_, fk) in &st.foreign_keys {
+                def.constraints.insert(fk.clone(), fk.clone());
+            }
+        }
         Kind::Postgres => {
             def.columns = st
                 .columns
@@ -296,6 +319,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
     // Constraints and indexes that go away or change are dropped before the columns change.
     let drop_index = |name: &str| match kind {
         Kind::Postgres => format!("DROP INDEX {}.{};", q(sb), q(name)),
+        Kind::Sqlite => format!("DROP INDEX {};", q(name)),
         Kind::MySql if name == "PRIMARY" => alter("DROP PRIMARY KEY".into()),
         Kind::MySql => alter(format!("DROP INDEX {}", q(name))),
     };
@@ -303,6 +327,9 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
         Kind::Postgres => alter(format!("DROP CONSTRAINT {}", q(name))),
         Kind::MySql if def.contains("FOREIGN KEY") => alter(format!("DROP FOREIGN KEY {}", q(name))),
         Kind::MySql => alter(format!("DROP CHECK {}", q(name))),
+        Kind::Sqlite => {
+            format!("-- SQLite não remove restrição de uma tabela existente ({table}): recrie a tabela")
+        }
     };
     let same = |x: &str, y: &str| plain(kind, x, sa) == plain(kind, y, sb);
     let mut adds = Vec::new();
@@ -340,7 +367,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
     for (name, ca) in &a.columns {
         let c = q(name);
         match (kind, cols_b.get(name)) {
-            (Kind::Postgres, None) => {
+            (Kind::Postgres | Kind::Sqlite, None) => {
                 let mut def = format!("ADD COLUMN {c} {}", ca.data_type);
                 if !ca.nullable {
                     def += " NOT NULL";
@@ -394,6 +421,17 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
                     items.push(item(what, alter(sql), false));
                 }
             }
+            (Kind::Sqlite, Some(cb)) => {
+                let differs =
+                    ca.data_type != cb.data_type || ca.nullable != cb.nullable || ca.default != cb.default;
+                if differs {
+                    items.push(item(
+                        format!("coluna {name}: {} → {}", cb.data_type, ca.data_type),
+                        format!("-- SQLite não altera uma coluna existente ({table}.{c}): recrie a tabela"),
+                        false,
+                    ));
+                }
+            }
             (Kind::MySql, Some(cb)) => {
                 if plain(kind, &ca.line, sa) != plain(kind, &cb.line, sb) {
                     items.push(item(
@@ -423,7 +461,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
         }
         let what = if changed { "recriar" } else { "novo" };
         let sql = match kind {
-            Kind::Postgres => format!("{};", retarget(kind, def, sa, sb)),
+            Kind::Postgres | Kind::Sqlite => format!("{};", retarget(kind, def, sa, sb)),
             Kind::MySql => alter(format!("ADD {def}")),
         };
         items.push(item(format!("índice {name} ({what})"), sql, false));
@@ -439,6 +477,9 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
                 retarget(kind, def, sa, sb)
             )),
             Kind::MySql => alter(format!("ADD {}", retarget(kind, def, sa, sb))),
+            Kind::Sqlite => {
+                format!("-- SQLite não acrescenta {def} a uma tabela existente ({table}): recrie a tabela")
+            }
         };
         items.push(item(format!("constraint {name}"), sql, false));
     }
@@ -659,6 +700,7 @@ mod tests {
                  CREATE INDEX pedido_total_idx ON cmp_b.pedido (total); \
                  CREATE TABLE cmp_b.sobra (id int);",
             ),
+            Kind::Sqlite => unreachable!("teste de servidor"),
         };
         run(&mut c, reset);
         run(&mut c, a);
@@ -705,5 +747,56 @@ mod tests {
     #[ignore]
     fn converges_mysql() {
         converges(Kind::MySql, 53306);
+    }
+
+    /// SQLite: two files; what SQLite can change is changed, the rest is said in comments.
+    #[test]
+    fn sqlite_files_compare() {
+        use crate::db::{Conn, ConnConfig};
+        let a_cfg = crate::sqlite::tests::sample_db("cmp-a");
+        let b_cfg = ConnConfig {
+            database: format!("{}-b.db", a_cfg.database),
+            ..a_cfg.clone()
+        };
+        let _ = std::fs::remove_file(&b_cfg.database);
+        crate::sqlite::create(&b_cfg.database).unwrap();
+        let mut a = Conn::connect(&a_cfg, None).unwrap();
+        let mut b = Conn::connect(&b_cfg, None).unwrap();
+        b.query(
+            "CREATE TABLE cliente (id INTEGER PRIMARY KEY, nome TEXT, velha TEXT);
+             CREATE TABLE sobra (x INTEGER);",
+        )
+        .unwrap();
+        let d = diff(
+            Kind::Sqlite,
+            &snapshot(&mut a, "main").unwrap(),
+            &snapshot(&mut b, "main").unwrap(),
+        );
+        let status: Vec<(&str, &Status)> = d.iter().map(|t| (t.table.as_str(), &t.status)).collect();
+        assert_eq!(
+            status,
+            [
+                ("cliente", &Status::Changed),
+                ("pedido", &Status::New),
+                ("sobra", &Status::Extra)
+            ]
+        );
+        let sql = script(&d);
+        assert!(sql.contains("ADD COLUMN \"email\" TEXT"), "{sql}");
+        assert!(sql.contains("ADD COLUMN \"ativo\" BOOLEAN DEFAULT 1"), "{sql}");
+        assert!(sql.contains("DROP COLUMN \"velha\""), "{sql}");
+        // "nome" became NOT NULL: SQLite can't, and the script says so instead of failing.
+        assert!(sql.contains("-- SQLite não altera uma coluna existente"), "{sql}");
+        b.query(&sql).unwrap_or_else(|e| panic!("{e}\n{sql}"));
+        let left = diff(
+            Kind::Sqlite,
+            &snapshot(&mut a, "main").unwrap(),
+            &snapshot(&mut b, "main").unwrap(),
+        );
+        // Left: the column SQLite can't alter, and the table only the target has.
+        let left: Vec<&str> = left.iter().map(|t| t.table.as_str()).collect();
+        assert_eq!(left, ["cliente", "sobra"]);
+        let _ = std::fs::remove_file(&a_cfg.database);
+        let _ = std::fs::remove_file(&b_cfg.database);
     }
 }

@@ -38,7 +38,7 @@ impl App {
                 ui.set_width(380.0);
                 ui.label(egui::RichText::new(title).size(15.0).color(t.foreground));
                 ui.label(
-                    egui::RichText::new("PostgreSQL ou MySQL")
+                    egui::RichText::new("PostgreSQL, MySQL ou SQLite")
                         .small()
                         .color(t.muted_foreground),
                 );
@@ -105,8 +105,14 @@ impl App {
                         }
                         ui.label("Tipo");
                         ui.horizontal(|ui| {
-                            for k in [Kind::Postgres, Kind::MySql] {
+                            for k in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
                                 if ui.radio(c.kind == k, k.label()).clicked() && c.kind != k {
+                                    if k == Kind::Sqlite {
+                                        // A file: nothing to tunnel or encrypt.
+                                        c.ssh = None;
+                                        c.ssl = false;
+                                        c.timeout_secs = 0;
+                                    }
                                     if c.port == c.kind.default_port() {
                                         c.port = k.default_port();
                                     }
@@ -118,47 +124,52 @@ impl App {
                             }
                         });
                         ui.end_row();
-                        ui.label("Host");
-                        ui.add(TextEdit::singleline(&mut c.host).desired_width(FIELD_WIDTH));
-                        ui.end_row();
-                        ui.label("Porta");
-                        ui.add(egui::DragValue::new(&mut c.port).range(1..=65535));
-                        ui.end_row();
-                        ui.label("Usuário");
-                        ui.add(TextEdit::singleline(&mut c.user).desired_width(FIELD_WIDTH));
-                        ui.end_row();
-                        ui.label("Senha");
-                        ui.add(
-                            TextEdit::singleline(&mut c.password)
-                                .password(true)
-                                .desired_width(FIELD_WIDTH),
-                        );
-                        ui.end_row();
-                        ui.label("Database");
-                        ui.add(
-                            TextEdit::singleline(&mut c.database)
-                                .hint_text("opcional")
-                                .desired_width(FIELD_WIDTH),
-                        );
-                        ui.end_row();
-                        ui.label("SSL/TLS");
-                        ui.checkbox(&mut c.ssl, "Conexão criptografada");
-                        ui.end_row();
-                        if c.ssl {
-                            ui.label("");
-                            ui.checkbox(&mut c.ssl_insecure, "Aceitar certificado inválido");
+                        if c.kind == Kind::Sqlite {
+                            sqlite_file_rows(ui, c);
+                        } else {
+                            ui.label("Host");
+                            ui.add(TextEdit::singleline(&mut c.host).desired_width(FIELD_WIDTH));
                             ui.end_row();
-                        }
-                        if !c.ssl && !c.is_local() {
-                            ui.label("");
-                            let msg = match c.kind {
-                                Kind::Postgres => {
-                                    "Sem exigir TLS: usa criptografia só se o servidor oferecer"
-                                }
-                                Kind::MySql => "Sem criptografia: senha e dados trafegam em texto puro",
-                            };
-                            ui.label(egui::RichText::new(msg).size(11.0).color(theme::tokens().warning));
+                            ui.label("Porta");
+                            ui.add(egui::DragValue::new(&mut c.port).range(1..=65535));
                             ui.end_row();
+                            ui.label("Usuário");
+                            ui.add(TextEdit::singleline(&mut c.user).desired_width(FIELD_WIDTH));
+                            ui.end_row();
+                            ui.label("Senha");
+                            ui.add(
+                                TextEdit::singleline(&mut c.password)
+                                    .password(true)
+                                    .desired_width(FIELD_WIDTH),
+                            );
+                            ui.end_row();
+                            ui.label("Database");
+                            ui.add(
+                                TextEdit::singleline(&mut c.database)
+                                    .hint_text("opcional")
+                                    .desired_width(FIELD_WIDTH),
+                            );
+                            ui.end_row();
+                            ui.label("SSL/TLS");
+                            ui.checkbox(&mut c.ssl, "Conexão criptografada");
+                            ui.end_row();
+                            if c.ssl {
+                                ui.label("");
+                                ui.checkbox(&mut c.ssl_insecure, "Aceitar certificado inválido");
+                                ui.end_row();
+                            }
+                            if !c.ssl && !c.is_local() {
+                                ui.label("");
+                                let msg = match c.kind {
+                                    Kind::Postgres => {
+                                        "Sem exigir TLS: usa criptografia só se o servidor oferecer"
+                                    }
+                                    Kind::MySql => "Sem criptografia: senha e dados trafegam em texto puro",
+                                    Kind::Sqlite => "",
+                                };
+                                ui.label(egui::RichText::new(msg).size(11.0).color(theme::tokens().warning));
+                                ui.end_row();
+                            }
                         }
                         ui.label("Proteção");
                         ui.checkbox(&mut c.read_only, "Somente leitura (produção)")
@@ -188,58 +199,62 @@ impl App {
                         ui.label("Cor");
                         color_picker(ui, &mut c.color);
                         ui.end_row();
-                        ui.label("Timeout");
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut c.timeout_secs)
-                                    .range(0..=86_400)
-                                    .suffix(" s"),
-                            );
-                            let hint = if c.timeout_secs == 0 {
-                                "sem limite"
-                            } else {
-                                "por consulta, no servidor"
-                            };
-                            ui.label(egui::RichText::new(hint).size(11.0).color(t.subtle));
-                        });
-                        ui.end_row();
-                        ui.label("SSH");
-                        let mut tunnel = c.ssh.is_some();
-                        if ui.checkbox(&mut tunnel, "Conectar por túnel SSH").changed() {
-                            c.ssh = tunnel.then(SshConfig::default);
-                        }
-                        ui.end_row();
-                        if let Some(ssh) = &mut c.ssh {
-                            ui.label("");
+                        if c.kind != Kind::Sqlite {
+                            ui.label("Timeout");
                             ui.horizontal(|ui| {
                                 ui.add(
-                                    TextEdit::singleline(&mut ssh.user)
-                                        .hint_text("usuário")
-                                        .desired_width(80.0),
+                                    egui::DragValue::new(&mut c.timeout_secs)
+                                        .range(0..=86_400)
+                                        .suffix(" s"),
                                 );
-                                ui.label("@");
-                                ui.add(
-                                    TextEdit::singleline(&mut ssh.host)
-                                        .hint_text("servidor ssh")
-                                        .desired_width(124.0),
-                                );
-                                ui.add(egui::DragValue::new(&mut ssh.port).range(1..=65535));
+                                let hint = if c.timeout_secs == 0 {
+                                    "sem limite"
+                                } else {
+                                    "por consulta, no servidor"
+                                };
+                                ui.label(egui::RichText::new(hint).size(11.0).color(t.subtle));
                             });
                             ui.end_row();
-                            ui.label("");
-                            ui.add(
-                                TextEdit::singleline(&mut ssh.key_path)
-                                    .hint_text("chave privada (vazio = agente / chaves padrão)")
-                                    .desired_width(FIELD_WIDTH),
-                            );
+                            ui.label("SSH");
+                            let mut tunnel = c.ssh.is_some();
+                            if ui.checkbox(&mut tunnel, "Conectar por túnel SSH").changed() {
+                                c.ssh = tunnel.then(SshConfig::default);
+                            }
                             ui.end_row();
-                            ui.label("");
-                            ui.label(
-                                egui::RichText::new("Host e porta acima são vistos a partir do servidor SSH")
+                            if let Some(ssh) = &mut c.ssh {
+                                ui.label("");
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        TextEdit::singleline(&mut ssh.user)
+                                            .hint_text("usuário")
+                                            .desired_width(80.0),
+                                    );
+                                    ui.label("@");
+                                    ui.add(
+                                        TextEdit::singleline(&mut ssh.host)
+                                            .hint_text("servidor ssh")
+                                            .desired_width(124.0),
+                                    );
+                                    ui.add(egui::DragValue::new(&mut ssh.port).range(1..=65535));
+                                });
+                                ui.end_row();
+                                ui.label("");
+                                ui.add(
+                                    TextEdit::singleline(&mut ssh.key_path)
+                                        .hint_text("chave privada (vazio = agente / chaves padrão)")
+                                        .desired_width(FIELD_WIDTH),
+                                );
+                                ui.end_row();
+                                ui.label("");
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Host e porta acima são vistos a partir do servidor SSH",
+                                    )
                                     .size(11.0)
                                     .color(t.subtle),
-                            );
-                            ui.end_row();
+                                );
+                                ui.end_row();
+                            }
                         }
                     });
                 // The test's outcome, while the settings are the ones it ran with (above the
@@ -256,43 +271,51 @@ impl App {
                     );
                 }
                 ui.add_space(16.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let ssh_ok = form
-                        .cfg
-                        .ssh
-                        .as_ref()
-                        .is_none_or(|s| !s.host.trim().is_empty() && !s.user.trim().is_empty());
-                    // Say what is missing instead of just greying the button out.
-                    let missing = if form.cfg.name.trim().is_empty() {
-                        Some("Dê um nome à conexão")
-                    } else if duplicate {
-                        // Already said next to the name.
-                        Some("")
-                    } else if !ssh_ok {
-                        Some("Preencha usuário e servidor do SSH")
-                    } else {
-                        None
-                    };
-                    save = ui
-                        .add_enabled(missing.is_none(), theme::primary_button(None, "Salvar"))
-                        .on_disabled_hover_text(match missing {
-                            Some("") => "Já existe uma conexão com esse nome",
-                            m => m.unwrap_or_default(),
-                        })
-                        .clicked();
-                    cancel = ui.add(theme::outline_button("Cancelar")).clicked();
-                    let testing = test.as_ref().is_some_and(|t| t.result.is_none());
-                    if ui
-                        .add_enabled(!testing && ssh_ok, theme::outline_button("Testar conexão"))
-                        .on_hover_text("Conecta sem salvar, para conferir host, porta, usuário e senha")
-                        .clicked()
-                    {
-                        start_test = true;
-                    }
-                    if let Some(m) = missing.filter(|m| !m.is_empty()) {
-                        ui.label(egui::RichText::new(m).size(11.0).color(t.warning));
-                    }
-                });
+                // One row tall: a right-to-left layout would otherwise take every bit of height left,
+                // and the modal would keep the height of a longer form (e.g. after switching to SQLite).
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 28.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        let ssh_ok = form
+                            .cfg
+                            .ssh
+                            .as_ref()
+                            .is_none_or(|s| !s.host.trim().is_empty() && !s.user.trim().is_empty());
+                        // Say what is missing instead of just greying the button out.
+                        let missing = if form.cfg.name.trim().is_empty() {
+                            Some("Dê um nome à conexão")
+                        } else if form.cfg.kind == Kind::Sqlite && form.cfg.database.trim().is_empty() {
+                            Some("Escolha o arquivo do banco")
+                        } else if duplicate {
+                            // Already said next to the name.
+                            Some("")
+                        } else if !ssh_ok {
+                            Some("Preencha usuário e servidor do SSH")
+                        } else {
+                            None
+                        };
+                        save = ui
+                            .add_enabled(missing.is_none(), theme::primary_button(None, "Salvar"))
+                            .on_disabled_hover_text(match missing {
+                                Some("") => "Já existe uma conexão com esse nome",
+                                m => m.unwrap_or_default(),
+                            })
+                            .clicked();
+                        cancel = ui.add(theme::outline_button("Cancelar")).clicked();
+                        let testing = test.as_ref().is_some_and(|t| t.result.is_none());
+                        if ui
+                            .add_enabled(!testing && ssh_ok, theme::outline_button("Testar conexão"))
+                            .on_hover_text("Conecta sem salvar, para conferir host, porta, usuário e senha")
+                            .clicked()
+                        {
+                            start_test = true;
+                        }
+                        if let Some(m) = missing.filter(|m| !m.is_empty()) {
+                            ui.label(egui::RichText::new(m).size(11.0).color(t.warning));
+                        }
+                    },
+                );
             });
         cancel |= modal.should_close();
         if start_test && let Some(form) = &self.form {
@@ -556,5 +579,65 @@ impl App {
         } else if cancel || modal.should_close() {
             self.fav_prompt = None;
         }
+    }
+}
+
+/// SQLite: the database file, typed, picked or created here.
+fn sqlite_file_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
+    let t = theme::tokens();
+    let msg_id = egui::Id::new("sqlite_file_msg");
+    ui.label("Arquivo");
+    ui.add(
+        TextEdit::singleline(&mut c.database)
+            .hint_text(r"C:\dados\loja.db")
+            .desired_width(FIELD_WIDTH),
+    );
+    ui.end_row();
+    ui.label("");
+    let mut msg: Option<(bool, String)> = None;
+    ui.horizontal(|ui| {
+        let mut chosen: Option<std::path::PathBuf> = None;
+        if crate::files::NATIVE_DIALOGS && ui.button("Escolher…").clicked() {
+            chosen = crate::files::pick_database();
+        }
+        let create = ui
+            .button("Criar arquivo novo…")
+            .on_hover_text("Um banco SQLite vazio, no arquivo escolhido (ou no caminho digitado acima)")
+            .clicked();
+        if create {
+            let path = if crate::files::NATIVE_DIALOGS {
+                crate::files::pick_new_database()
+            } else {
+                Some(std::path::PathBuf::from(c.database.trim())).filter(|p| !p.as_os_str().is_empty())
+            };
+            if let Some(p) = path {
+                match crate::sqlite::create(&p.display().to_string()) {
+                    Ok(()) => {
+                        msg = Some((false, "Arquivo criado".into()));
+                        chosen = Some(p);
+                    }
+                    Err(e) => msg = Some((true, e.to_string())),
+                }
+            }
+        }
+        if let Some(p) = chosen {
+            if c.name.trim().is_empty() {
+                c.name = p
+                    .file_stem()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+            }
+            c.database = p.display().to_string();
+        }
+    });
+    ui.end_row();
+    if let Some(m) = msg {
+        ui.data_mut(|d| d.insert_temp(msg_id, m));
+    }
+    if let Some((error, text)) = ui.data(|d| d.get_temp::<(bool, String)>(msg_id)) {
+        ui.label("");
+        let color = if error { t.destructive } else { t.lime };
+        ui.label(egui::RichText::new(text).size(11.0).color(color));
+        ui.end_row();
     }
 }

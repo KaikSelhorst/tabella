@@ -67,6 +67,9 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             "Salvo em Downloads, sem o nome do banco: execute no banco de destino (\"Executar \
                              arquivo .sql\" ou mysql)."
                         }
+                        crate::db::Kind::Sqlite => {
+                            "Salvo em Downloads: roda num arquivo SQLite com \"Executar arquivo .sql\" ou sqlite3."
+                        }
                     };
                     ui.label(egui::RichText::new(hint).size(11.0).color(t.subtle));
                     if !st.running && st.outcome.is_none() {

@@ -84,7 +84,7 @@ pub fn condition(kind: Kind, columns: &[String], term: &str, exact: bool) -> Str
     }
     let lit = kind.quote_str(term.trim());
     let cast = |c: &String| match kind {
-        Kind::Postgres => format!("CAST({} AS TEXT) = {lit}", kind.quote_ident(c)),
+        Kind::Postgres | Kind::Sqlite => format!("CAST({} AS TEXT) = {lit}", kind.quote_ident(c)),
         Kind::MySql => format!("CAST({} AS CHAR) = {lit}", kind.quote_ident(c)),
     };
     format!("({})", columns.iter().map(cast).collect::<Vec<_>>().join(" OR "))

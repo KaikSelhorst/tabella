@@ -418,11 +418,7 @@ pub(crate) fn run_script(
             );
         }
     };
-    let kind = if pg {
-        crate::db::Kind::Postgres
-    } else {
-        crate::db::Kind::MySql
-    };
+    let kind = conn.kind();
     let mut reader = ScriptReader::new(std::io::BufReader::with_capacity(1 << 20, file), kind);
     // Inside a transaction the user opened, a savepoint makes the file all-or-nothing.
     let nested = tx.open;
@@ -432,10 +428,10 @@ pub(crate) fn run_script(
             "RELEASE SAVEPOINT dblite_script",
             "ROLLBACK TO SAVEPOINT dblite_script",
         )
-    } else if pg {
-        ("BEGIN", "COMMIT", "ROLLBACK")
-    } else {
+    } else if kind == crate::db::Kind::MySql {
         ("START TRANSACTION", "COMMIT", "ROLLBACK")
+    } else {
+        ("BEGIN", "COMMIT", "ROLLBACK")
     };
     if transaction && let Err(e) = conn.query(begin) {
         return (p, Some(fail(e.to_string(), 0, begin, false)));
@@ -466,7 +462,7 @@ pub(crate) fn run_script(
                     conn.query(sql).map(|_| ()).and_then(|()| {
                         // MySQL ends the transaction on DDL (committing it, and the user's one
                         // too): open another so the rest of the file is still undoable.
-                        if pg || !sql::mysql_implicit_commit(sql) {
+                        if kind != crate::db::Kind::MySql || !sql::mysql_implicit_commit(sql) {
                             return Ok(());
                         }
                         *tx = TxState {
@@ -547,7 +543,11 @@ pub fn test_connection(cfg: ConnConfig, ctx: eframe::egui::Context) -> Receiver<
                 Conn::connect(&cfg, tunnel.as_ref().map(|t| t.local_port)).map_err(|e| e.to_string())?;
             let ms = started.elapsed().as_millis();
             let version = conn
-                .query("SELECT version()")
+                .query(if cfg.kind == crate::db::Kind::Sqlite {
+                    "SELECT sqlite_version()"
+                } else {
+                    "SELECT version()"
+                })
                 .ok()
                 .and_then(|r| r.rows.into_iter().next())
                 .and_then(|r| r.into_iter().next().flatten())
@@ -566,6 +566,7 @@ fn server_name(kind: crate::db::Kind, version: &str) -> String {
     match kind {
         crate::db::Kind::Postgres => version.split_whitespace().take(2).collect::<Vec<_>>().join(" "),
         crate::db::Kind::MySql => format!("MySQL {}", version.split('-').next().unwrap_or(version)),
+        crate::db::Kind::Sqlite => format!("SQLite {version}"),
     }
 }
 
@@ -617,7 +618,9 @@ fn run_user_sql(conn: &mut Conn, tx: &mut TxState, pg: bool, sql: &str) -> DbRes
     } else {
         conn.query(sql)
     };
-    let implicit_commit = !pg && res.is_ok() && sql::mysql_implicit_commit(sql);
+    // Only MySQL commits by itself on DDL (Postgres and SQLite keep it in the transaction).
+    let implicit_commit =
+        conn.kind() == crate::db::Kind::MySql && res.is_ok() && sql::mysql_implicit_commit(sql);
     match control {
         // MySQL committed everything before running DDL.
         None if implicit_commit => {
@@ -1055,6 +1058,7 @@ mod tests {
                 "INSERT INTO dbl_export WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 12000) \
                  SELECT n, CONCAT('v', n) FROM s"
             }
+            Kind::Sqlite => unreachable!("teste de servidor"),
         };
         c.query(fill).unwrap();
         let path = std::env::temp_dir().join(format!("dblite-export-{kind:?}-{}.csv", std::process::id()));
@@ -1216,6 +1220,67 @@ mod tests {
         }
         drop(jobs);
         other.query("DROP TABLE dbl_tx").unwrap();
+    }
+
+    /// SQLite through the worker, like the app uses it: connect, catalog, location, a query,
+    /// and "commit manual" undoing an UPDATE. No server needed.
+    #[test]
+    fn sqlite_through_the_worker() {
+        use std::time::Duration;
+        let mut cfg = crate::sqlite::tests::sample_db("worker");
+        cfg.manual_commit = true;
+        let (jobs, replies) = spawn(cfg.clone(), eframe::egui::Context::default());
+        let wait = |f: &dyn Fn(Reply) -> Option<String>| -> String {
+            loop {
+                let r = replies
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("worker reply");
+                if let Some(v) = f(r) {
+                    return v;
+                }
+            }
+        };
+        let tables = wait(&|r| match r {
+            Reply::Connected(res) => Some(
+                res.map(|c| c.tables.len().to_string())
+                    .unwrap_or_else(|e| e.to_string()),
+            ),
+            _ => None,
+        });
+        assert_eq!(tables, "3");
+        let here = wait(&|r| match r {
+            Reply::Location(res) => Some(res.map(|(_, db, _)| db).unwrap_or_else(|e| e.to_string())),
+            _ => None,
+        });
+        assert!(here.starts_with("dblite-worker"), "{here}");
+        let rows = |r: Reply| match r {
+            Reply::Rows { res, .. } => Some(match *res {
+                Ok(r) => r.rows.first().and_then(|row| row[0].clone()).unwrap_or_default(),
+                Err(e) => e.to_string(),
+            }),
+            _ => None,
+        };
+        jobs.send(Job::Query {
+            tab: 1,
+            sql: "UPDATE cliente SET nome = 'Z' WHERE id = 1".into(),
+        })
+        .unwrap();
+        wait(&rows);
+        let tx = wait(&|r| match r {
+            Reply::Tx(t) => Some(format!("{}:{}", t.open, t.writes)),
+            _ => None,
+        });
+        assert_eq!(tx, "true:1", "a write opens the transaction");
+        jobs.send(Job::EndTx { commit: false }).unwrap();
+        wait(&|r| matches!(r, Reply::TxEnded { .. }).then(String::new));
+        jobs.send(Job::Query {
+            tab: 1,
+            sql: "SELECT nome FROM cliente WHERE id = 1".into(),
+        })
+        .unwrap();
+        assert_eq!(wait(&rows), "Ana", "undone");
+        drop(jobs);
+        let _ = std::fs::remove_file(&cfg.database);
     }
 
     #[test]

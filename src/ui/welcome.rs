@@ -38,7 +38,7 @@ impl App {
             ui.label(theme::icon(icon::DATABASE).size(36.0).color(t.lime));
             ui.add_space(4.0);
             ui.label(RichText::new("dblite").size(22.0).color(t.foreground));
-            ui.label(RichText::new("Cliente leve para PostgreSQL e MySQL").color(t.muted_foreground));
+            ui.label(RichText::new("Cliente leve para PostgreSQL, MySQL e SQLite").color(t.muted_foreground));
             ui.add_space(24.0);
 
             match &self.session {
@@ -140,6 +140,7 @@ fn connection_card(ui: &mut egui::Ui, c: &ConnConfig) -> egui::Response {
     let (label, color) = match c.kind {
         Kind::Postgres => ("PG", t.info),
         Kind::MySql => ("MY", t.warning),
+        Kind::Sqlite => ("SL", t.boolean),
     };
     let badge = egui::Rect::from_min_size(
         rect.left_center() + egui::vec2(12.0, -14.0),
@@ -168,7 +169,11 @@ fn connection_card(ui: &mut egui::Ui, c: &ConnConfig) -> egui::Response {
     p.text(
         rect.left_top() + egui::vec2(52.0, 28.0),
         Align2::LEFT_TOP,
-        format!("{}@{}:{}{db}", c.user, c.host, c.port),
+        if c.kind == Kind::Sqlite {
+            c.database.clone()
+        } else {
+            format!("{}@{}:{}{db}", c.user, c.host, c.port)
+        },
         FontId::proportional(11.0),
         t.subtle,
     );

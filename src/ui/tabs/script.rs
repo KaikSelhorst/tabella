@@ -30,7 +30,7 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     );
                     let here = match s.cfg.kind {
                         crate::db::Kind::Postgres => format!("{} · {}", s.current_db, s.current_schema),
-                        crate::db::Kind::MySql => s.current_db.clone(),
+                        crate::db::Kind::MySql | crate::db::Kind::Sqlite => s.current_db.clone(),
                     };
                     ui.label(
                         egui::RichText::new(format!(
@@ -56,7 +56,7 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             }
                         }
                         let hint = match s.cfg.kind {
-                            crate::db::Kind::Postgres => {
+                            crate::db::Kind::Postgres | crate::db::Kind::Sqlite => {
                                 "Tudo ou nada: no primeiro erro (ou ao cancelar) nada do arquivo fica no banco"
                             }
                             crate::db::Kind::MySql => {

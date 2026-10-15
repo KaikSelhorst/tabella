@@ -20,6 +20,8 @@ fn max_rows() -> usize {
 pub enum Kind {
     Postgres,
     MySql,
+    /// A database file on this computer: no server, no host or user.
+    Sqlite,
 }
 
 impl Kind {
@@ -27,6 +29,7 @@ impl Kind {
         match self {
             Kind::Postgres => "PostgreSQL",
             Kind::MySql => "MySQL",
+            Kind::Sqlite => "SQLite",
         }
     }
 
@@ -34,12 +37,13 @@ impl Kind {
         match self {
             Kind::Postgres => 5432,
             Kind::MySql => 3306,
+            Kind::Sqlite => 0,
         }
     }
 
     pub fn quote_ident(self, s: &str) -> String {
         match self {
-            Kind::Postgres => format!("\"{}\"", s.replace('"', "\"\"")),
+            Kind::Postgres | Kind::Sqlite => format!("\"{}\"", s.replace('"', "\"\"")),
             Kind::MySql => format!("`{}`", s.replace('`', "``")),
         }
     }
@@ -55,7 +59,8 @@ impl Kind {
             Kind::Postgres if s.contains('\\') => {
                 format!("E'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
             }
-            Kind::Postgres => format!("'{}'", s.replace('\'', "''")),
+            // SQLite has no backslash escapes at all.
+            Kind::Postgres | Kind::Sqlite => format!("'{}'", s.replace('\'', "''")),
             Kind::MySql => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''")),
         }
     }
@@ -185,11 +190,16 @@ impl ConnConfig {
             id: String::new(),
             name: String::new(),
             kind,
-            host: "localhost".into(),
+            host: if kind == Kind::Sqlite {
+                String::new()
+            } else {
+                "localhost".into()
+            },
             port: kind.default_port(),
             user: match kind {
                 Kind::Postgres => "postgres".into(),
                 Kind::MySql => "root".into(),
+                Kind::Sqlite => String::new(),
             },
             password: String::new(),
             database: String::new(),
@@ -288,7 +298,7 @@ const MAX_SETS: usize = 20;
 
 impl QueryResult {
     /// Called when another result set starts: files the current one under `previous`.
-    fn next_set(&mut self) {
+    pub(crate) fn next_set(&mut self) {
         if self.columns.is_empty() {
             return;
         }
@@ -396,6 +406,8 @@ pub enum Canceller {
     /// Token plus whether to skip certificate checks on the cancel connection.
     Pg(postgres::CancelToken, bool),
     My(Box<mysql::OptsBuilder>, u32),
+    /// SQLite stops the running statement from any thread.
+    Lite(rusqlite::InterruptHandle),
 }
 
 impl Canceller {
@@ -405,6 +417,10 @@ impl Canceller {
             Canceller::My(opts, id) => {
                 let mut c = mysql::Conn::new((**opts).clone())?;
                 c.query_drop(format!("KILL QUERY {id}"))?;
+                Ok(())
+            }
+            Canceller::Lite(handle) => {
+                handle.interrupt();
                 Ok(())
             }
         }
@@ -446,17 +462,22 @@ pub struct StructColumn {
 pub enum Conn {
     Pg(Box<postgres::Client>),
     My(mysql::Conn),
+    Lite(Box<rusqlite::Connection>),
 }
 
 impl Conn {
     /// Connects to `cfg`, or through a local tunnel port when `via` is set (SSH).
     pub fn connect(cfg: &ConnConfig, via: Option<u16>) -> DbResult<Self> {
         let mut conn = Self::open(cfg, via)?;
+        // SQLite: read-only is how the file is opened; there's no statement timeout to set.
+        if cfg.kind == Kind::Sqlite {
+            return Ok(conn);
+        }
         if cfg.read_only {
             // Enforced by the server, so the SQL editor can't write either.
             conn.query(match cfg.kind {
                 Kind::Postgres => "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
-                Kind::MySql => "SET SESSION TRANSACTION READ ONLY",
+                Kind::MySql | Kind::Sqlite => "SET SESSION TRANSACTION READ ONLY",
             })?;
         }
         if cfg.timeout_secs > 0 {
@@ -465,7 +486,7 @@ impl Conn {
             let ms = u64::from(cfg.timeout_secs) * 1000;
             conn.query(&match cfg.kind {
                 Kind::Postgres => format!("SET statement_timeout = {ms}"),
-                Kind::MySql => format!("SET SESSION max_execution_time = {ms}"),
+                Kind::MySql | Kind::Sqlite => format!("SET SESSION max_execution_time = {ms}"),
             })?;
         }
         Ok(conn)
@@ -499,6 +520,7 @@ impl Conn {
                 Ok(Conn::Pg(Box::new(client?)))
             }
             Kind::MySql => Ok(Conn::My(mysql::Conn::new(my_opts(cfg, via))?)),
+            Kind::Sqlite => Ok(Conn::Lite(Box::new(crate::sqlite::open(cfg)?))),
         }
     }
 
@@ -507,6 +529,7 @@ impl Conn {
         match self {
             Conn::Pg(c) => Canceller::Pg(c.cancel_token(), cfg.ssl_insecure || !cfg.ssl),
             Conn::My(c) => Canceller::My(Box::new(my_opts(cfg, via)), c.connection_id()),
+            Conn::Lite(c) => Canceller::Lite(c.get_interrupt_handle()),
         }
     }
 
@@ -514,6 +537,7 @@ impl Conn {
         match self {
             Conn::Pg(_) => Kind::Postgres,
             Conn::My(_) => Kind::MySql,
+            Conn::Lite(_) => Kind::Sqlite,
         }
     }
 
@@ -532,6 +556,10 @@ impl Conn {
                 let (sql, values) = stmt.with_placeholders();
                 my_exec(c, &sql, values, max_rows())?
             }
+            Conn::Lite(c) => {
+                let (sql, values) = stmt.with_placeholders();
+                crate::sqlite::exec(c, &sql, &values, max_rows())?
+            }
         };
         out.elapsed = start.elapsed();
         Ok(out)
@@ -542,6 +570,7 @@ impl Conn {
         let mut out = match self {
             Conn::Pg(c) => pg_query(c, sql, limit)?,
             Conn::My(c) => my_query(c, sql, limit)?,
+            Conn::Lite(c) => crate::sqlite::query(c, sql, limit)?,
         };
         out.elapsed = start.elapsed();
         Ok(out)
@@ -565,6 +594,7 @@ impl Conn {
                  WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') \
                  ORDER BY 1, 2"
             }
+            Conn::Lite(_) => crate::sqlite::TABLES,
         };
         let r = self.query(sql)?;
         r.rows
@@ -590,7 +620,7 @@ impl Conn {
     pub fn all_columns(&mut self) -> DbResult<Vec<SchemaColumn>> {
         let system = match self {
             Conn::Pg(_) => "'pg_catalog', 'information_schema'",
-            Conn::My(_) => "'information_schema', 'mysql', 'performance_schema', 'sys'",
+            Conn::My(_) | Conn::Lite(_) => "'information_schema', 'mysql', 'performance_schema', 'sys'",
         };
         let sql = match self {
             Conn::Pg(_) => format!(
@@ -610,6 +640,7 @@ impl Conn {
                  FROM information_schema.columns \
                  WHERE table_schema NOT IN ({system}) ORDER BY 1, 2, ordinal_position"
             ),
+            Conn::Lite(_) => crate::sqlite::ALL_COLUMNS.to_string(),
         };
         let r = self.query_limit(&sql, 100_000)?;
         r.rows
@@ -637,6 +668,7 @@ impl Conn {
 
     pub fn columns(&mut self, schema: &str, table: &str) -> DbResult<Vec<ColumnInfo>> {
         let stmt = match self.kind() {
+            Kind::Sqlite => return self.column_rows(crate::sqlite::columns(table)),
             Kind::Postgres => Stmt::new(
                 "SELECT c.column_name, c.data_type, EXISTS (\
                    SELECT 1 FROM information_schema.table_constraints tc \
@@ -654,19 +686,20 @@ impl Conn {
                  FROM information_schema.columns WHERE table_schema = ",
             ),
         };
-        let order = match self.kind() {
-            Kind::Postgres => " ORDER BY c.ordinal_position",
-            Kind::MySql => " ORDER BY ordinal_position",
-        };
-        let table_col = match self.kind() {
-            Kind::Postgres => " AND c.table_name = ",
-            Kind::MySql => " AND table_name = ",
+        let (order, table_col) = match self.kind() {
+            Kind::Postgres => (" ORDER BY c.ordinal_position", " AND c.table_name = "),
+            Kind::MySql | Kind::Sqlite => (" ORDER BY ordinal_position", " AND table_name = "),
         };
         let stmt = stmt
             .value(Some(schema))
             .sql(table_col)
             .value(Some(table))
             .sql(order);
+        self.column_rows(stmt)
+    }
+
+    /// `(name, type, pk, nullable YES/NO, has default)` rows as columns.
+    fn column_rows(&mut self, stmt: Stmt) -> DbResult<Vec<ColumnInfo>> {
         let r = self.execute(&stmt)?;
         r.rows
             .into_iter()
@@ -692,6 +725,7 @@ impl Conn {
     pub fn columns_with_fks(&mut self, schema: &str, table: &str) -> DbResult<Vec<ColumnInfo>> {
         let mut cols = self.columns(schema, table)?;
         let stmt = match self.kind() {
+            Kind::Sqlite => crate::sqlite::column_fks(table),
             Kind::Postgres => Stmt::new(
                 "SELECT a.attname, fn.nspname, fc.relname, fa.attname \
                  FROM pg_constraint k \
@@ -734,12 +768,26 @@ impl Conn {
     /// Where unqualified names go now, and where else they could: `(databases, current database,
     /// current schema)`. MySQL has no schemas inside a database (the schema is empty).
     pub fn location(&mut self) -> DbResult<(Vec<String>, String, String)> {
+        // A SQLite file is its only database: the file's name stands for it.
+        if self.kind() == Kind::Sqlite {
+            let file = self
+                .query(crate::sqlite::FILE)?
+                .rows
+                .into_iter()
+                .next()
+                .and_then(|r| r.into_iter().next().flatten());
+            let name = file
+                .as_deref()
+                .and_then(|f| std::path::Path::new(f).file_stem())
+                .map_or("main".to_string(), |n| n.to_string_lossy().into_owned());
+            return Ok((Vec::new(), name, String::new()));
+        }
         let (list, here) = match self.kind() {
             Kind::Postgres => (
                 "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY 1",
                 "SELECT current_database(), coalesce(current_schema(), '')",
             ),
-            Kind::MySql => (
+            Kind::MySql | Kind::Sqlite => (
                 "SELECT schema_name FROM information_schema.schemata \
                  WHERE schema_name NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') ORDER BY 1",
                 "SELECT coalesce(DATABASE(), ''), ''",
@@ -763,6 +811,11 @@ impl Conn {
             Kind::MySql => format!("USE {}", k.quote_ident(name)),
             Kind::Postgres if name == "public" => "SET search_path TO public".to_string(),
             Kind::Postgres => format!("SET search_path TO {}, public", k.quote_ident(name)),
+            Kind::Sqlite => {
+                return Err(DbError::Other(
+                    "SQLite não tem outros bancos ou schemas para trocar".into(),
+                ));
+            }
         };
         self.query(&sql).map(|_| ())
     }
@@ -771,6 +824,12 @@ impl Conn {
     /// installed by extensions).
     pub fn objects(&mut self) -> DbResult<Vec<DbObject>> {
         let rows: Vec<[String; 6]> = match self.kind() {
+            Kind::Sqlite => self
+                .query_limit(crate::sqlite::OBJECTS, 100_000)?
+                .rows
+                .into_iter()
+                .map(cells)
+                .collect::<DbResult<_>>()?,
             Kind::Postgres => {
                 let sql = "SELECT n.nspname, p.proname, CASE p.prokind WHEN 'p' THEN 'p' ELSE 'f' END, \
                      pg_get_function_identity_arguments(p.oid), '', p.oid::text \
@@ -847,6 +906,22 @@ impl Conn {
         };
         let k = self.kind();
         match k {
+            Kind::Sqlite => {
+                // No CREATE OR REPLACE either: like MySQL, the DROP is there to uncomment.
+                let r = self.execute(
+                    &Stmt::new("SELECT sql FROM sqlite_master WHERE name = ").value(Some(&o.name)),
+                )?;
+                let body = first_cell(r, 0)?;
+                let what = if o.kind == ObjKind::View {
+                    "VIEW"
+                } else {
+                    "TRIGGER"
+                };
+                Ok(format!(
+                    "-- Para recriar: descomente o DROP e execute tudo (F5).\n-- DROP {what} IF EXISTS {};\n{body};",
+                    k.quote_ident(&o.name)
+                ))
+            }
             Kind::Postgres => {
                 // Names go in as values; the server quotes them into a regprocedure / regclass.
                 let qualified = |name: &str| {
@@ -916,7 +991,9 @@ impl Conn {
 
     /// Every single-column foreign key of the connection (for the ER diagram).
     pub fn all_fks(&mut self) -> DbResult<Vec<FkEdge>> {
+        let lite = crate::sqlite::all_fks();
         let sql = match self.kind() {
+            Kind::Sqlite => lite.as_str(),
             Kind::Postgres => {
                 "SELECT n.nspname, c.relname, a.attname, fn.nspname, fc.relname, fa.attname \
                  FROM pg_constraint k \
@@ -958,6 +1035,7 @@ impl Conn {
     /// Single-column foreign keys in other tables that point at this one ("quem aponta para cá").
     pub fn incoming_fks(&mut self, schema: &str, table: &str) -> DbResult<Vec<IncomingFk>> {
         let stmt = match self.kind() {
+            Kind::Sqlite => crate::sqlite::incoming_fks(table),
             Kind::Postgres => Stmt::new(
                 "SELECT n.nspname, c.relname, a.attname, fa.attname \
                  FROM pg_constraint k \
@@ -1003,6 +1081,9 @@ impl Conn {
     /// One of the activity monitor's views. In every view where something can be cancelled,
     /// the first column is the session id to act on.
     pub fn activity_view(&mut self, view: ActivityView) -> DbResult<QueryResult> {
+        if self.kind() == Kind::Sqlite {
+            return Err(crate::sqlite::no_server("o monitor de atividade"));
+        }
         match view {
             ActivityView::Sessions | ActivityView::Server => self.activity(),
             ActivityView::Locks => self.query(match self.kind() {
@@ -1016,7 +1097,7 @@ impl Conn {
                      JOIN pg_stat_activity b ON b.pid = x.pid \
                      ORDER BY w.query_start"
                 }
-                Kind::MySql => {
+                Kind::MySql | Kind::Sqlite => {
                     "SELECT blocking_pid AS pid, blocking_query AS consulta_que_bloqueia, \
                      waiting_pid AS esperando, wait_age AS esperando_ha, waiting_query AS consulta_esperando \
                      FROM sys.innodb_lock_waits ORDER BY wait_age_secs DESC"
@@ -1031,7 +1112,7 @@ impl Conn {
                          WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) \
                          ORDER BY total_exec_time DESC LIMIT 50"
                     }
-                    Kind::MySql => {
+                    Kind::MySql | Kind::Sqlite => {
                         "SELECT COUNT_STAR AS chamadas, ROUND(SUM_TIMER_WAIT / 1e9, 1) AS total_ms, \
                          ROUND(AVG_TIMER_WAIT / 1e9, 2) AS media_ms, SUM_ROWS_EXAMINED AS linhas_lidas, \
                          SCHEMA_NAME AS banco, LEFT(DIGEST_TEXT, 500) AS consulta \
@@ -1054,6 +1135,9 @@ impl Conn {
 
     /// The "Servidor" panel: headline numbers, biggest tables, indexes nobody uses.
     pub fn server_info(&mut self) -> DbResult<ServerInfo> {
+        if self.kind() == Kind::Sqlite {
+            return Err(crate::sqlite::no_server("o painel do servidor"));
+        }
         let (facts_sql, largest, indexes) = match self.kind() {
             Kind::Postgres => (
                 "SELECT current_setting('server_version'), \
@@ -1078,7 +1162,7 @@ impl Conn {
                  WHERE NOT i.indisunique AND NOT i.indisprimary \
                  ORDER BY s.idx_scan, pg_relation_size(s.indexrelid) DESC LIMIT 20",
             ),
-            Kind::MySql => (
+            Kind::MySql | Kind::Sqlite => (
                 "SELECT VERSION(), \
                  (SELECT CONCAT(FLOOR(VARIABLE_VALUE / 86400), 'd ', SEC_TO_TIME(VARIABLE_VALUE % 86400)) \
                   FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime'), \
@@ -1139,15 +1223,23 @@ impl Conn {
 
     /// Clears the "consultas lentas" counters.
     pub fn reset_query_stats(&mut self) -> DbResult<()> {
+        if self.kind() == Kind::Sqlite {
+            return Err(crate::sqlite::no_server("estatísticas de consultas"));
+        }
         self.query(match self.kind() {
             Kind::Postgres => "SELECT pg_stat_statements_reset()",
-            Kind::MySql => "TRUNCATE TABLE performance_schema.events_statements_summary_by_digest",
+            Kind::MySql | Kind::Sqlite => {
+                "TRUNCATE TABLE performance_schema.events_statements_summary_by_digest"
+            }
         })
         .map(|_| ())
     }
 
     /// Sessions on the server right now (excluding this one), most long-running first.
     pub fn activity(&mut self) -> DbResult<QueryResult> {
+        if self.kind() == Kind::Sqlite {
+            return Err(crate::sqlite::no_server("a lista de sessões"));
+        }
         self.query(match self.kind() {
             Kind::Postgres => {
                 "SELECT pid, usename AS usuario, datname AS banco, state AS estado, \
@@ -1157,7 +1249,7 @@ impl Conn {
                  WHERE pid <> pg_backend_pid() AND backend_type = 'client backend' \
                  ORDER BY state = 'active' DESC, query_start NULLS LAST"
             }
-            Kind::MySql => {
+            Kind::MySql | Kind::Sqlite => {
                 "SELECT id, user AS usuario, db AS banco, command AS estado, \
                  SEC_TO_TIME(time) AS duracao, state AS espera, host AS cliente, LEFT(info, 300) AS consulta \
                  FROM information_schema.processlist \
@@ -1171,12 +1263,17 @@ impl Conn {
     /// `EXPLAIN ANALYZE` (8.0.18+). With `analyze` the statement really runs: callers only allow
     /// it for reads.
     pub fn explain(&mut self, sql: &str, analyze: bool) -> DbResult<Plan> {
+        if self.kind() == Kind::Sqlite {
+            return Err(DbError::Other(
+                "O plano visual ainda não existe para SQLite: rode EXPLAIN QUERY PLAN no editor".into(),
+            ));
+        }
         let sql = sql.trim().trim_end_matches(';');
         let (q, kind) = match (self.kind(), analyze) {
             (Kind::Postgres, false) => (format!("EXPLAIN (FORMAT JSON) {sql}"), Kind::Postgres),
             (Kind::Postgres, true) => (format!("EXPLAIN (ANALYZE, FORMAT JSON) {sql}"), Kind::Postgres),
-            (Kind::MySql, false) => (format!("EXPLAIN FORMAT=TREE {sql}"), Kind::MySql),
-            (Kind::MySql, true) => (format!("EXPLAIN ANALYZE {sql}"), Kind::MySql),
+            (Kind::MySql | Kind::Sqlite, false) => (format!("EXPLAIN FORMAT=TREE {sql}"), Kind::MySql),
+            (Kind::MySql | Kind::Sqlite, true) => (format!("EXPLAIN ANALYZE {sql}"), Kind::MySql),
         };
         let r = self.query(&q)?;
         // Postgres returns one JSON cell; MySQL one text cell (or one line per row on old servers).
@@ -1184,18 +1281,21 @@ impl Conn {
         let text = text.join("\n");
         match kind {
             Kind::Postgres => plan::from_pg_json(&text),
-            Kind::MySql => plan::from_mysql_tree(&text),
+            Kind::MySql | Kind::Sqlite => plan::from_mysql_tree(&text),
         }
         .map_err(DbError::Other)
     }
 
     /// Stops another session's statement (`terminate` = close that whole connection).
     pub fn kill(&mut self, id: i64, terminate: bool) -> DbResult<()> {
+        if self.kind() == Kind::Sqlite {
+            return Err(crate::sqlite::no_server("cancelar outra sessão"));
+        }
         let sql = match (self.kind(), terminate) {
             (Kind::Postgres, false) => format!("SELECT pg_cancel_backend({id})"),
             (Kind::Postgres, true) => format!("SELECT pg_terminate_backend({id})"),
-            (Kind::MySql, false) => format!("KILL QUERY {id}"),
-            (Kind::MySql, true) => format!("KILL {id}"),
+            (Kind::MySql | Kind::Sqlite, false) => format!("KILL QUERY {id}"),
+            (Kind::MySql | Kind::Sqlite, true) => format!("KILL {id}"),
         };
         let r = self.query(&sql)?;
         // Postgres answers `false` instead of failing when the session is gone or belongs to
@@ -1243,7 +1343,7 @@ impl Conn {
                 "RELEASE SAVEPOINT dblite_batch",
                 "ROLLBACK TO SAVEPOINT dblite_batch",
             ),
-            (false, Kind::Postgres) => ("BEGIN", "COMMIT", "ROLLBACK"),
+            (false, Kind::Postgres | Kind::Sqlite) => ("BEGIN", "COMMIT", "ROLLBACK"),
             (false, Kind::MySql) => ("START TRANSACTION", "COMMIT", "ROLLBACK"),
         };
         self.query(begin)?;
@@ -1316,14 +1416,16 @@ impl Conn {
                 w.write_all(data).map_err(|e| DbError::Other(e.to_string()))?;
                 Ok(w.finish()?)
             }
-            Conn::My(_) => Err(DbError::Other("COPY … FROM stdin só existe no Postgres".into())),
+            Conn::My(_) | Conn::Lite(_) => {
+                Err(DbError::Other("COPY … FROM stdin só existe no Postgres".into()))
+            }
         }
     }
 
     /// Opens a transaction for the "commit manual" mode.
     pub fn begin(&mut self) -> DbResult<()> {
         self.query(match self.kind() {
-            Kind::Postgres => "BEGIN",
+            Kind::Postgres | Kind::Sqlite => "BEGIN",
             Kind::MySql => "START TRANSACTION",
         })
         .map(|_| ())
@@ -1333,7 +1435,102 @@ impl Conn {
         match self.kind() {
             Kind::Postgres => self.pg_structure(schema, table),
             Kind::MySql => self.my_structure(schema, table),
+            Kind::Sqlite => self.lite_structure(table),
         }
+    }
+
+    /// SQLite keeps each table's CREATE as written: that is the DDL. Foreign keys can't be added
+    /// afterwards there, so they stay inside it (a dump turns their checks off instead).
+    fn lite_structure(&mut self, table: &str) -> DbResult<TableStructure> {
+        let cell = |r: &Vec<Option<String>>, i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+        let cols = self.execute(
+            &Stmt::new(
+                "SELECT name, type, \"notnull\" = 0 AND pk = 0, dflt_value, pk > 0, hidden \
+                 FROM pragma_table_xinfo(",
+            )
+            .value(Some(table))
+            .sql(") WHERE hidden <> 1 ORDER BY cid"),
+        )?;
+        let columns: Vec<StructColumn> = cols
+            .rows
+            .iter()
+            .map(|r| StructColumn {
+                name: cell(r, 0),
+                data_type: cell(r, 1),
+                nullable: cell(r, 2) == "1",
+                default: r[3].clone(),
+                pk: cell(r, 4) == "1",
+            })
+            .collect();
+        let generated = cols
+            .rows
+            .iter()
+            .filter(|r| matches!(cell(r, 5).as_str(), "2" | "3"))
+            .map(|r| cell(r, 0))
+            .collect();
+        // Indexes made by PRIMARY KEY / UNIQUE have no SQL of their own: described by columns.
+        let auto = self.execute(
+            &Stmt::new(
+                "SELECT il.name, CASE il.origin WHEN 'pk' THEN 'PRIMARY KEY' ELSE 'UNIQUE' END || ' (' || \
+                 (SELECT group_concat(ii.name, ', ') FROM pragma_index_info(il.name) ii) || ')' \
+                 FROM pragma_index_list(",
+            )
+            .value(Some(table))
+            .sql(") il WHERE il.origin <> 'c' ORDER BY 1"),
+        )?;
+        let own = self.execute(
+            &Stmt::new("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL AND tbl_name = ")
+                .value(Some(table))
+                .sql(" ORDER BY name"),
+        )?;
+        let fks = self.execute(
+            &Stmt::new(
+                "SELECT id, group_concat(\"from\", ', '), \"table\", group_concat(coalesce(\"to\", ''), ', ') \
+                 FROM pragma_foreign_key_list(",
+            )
+            .value(Some(table))
+            .sql(") GROUP BY id ORDER BY id"),
+        )?;
+        let create = self.execute(
+            &Stmt::new("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ").value(Some(table)),
+        )?;
+        let mut ddl = create
+            .rows
+            .first()
+            .map(|r| format!("{};", cell(r, 0)))
+            .unwrap_or_default();
+        for r in &own.rows {
+            ddl += &format!("\n{};", cell(r, 1));
+        }
+        Ok(TableStructure {
+            columns,
+            indexes: auto
+                .rows
+                .iter()
+                .chain(&own.rows)
+                .map(|r| (cell(r, 0), cell(r, 1)))
+                .collect(),
+            foreign_keys: fks
+                .rows
+                .iter()
+                .map(|r| {
+                    let to = cell(r, 3);
+                    let to = if to.trim_matches([',', ' ']).is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({to})")
+                    };
+                    (
+                        format!("fk_{}", cell(r, 0)),
+                        format!("FOREIGN KEY ({}) REFERENCES {}{to}", cell(r, 1), cell(r, 2)),
+                    )
+                })
+                .collect(),
+            ddl_without_fks: ddl.clone(),
+            ddl,
+            generated,
+            ..Default::default()
+        })
     }
 
     fn pg_structure(&mut self, schema: &str, table: &str) -> DbResult<TableStructure> {
@@ -1763,6 +1960,7 @@ mod tests {
         let risky = match kind {
             Kind::Postgres => "SET standard_conforming_strings = off",
             Kind::MySql => "SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')",
+            Kind::Sqlite => unreachable!("teste de servidor"),
         };
         c.query(risky).unwrap();
         let nasty = [r"a\", r"x\'; DROP TABLE dbl_t; --", "it's", r"\n\0", "ção 🚀"];
@@ -1820,6 +2018,7 @@ mod tests {
         let sleep = match kind {
             Kind::Postgres => "SELECT pg_sleep(20)",
             Kind::MySql => "SELECT SLEEP(20)",
+            Kind::Sqlite => unreachable!("teste de servidor"),
         };
         let _ = c.query(sleep); // Postgres: error "canceling statement"; MySQL: returns 1
         stopper.join().unwrap();
@@ -1942,6 +2141,7 @@ mod tests {
             let _ = other.query(match kind {
                 Kind::Postgres => "SELECT pg_sleep(20)",
                 Kind::MySql => "SELECT SLEEP(20)",
+                Kind::Sqlite => unreachable!("teste de servidor"),
             });
             started.elapsed()
         });
@@ -2025,6 +2225,7 @@ mod tests {
                     )
                     .unwrap();
                 }
+                Kind::Sqlite => unreachable!("teste de servidor"),
             }
             let objs = c.objects().unwrap();
             let find = |name: &str| {
@@ -2158,6 +2359,7 @@ mod tests {
                     c.use_schema(db).unwrap();
                     c.query("DROP DATABASE dbl_outro").unwrap();
                 }
+                Kind::Sqlite => unreachable!("teste de servidor"),
             }
         }
 
@@ -2188,6 +2390,7 @@ mod tests {
         let _ = tc.query(match kind {
             Kind::Postgres => "SELECT pg_sleep(5)",
             Kind::MySql => "SELECT SLEEP(5)",
+            Kind::Sqlite => unreachable!("teste de servidor"),
         });
         assert!(
             started.elapsed() < std::time::Duration::from_secs(3),

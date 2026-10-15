@@ -127,7 +127,10 @@ impl<R: BufRead> ScriptReader<R> {
             let c = chars[i];
             match self.state.clone() {
                 State::Code => {
-                    if chars[i..].starts_with(&delim) {
+                    // A SQLite trigger's body has its own ";" up to END.
+                    if chars[i..].starts_with(&delim)
+                        && !(self.kind == Kind::Sqlite && open_trigger(&self.buf))
+                    {
                         i += delim.len();
                         self.finish_statement();
                         continue;
@@ -150,6 +153,8 @@ impl<R: BufRead> ScriptReader<R> {
                         // MySQL escapes with backslash everywhere; Postgres only in E'...'.
                         let escapes = match self.kind {
                             Kind::MySql => c != '`',
+                            // SQLite has no backslash escapes.
+                            Kind::Sqlite => false,
                             Kind::Postgres => {
                                 c == '\''
                                     && i > 0
@@ -219,6 +224,33 @@ impl<R: BufRead> ScriptReader<R> {
         }
         Ok(data)
     }
+}
+
+/// `CREATE TRIGGER … BEGIN …` not closed by its `END` yet (SQLite).
+fn open_trigger(buf: &str) -> bool {
+    // Comment lines before the statement don't count.
+    let code: String = buf
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let words: Vec<String> = code
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .take(3)
+        .map(str::to_uppercase)
+        .collect();
+    let is_trigger = words.first().is_some_and(|w| w == "CREATE")
+        && (words.get(1).is_some_and(|w| w == "TRIGGER")
+            || (words.get(1).is_some_and(|w| w == "TEMP" || w == "TEMPORARY")
+                && words.get(2).is_some_and(|w| w == "TRIGGER")));
+    let last = buf
+        .trim_end()
+        .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .unwrap_or("")
+        .to_uppercase();
+    is_trigger && last != "END"
 }
 
 /// `COPY tabela (…) FROM stdin`: its data comes inline, right after it.
@@ -342,5 +374,23 @@ mod tests {
         assert!(r.bytes > 0 && r.bytes <= text.len() as u64);
         while r.next().is_some() {}
         assert_eq!(r.bytes, text.len() as u64);
+    }
+
+    #[test]
+    fn sqlite_triggers_stay_whole() {
+        let text = "CREATE TABLE t (id INTEGER);\n-- registra\nCREATE TRIGGER t_ai AFTER INSERT ON t\nBEGIN\n  UPDATE t SET id = id + 1;\n  SELECT 1;\nEND;\nINSERT INTO t VALUES (1);\n";
+        assert_eq!(
+            stmts(&read(Kind::Sqlite, text)),
+            [
+                "CREATE TABLE t (id INTEGER)",
+                "-- registra\nCREATE TRIGGER t_ai AFTER INSERT ON t\nBEGIN\n  UPDATE t SET id = id + 1;\n  SELECT 1;\nEND",
+                "INSERT INTO t VALUES (1)",
+            ]
+        );
+        // Elsewhere a ";" after BEGIN still ends the statement (a transaction, not a trigger).
+        assert_eq!(
+            stmts(&read(Kind::Sqlite, "BEGIN;\nSELECT 1;\nEND;\n")),
+            ["BEGIN", "SELECT 1", "END"]
+        );
     }
 }

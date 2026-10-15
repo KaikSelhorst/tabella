@@ -169,7 +169,10 @@ impl App {
             items.push(Item {
                 icon: icon::DATABASE,
                 label: format!("Conectar: {}", c.name),
-                detail: format!("{} · {}:{}", c.kind.label(), c.host, c.port),
+                detail: match c.kind {
+                    crate::db::Kind::Sqlite => format!("SQLite · {}", c.database),
+                    _ => format!("{} · {}:{}", c.kind.label(), c.host, c.port),
+                },
                 cmd: Cmd::Connect(c.id.clone()),
             });
         }

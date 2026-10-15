@@ -21,6 +21,7 @@ mod secrets;
 mod session;
 mod settings;
 mod sql;
+mod sqlite;
 mod tls;
 mod tunnel;
 mod ui;

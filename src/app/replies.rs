@@ -120,7 +120,7 @@ impl App {
                 // A switch (not the first report at connect) focuses the new one.
                 let (before, now) = match s.cfg.kind {
                     Kind::Postgres => (&s.current_schema, &schema),
-                    Kind::MySql => (&s.current_db, &db),
+                    Kind::MySql | Kind::Sqlite => (&s.current_db, &db),
                 };
                 if !before.is_empty() && before != now {
                     self.schema_focus = Some(now.clone());

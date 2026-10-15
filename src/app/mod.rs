@@ -1754,6 +1754,7 @@ impl App {
             .unwrap_or_else(|| match s.cfg.kind {
                 Kind::Postgres => "public".to_string(),
                 Kind::MySql => s.cfg.database.clone(),
+                Kind::Sqlite => "main".to_string(),
             });
         let d = Design::new_table(s.cfg.kind, &schema);
         self.push_tab("nova tabela".into(), TabKind::Design(Box::new(d)));
@@ -1961,7 +1962,7 @@ impl App {
             size,
             // Postgres undoes DDL too; MySQL commits on each DDL, so a transaction can't
             // promise "all or nothing" there.
-            transaction: s.cfg.kind == Kind::Postgres,
+            transaction: s.cfg.kind != Kind::MySql,
             running: false,
             progress: Default::default(),
             outcome: None,
@@ -2029,6 +2030,7 @@ impl App {
         let here = match s.cfg.kind {
             Kind::Postgres => s.current_schema.clone(),
             Kind::MySql => s.current_db.clone(),
+            Kind::Sqlite => "main".to_string(),
         };
         let st = CompareState {
             source_schema: schema.unwrap_or(here),
@@ -2414,6 +2416,7 @@ pub fn start_compare(tab: &mut Tab, s: &Session, saved: &[ConnConfig]) {
     let schema_note = |conn: &str, db: &str, schema: &str| match s.cfg.kind {
         Kind::Postgres => format!("{conn} · {db} · {schema}"),
         Kind::MySql => format!("{conn} · {schema}"),
+        Kind::Sqlite => conn.to_string(),
     };
     st.compared = format!(
         "{} → {}",

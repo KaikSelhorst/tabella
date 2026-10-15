@@ -1,6 +1,6 @@
 # dblite
 
-Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust com
+Cliente leve de banco de dados para **PostgreSQL**, **MySQL** e **SQLite**, feito em Rust com
 [egui](https://github.com/emilk/egui). Um único executável, sem runtime.
 
 ## Recursos
@@ -123,6 +123,11 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Chave estrangeira escolhida numa lista (Enter/duplo clique na célula, ou a lupa no painel e no
   formulário de nova linha): id e um nome legível, com busca; tabelas pequenas filtradas na
   hora, grandes buscadas no banco (pausa na digitação, 50 resultados, até 2 s por busca)
+- SQLite: abrir um arquivo `.db` (ou criar um novo, ou colar `sqlite:///caminho`) e usar quase
+  tudo — tabelas, editor, edição na grade, chaves estrangeiras, estrutura, designer, importar,
+  exportar `.sql`, comparar estrutura. O que depende de servidor (atividade, sessões, plano visual)
+  avisa que não existe no SQLite; alterar tipo/NULL de coluna existente aparece como comentário
+  (o SQLite não faz)
 - Barra de abas rola (inclusive com a roda do mouse), segue a aba ativa e lista todas quando não
   cabem
 

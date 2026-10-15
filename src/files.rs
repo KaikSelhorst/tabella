@@ -20,6 +20,36 @@ pub fn pick_open() -> Option<PathBuf> {
     None
 }
 
+/// A SQLite database file to open.
+#[cfg(windows)]
+pub fn pick_database() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Abrir banco SQLite")
+        .add_filter("SQLite", &["db", "sqlite", "sqlite3", "db3"])
+        .add_filter("Todos os arquivos", &["*"])
+        .pick_file()
+}
+
+#[cfg(not(windows))]
+pub fn pick_database() -> Option<PathBuf> {
+    None
+}
+
+/// Where to create a new SQLite database file.
+#[cfg(windows)]
+pub fn pick_new_database() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Criar banco SQLite")
+        .set_file_name("novo.db")
+        .add_filter("SQLite", &["db", "sqlite"])
+        .save_file()
+}
+
+#[cfg(not(windows))]
+pub fn pick_new_database() -> Option<PathBuf> {
+    None
+}
+
 #[cfg(windows)]
 pub fn pick_save(suggested: &str) -> Option<PathBuf> {
     rfd::FileDialog::new()

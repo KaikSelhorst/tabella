@@ -109,6 +109,12 @@ fn write_dump(
             // Tables come in any order; their foreign keys stay in the CREATE.
             out.line("SET FOREIGN_KEY_CHECKS = 0;")?;
         }
+        Kind::Sqlite => {
+            // Tables come in any order and keep their foreign keys: checked at the end of a
+            // transaction ("Executar arquivo"), or not at all one statement at a time (sqlite3).
+            out.line("PRAGMA foreign_keys = OFF;")?;
+            out.line("PRAGMA defer_foreign_keys = ON;")?;
+        }
     }
 
     // Each table's structure once: the CREATE, then (after the data) its keys and sequences.
@@ -166,6 +172,7 @@ fn write_dump(
             out.line("")?;
             if spec.drop {
                 let cascade = if k == Kind::Postgres { " CASCADE" } else { "" };
+                // (SQLite: no CASCADE; foreign key checks are off for the file.)
                 out.line(&format!(
                     "DROP TABLE IF EXISTS {}{cascade};",
                     table_name(k, schema, table)
@@ -275,7 +282,7 @@ fn owned_sequences(conn: &mut Conn) -> DbResult<Vec<(String, String)>> {
 fn table_name(k: Kind, schema: &str, table: &str) -> String {
     match k {
         Kind::Postgres => k.qualified(schema, table),
-        Kind::MySql => k.quote_ident(table),
+        Kind::MySql | Kind::Sqlite => k.quote_ident(table),
     }
 }
 
@@ -303,7 +310,7 @@ fn table_rows(
     // MySQL hands binary columns over as text, which would mangle them: as hex instead.
     let binary: Vec<bool> = cols
         .iter()
-        .map(|c| k == Kind::MySql && is_binary(&c.data_type))
+        .map(|c| k != Kind::Postgres && is_binary(&c.data_type))
         .collect();
     let select: Vec<String> = cols
         .iter()
@@ -408,6 +415,23 @@ fn is_binary(data_type: &str) -> bool {
 fn object_ddl(conn: &mut Conn, k: Kind, o: &DbObject, drop: bool, out: &mut Out) -> DbResult<()> {
     let src = conn.object_source(o)?;
     match k {
+        Kind::Sqlite => {
+            // The source has the DROP as a comment: here it's a real one, when asked for.
+            let body: String = src
+                .lines()
+                .filter(|l| !l.starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if drop {
+                let what = if o.kind == ObjKind::View {
+                    "VIEW"
+                } else {
+                    "TRIGGER"
+                };
+                out.line(&format!("DROP {what} IF EXISTS {};", k.quote_ident(&o.name)))?;
+            }
+            out.line(&body)?;
+        }
         Kind::Postgres => {
             // Views and functions come as CREATE OR REPLACE; a trigger needs room.
             if o.kind == ObjKind::Trigger && drop {
@@ -556,6 +580,7 @@ mod tests {
                 "CREATE TRIGGER dbl_dump.pedido_toca BEFORE INSERT ON dbl_dump.pedido \
                  FOR EACH ROW BEGIN SET NEW.obs = coalesce(NEW.obs, 'auto'); END",
             ],
+            Kind::Sqlite => unreachable!("teste de servidor"),
         };
         for sql in setup {
             q(&mut c, sql);
@@ -564,10 +589,12 @@ mod tests {
             let md5 = |col: &str| match kind {
                 Kind::Postgres => format!("md5(string_agg({col}, '|' ORDER BY id))"),
                 Kind::MySql => format!("md5(GROUP_CONCAT({col} ORDER BY id SEPARATOR '|'))"),
+                Kind::Sqlite => unreachable!("teste de servidor"),
             };
             let foto = match kind {
                 Kind::Postgres => "coalesce(encode(foto, 'hex'), '-')",
                 Kind::MySql => "coalesce(hex(foto), '-')",
+                Kind::Sqlite => unreachable!("teste de servidor"),
             };
             let cliente = md5(&format!("concat(id, nome, {foto}, ativo, nome_maiusculo)"));
             vec![
@@ -626,6 +653,7 @@ mod tests {
                 q(&mut c, "CREATE DATABASE dbl_dump");
                 q(&mut c, "USE dbl_dump");
             }
+            Kind::Sqlite => unreachable!("teste de servidor"),
         }
         let mut tx = crate::worker::TxState::default();
         let pg = kind == Kind::Postgres;
@@ -755,5 +783,81 @@ mod tests {
         drop(dst);
         src.query("DROP DATABASE dbl_restore").unwrap();
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// SQLite, no server needed: dump the sample file, load it into a new one with
+    /// "Executar arquivo", and find the same rows, blob, view, trigger and numbering.
+    #[test]
+    fn round_trip_sqlite() {
+        let cfg = crate::sqlite::tests::sample_db("dump-src");
+        let mut c = Conn::connect(&cfg, None).unwrap();
+        let one = |c: &mut Conn, sql: &str| c.query(sql).unwrap().rows[0][0].clone().unwrap_or_default();
+        let fingerprint = |c: &mut Conn| {
+            vec![
+                one(
+                    c,
+                    "SELECT group_concat(id || '|' || nome || '|' || coalesce(email, '-') || '|' || ativo, ';') FROM (SELECT * FROM cliente ORDER BY id)",
+                ),
+                one(
+                    c,
+                    "SELECT group_concat(id || '|' || cliente_id || '|' || total || '|' || coalesce(hex(foto), '-') || '|' || obs, ';') FROM (SELECT * FROM pedido ORDER BY id)",
+                ),
+                one(c, "SELECT group_concat(cliente_id || ':' || n) FROM resumo"),
+            ]
+        };
+        let before = fingerprint(&mut c);
+        let tables: Vec<(String, String)> = c
+            .tables()
+            .unwrap()
+            .into_iter()
+            .filter(|t| !t.is_view)
+            .map(|t| (t.schema, t.name))
+            .collect();
+        let path = std::env::temp_dir().join(format!("dblite-dump-sqlite-{}.sql", std::process::id()));
+        let spec = DumpSpec {
+            path: path.clone(),
+            tables,
+            objects_of: vec!["main".into()],
+            structure: true,
+            data: true,
+            drop: true,
+        };
+        let p = dump(&mut c, &spec, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!((p.tables, p.rows), (2, 5));
+
+        let target = crate::db::ConnConfig {
+            database: format!("{}-copia.db", cfg.database),
+            ..cfg.clone()
+        };
+        let _ = std::fs::remove_file(&target.database);
+        crate::sqlite::create(&target.database).unwrap();
+        let mut d = Conn::connect(&target, None).unwrap();
+        let mut tx = crate::worker::TxState::default();
+        let (_, err) = crate::worker::run_script(
+            &mut d,
+            &mut tx,
+            false,
+            &path,
+            true,
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        if let Some(e) = err {
+            panic!("line {}: {}\n{}", e.line, e.message, e.statement);
+        }
+        assert_eq!(fingerprint(&mut d), before);
+        // The trigger came back; numbering goes on after the copied ids.
+        d.query("INSERT INTO pedido (cliente_id, total) VALUES (2, 1)")
+            .unwrap();
+        assert_eq!(
+            one(
+                &mut d,
+                "SELECT id || ':' || obs FROM pedido ORDER BY id DESC LIMIT 1"
+            ),
+            "4:auto"
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cfg.database);
+        let _ = std::fs::remove_file(&target.database);
     }
 }

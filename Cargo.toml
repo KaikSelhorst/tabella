@@ -13,9 +13,11 @@ dirs = { version = "7.0.0", default-features = false }
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui-phosphor = "0.14.0"
 egui_extras = { version = "0.36.2", default-features = false }
+fallible-iterator = "0.3"
 getrandom = "0.3"
 mysql = { version = "28.0.3", default-features = false, features = ["minimal", "rustls-tls-ring"] }
 postgres = { version = "0.19.14", default-features = false }
+rusqlite = { version = "0.37", features = ["bundled"] }
 rust_xlsxwriter = "0.99.1"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }

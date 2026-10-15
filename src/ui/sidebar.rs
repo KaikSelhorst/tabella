@@ -27,6 +27,19 @@ impl App {
             return;
         };
         let tk = theme::tokens();
+        // A SQLite file is the whole database: which file, nothing to switch.
+        if s.cfg.kind == Kind::Sqlite {
+            ui.add_space(4.0);
+            let file = egui::Label::new(theme::icon_text(
+                icon::FILE,
+                &format!(" {}", s.cfg.database),
+                tk.muted_foreground,
+                tk.muted_foreground,
+            ))
+            .truncate();
+            ui.add(file).on_hover_text(&s.cfg.database);
+            return;
+        }
         let pg = s.cfg.kind == Kind::Postgres;
         let mut schemas: Vec<String> = s.tables.iter().map(|t| t.schema.clone()).collect();
         schemas.dedup();
@@ -330,6 +343,7 @@ impl App {
                 let default_schema = match kind {
                     crate::db::Kind::Postgres => s.current_schema.as_str(),
                     crate::db::Kind::MySql => s.current_db.as_str(),
+                    crate::db::Kind::Sqlite => "main",
                 };
                 let mut groups: Vec<&[TableRef]> = s.tables.chunk_by(|a, b| a.schema == b.schema).collect();
                 groups.sort_by_key(|g| g[0].schema != default_schema);
@@ -650,6 +664,7 @@ fn conn_label(c: &ConnConfig) -> egui::text::LayoutJob {
     let (tag, color) = match c.kind {
         Kind::Postgres => ("PG", t.info),
         Kind::MySql => ("MySQL", t.warning),
+        Kind::Sqlite => ("SQLite", t.boolean),
     };
     let mut job = LayoutJob::default();
     if let Some(tag) = c.color {

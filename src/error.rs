@@ -5,6 +5,8 @@ pub enum DbError {
     #[error("{0}")]
     MySql(#[from] mysql::Error),
     #[error("{0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("{0}")]
     Other(String),
 }
 
@@ -45,6 +47,8 @@ impl DbError {
                 postgres::error::ErrorPosition::Internal { .. } => None,
             },
             DbError::MySql(mysql::Error::MySqlError(e)) => mysql_position(&e.message, sql),
+            // `near "FRM": syntax error`, `no such column: emial`, `no such table: x`
+            DbError::Sqlite(e) => sqlite_position(&e.to_string(), sql),
             _ => None,
         }
     }
@@ -76,6 +80,25 @@ fn mysql_position(message: &str, sql: &str) -> Option<usize> {
     let name = message.split('\'').nth(1)?;
     let name = name.rsplit('.').next()?;
     find_word(sql, name)
+}
+
+fn sqlite_position(message: &str, sql: &str) -> Option<usize> {
+    // Newer SQLite says exactly where: "… in SELECT … at offset 14".
+    if let Some(at) = message
+        .rsplit("at offset ")
+        .next()
+        .filter(|_| message.contains("at offset "))
+        && let Ok(n) = at.trim().parse::<usize>()
+        && n <= sql.len()
+    {
+        return Some(n);
+    }
+    if let Some(rest) = message.split("near \"").nth(1) {
+        let near = rest.split('"').next()?;
+        return find_word(sql, near).or_else(|| sql.find(near));
+    }
+    let name = message.rsplit(": ").next()?.trim();
+    find_word(sql, name.rsplit('.').next()?)
 }
 
 /// First occurrence of `word` as a whole identifier, ignoring case.

@@ -81,6 +81,9 @@ pub fn common_types(kind: Kind) -> &'static [&'static str] {
             "timestamptz",
             "jsonb",
         ],
+        Kind::Sqlite => &[
+            "INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB", "BOOLEAN", "DATE", "DATETIME",
+        ],
         Kind::MySql => &[
             "bigint",
             "int",
@@ -103,6 +106,8 @@ impl Design {
         let id_type = match kind {
             Kind::Postgres => "bigserial",
             Kind::MySql => "bigint",
+            // The INTEGER primary key is the row's own number: SQLite fills it in.
+            Kind::Sqlite => "INTEGER",
         };
         Design {
             kind,
@@ -257,7 +262,9 @@ impl Design {
         let mut out = Vec::new();
         for ix in self.indexes.iter().filter(|i| i.existing && i.dropped) {
             out.push(match k {
-                Kind::Postgres => format!("DROP INDEX {}", k.qualified(self.schema.trim(), &ix.name)),
+                Kind::Postgres | Kind::Sqlite => {
+                    format!("DROP INDEX {}", k.qualified(self.schema.trim(), &ix.name))
+                }
                 Kind::MySql => format!("DROP INDEX {} ON {t}", q(&ix.name)),
             });
         }
@@ -300,6 +307,16 @@ impl Design {
                                         c.default.trim()
                                     )
                                 });
+                            }
+                        }
+                        // SQLite can't change a column in place: say so in the SQL shown.
+                        Kind::Sqlite => {
+                            if type_changed || null_changed || default_changed {
+                                out.push(format!(
+                                    "-- SQLite não altera tipo, NULL ou padrão de uma coluna existente ({}): \
+                                     crie uma tabela nova e copie os dados",
+                                    c.name.trim()
+                                ));
                             }
                         }
                         // MySQL redefines the whole column at once.

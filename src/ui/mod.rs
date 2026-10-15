@@ -1863,6 +1863,22 @@ pub(crate) mod screenshots {
             harness.state_mut().tabs[0].value_editor = None;
         }
 
+        // Connected to a SQLite file: the sidebar shows the file instead of database/schema.
+        {
+            let s = harness.state_mut().session.as_mut().unwrap();
+            s.cfg.kind = Kind::Sqlite;
+            s.cfg.database = r"C:\Users\voce\Documents\estoque.db".into();
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/sqlite-connected.png"))
+                .unwrap();
+            let s = harness.state_mut().session.as_mut().unwrap();
+            s.cfg.kind = Kind::Postgres;
+            s.cfg.database = String::new();
+        }
+
         // Notices: an error stays (with copy and close), information fades.
         harness.state_mut().notice =
             crate::app::Notice::error("Não foi possível: relation \"clientes_antigos\" already exists");
@@ -2170,6 +2186,19 @@ pub(crate) mod screenshots {
             .render()
             .unwrap()
             .save(format!("{dir}/form-test.png"))
+            .unwrap();
+        harness.state_mut().conn_test = None;
+        {
+            let form = harness.state_mut().form.as_mut().unwrap();
+            form.cfg.kind = Kind::Sqlite;
+            form.cfg.name = "estoque".into();
+            form.cfg.database = r"C:\Users\voce\Documents\estoque.db".into();
+        }
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/form-sqlite.png"))
             .unwrap();
     }
 }

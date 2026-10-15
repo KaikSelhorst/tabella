@@ -6,6 +6,25 @@ use crate::db::{ConnConfig, Kind};
 /// Fills the connection fields of `cfg` from `url`. Name, color and other app settings are kept.
 pub fn apply(cfg: &mut ConnConfig, url: &str) -> Result<(), String> {
     let url = url.trim();
+    // sqlite:///C:/dados/loja.db, sqlite:///home/eu/loja.db, sqlite:loja.db: a file path.
+    if url.len() > 7 && url[..7].eq_ignore_ascii_case("sqlite:") {
+        let path = url[7..].trim_start_matches("//");
+        // "/C:/…" is a Windows drive, not a path under the root.
+        let windows_drive = path.len() > 2 && path.starts_with('/') && path.as_bytes()[2] == b':';
+        let path = decode(if windows_drive { &path[1..] } else { path })?;
+        if path.is_empty() {
+            return Err("URL sem o caminho do arquivo".into());
+        }
+        cfg.kind = Kind::Sqlite;
+        cfg.database = path;
+        cfg.host.clear();
+        cfg.user.clear();
+        cfg.password.clear();
+        cfg.port = 0;
+        cfg.ssl = false;
+        cfg.ssh = None;
+        return Ok(());
+    }
     let (scheme, rest) = url
         .split_once("://")
         .ok_or("URL sem esquema (ex: postgres://…)")?;
@@ -146,5 +165,20 @@ mod tests {
                 .contains("porta")
         );
         assert!(apply(&mut c, "postgres://u:%zz@h/db").is_err());
+    }
+
+    #[test]
+    fn sqlite_urls_are_file_paths() {
+        let mut c = ConnConfig::new(Kind::Postgres);
+        apply(&mut c, "sqlite:///C:/dados/loja%20nova.db").unwrap();
+        assert_eq!(
+            (c.kind, c.database.as_str(), c.host.as_str()),
+            (Kind::Sqlite, "C:/dados/loja nova.db", "")
+        );
+        apply(&mut c, "sqlite:///home/eu/app.sqlite3").unwrap();
+        assert_eq!(c.database, "/home/eu/app.sqlite3");
+        apply(&mut c, "SQLITE:dev.db").unwrap();
+        assert_eq!(c.database, "dev.db");
+        assert!(apply(&mut c, "sqlite://").is_err());
     }
 }

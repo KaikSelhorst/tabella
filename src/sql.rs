@@ -137,6 +137,8 @@ fn contains(kind: Kind, col: &str, term: &str) -> String {
         Kind::Postgres => format!("CAST({col} AS TEXT) ILIKE {pattern}"),
         // MySQL compares case-insensitively with the default collations.
         Kind::MySql => format!("CAST({col} AS CHAR) LIKE {pattern}"),
+        // SQLite's LIKE ignores case (for ASCII letters).
+        Kind::Sqlite => format!("CAST({col} AS TEXT) LIKE {pattern}"),
     }
 }
 
@@ -216,8 +218,9 @@ pub fn bool_value(kind: Kind, b: bool) -> &'static str {
     match (kind, b) {
         (Kind::Postgres, true) => "true",
         (Kind::Postgres, false) => "false",
-        (Kind::MySql, true) => "1",
-        (Kind::MySql, false) => "0",
+        // SQLite has no boolean type: 1 and 0 are what it stores.
+        (Kind::MySql | Kind::Sqlite, true) => "1",
+        (Kind::MySql | Kind::Sqlite, false) => "0",
     }
 }
 
@@ -419,6 +422,7 @@ pub fn column_stats(
     let as_text = match kind {
         Kind::Postgres => format!("{c}::text"),
         Kind::MySql => c.clone(),
+        Kind::Sqlite => format!("CAST({c} AS TEXT)"),
     };
     let wh = if filter.trim().is_empty() {
         String::new()
@@ -666,7 +670,7 @@ pub fn call_template(kind: Kind, schema: &str, name: &str, args: &[RoutineArg], 
     let call = format!("{target}({})", values.join(", "));
     match (procedure, kind) {
         (false, Kind::Postgres) => format!("SELECT * FROM {call};"),
-        (false, Kind::MySql) => format!("SELECT {call} AS resultado;"),
+        (false, Kind::MySql | Kind::Sqlite) => format!("SELECT {call} AS resultado;"),
         (true, _) if outs.is_empty() => format!("CALL {call};"),
         (true, _) => format!("CALL {call};\nSELECT {};", outs.join(", ")),
     }
@@ -708,6 +712,17 @@ pub fn table_action(kind: Kind, schema: &str, table: &str, action: TableAction, 
             }
             s
         }
+        (TableAction::Rename, Kind::Sqlite) => {
+            format!("ALTER TABLE {t} RENAME TO {};", kind.quote_ident(name.trim()))
+        }
+        // No CREATE TABLE … LIKE in SQLite: the columns (and rows) come, the rest doesn't.
+        (TableAction::Duplicate(data), Kind::Sqlite) => format!(
+            "-- SQLite: a cópia leva as colunas{}, mas não a chave primária, os índices nem as restrições.\n\
+             CREATE TABLE {new} AS SELECT * FROM {t}{};",
+            if data { " e os dados" } else { "" },
+            if data { "" } else { " WHERE 0" }
+        ),
+        (TableAction::Truncate, Kind::Sqlite) => format!("DELETE FROM {t};"),
         (TableAction::Truncate, _) => format!("TRUNCATE TABLE {t};"),
         (TableAction::Drop, _) => format!("DROP TABLE {t};"),
     }
@@ -1055,7 +1070,7 @@ pub fn format_sql(kind: Kind, sql: &str) -> String {
         max_inline_top_level: Some(60),
         dialect: match kind {
             Kind::Postgres => sqlformat::Dialect::PostgreSql,
-            Kind::MySql => sqlformat::Dialect::Generic,
+            Kind::MySql | Kind::Sqlite => sqlformat::Dialect::Generic,
         },
         ..Default::default()
     };
@@ -1176,7 +1191,7 @@ pub fn update_cell(
 pub fn insert_default(kind: Kind, schema: &str, table: &str) -> Stmt {
     let t = kind.qualified(schema, table);
     Stmt::new(match kind {
-        Kind::Postgres => format!("INSERT INTO {t} DEFAULT VALUES"),
+        Kind::Postgres | Kind::Sqlite => format!("INSERT INTO {t} DEFAULT VALUES"),
         Kind::MySql => format!("INSERT INTO {t} () VALUES ()"),
     })
 }
