@@ -22,7 +22,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: docker compose --profile test up -d --wait
-      - run: cargo test -- --ignored db:: worker:: tunnel::
+      - run: "cargo test -- --ignored db:: worker:: tunnel::"
 
   windows:
     runs-on: windows-latest
