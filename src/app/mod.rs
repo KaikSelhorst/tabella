@@ -599,6 +599,8 @@ pub enum FieldMode {
 
 pub struct InsertField {
     pub name: String,
+    /// The row a foreign-key column points at (its value can be picked from there).
+    pub references: Option<crate::db::FkRef>,
     pub data_type: String,
     pub kind: ValueKind,
     pub nullable: bool,
@@ -629,6 +631,8 @@ pub struct Tab {
     pub confirm_run: Option<String>,
     /// A cell's value open in the big editor.
     pub value_editor: Option<ValueEditor>,
+    /// Choosing a foreign key's value from the referenced table.
+    pub fk_picker: Option<FkPicker>,
     /// Last export of this tab: file and row count, shown until dismissed.
     pub exported: Option<(PathBuf, u64)>,
     /// A script's result sets when it returned more than one, in order. The one on screen lives
@@ -697,6 +701,7 @@ impl Tab {
             pending_sql: None,
             confirm_run: None,
             value_editor: None,
+            fk_picker: None,
             exported: None,
             sets: Vec::new(),
             set_shown: 0,
@@ -879,6 +884,114 @@ pub struct ConnTest {
     pub key: String,
     pub rx: Receiver<Result<String, String>>,
     pub result: Option<Result<String, String>>,
+}
+
+/// What the foreign-key picker fills in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PickFor {
+    /// A grid cell (row, column).
+    Cell(usize, usize),
+    /// A field of the "Nova linha" form.
+    InsertField(usize),
+}
+
+/// A referenced row in the picker: its key and its readable column.
+pub type FkOption = (String, Option<String>);
+
+/// "Escolher" a foreign key's value: the referenced rows, searchable, key and a readable column.
+pub struct FkPicker {
+    pub target: PickFor,
+    /// The column being filled, and the row it points at.
+    pub column: String,
+    pub fk: crate::db::FkRef,
+    pub label: Option<String>,
+    pub numeric_key: bool,
+    /// The whole referenced table is here (small): filtered locally.
+    pub local: bool,
+    pub search: String,
+    /// The search the options came for; a different `search` asks again once typing pauses.
+    pub asked: String,
+    pub typed_at: Instant,
+    pub loading: bool,
+    pub options: Option<Result<Vec<FkOption>, String>>,
+    pub current: Option<String>,
+    pub focused: bool,
+}
+
+/// Opens the picker for a foreign-key column, from the session's catalog: the referenced
+/// table's readable column and size decide what is shown and how it is searched.
+pub fn open_fk_picker(
+    tab: &mut Tab,
+    s: &Session,
+    target: PickFor,
+    column: &str,
+    fk: crate::db::FkRef,
+    current: Option<String>,
+) {
+    let cols: Vec<(String, String)> = s
+        .schema_cols
+        .iter()
+        .filter(|c| c.schema == fk.schema && c.table == fk.table)
+        .map(|c| (c.column.clone(), c.data_type.clone()))
+        .collect();
+    let key_type = cols
+        .iter()
+        .find(|(c, _)| *c == fk.column)
+        .map_or("", |(_, t)| t.as_str())
+        .to_lowercase();
+    let numeric_key = ["int", "serial", "numeric", "decimal"]
+        .iter()
+        .any(|n| key_type.contains(n));
+    let label = sql::fk_label(&cols, &fk.column);
+    let estimate = s
+        .tables
+        .iter()
+        .find(|t| t.schema == fk.schema && t.name == fk.table)
+        .and_then(|t| t.estimate);
+    let local = estimate.is_some_and(|n| n <= sql::FK_LOCAL_ROWS);
+    tab.fk_picker = Some(FkPicker {
+        target,
+        column: column.to_string(),
+        fk,
+        label,
+        numeric_key,
+        local,
+        search: String::new(),
+        asked: String::new(),
+        typed_at: Instant::now(),
+        loading: false,
+        options: None,
+        current,
+        focused: false,
+    });
+    fk_search(tab, s);
+}
+
+/// Asks for the picker's options for what is typed now.
+pub fn fk_search(tab: &mut Tab, s: &Session) {
+    let Some(p) = &mut tab.fk_picker else { return };
+    let search = if p.local {
+        String::new()
+    } else {
+        p.search.trim().to_string()
+    };
+    let sql = sql::fk_options(
+        s.cfg.kind,
+        &p.fk,
+        p.label.as_deref(),
+        p.numeric_key,
+        p.local,
+        &search,
+    );
+    p.asked = p.search.clone();
+    p.loading = true;
+    let job = Job::FkOptions {
+        tab: tab.id,
+        sql,
+        search,
+    };
+    tab.begin_job();
+    s.send(job);
 }
 
 /// A long value (JSON, text, XML…) in an editor of its own.
@@ -2180,6 +2293,7 @@ pub fn open_insert_form(tab: &mut Tab) {
             .zip(kinds)
             .map(|(c, kind)| InsertField {
                 name: c.name.clone(),
+                references: c.references.clone(),
                 data_type: c.data_type.clone(),
                 kind,
                 nullable: c.nullable,
@@ -2947,6 +3061,21 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
                 CopyAs::Json => values::row_json(res, cols, *row),
                 CopyAs::Insert => sql::insert_row(k, &table, &res.columns, &res.rows[*row]),
             }));
+        }
+        // A foreign key is chosen from the referenced rows instead of typed.
+        GridEvent::StartEdit(row, col)
+            if editable
+                && let Some(fk) = cols
+                    .iter()
+                    .find(|c| c.name == res.columns[*col])
+                    .and_then(|c| c.references.clone()) =>
+        {
+            let (row, col) = (*row, *col);
+            let column = res.columns[col].clone();
+            let current = res.rows[row][col].clone();
+            tab.selected = Some((row, col));
+            open_fk_picker(tab, s, PickFor::Cell(row, col), &column, fk, current);
+            return None;
         }
         GridEvent::OpenValue(row, col) => {
             let (row, col) = (*row, *col);
@@ -3883,6 +4012,130 @@ mod poll_tests {
         handle_grid_event(&mut tab, &s, GridEvent::OpenValue(1, col), false);
         let ve = tab.value_editor.as_ref().unwrap();
         assert!(!ve.editable && ve.null);
+    }
+
+    /// Editing a foreign-key cell opens the picker (a small table loaded whole, a big one
+    /// searched); an answer for an older search is ignored.
+    #[test]
+    fn foreign_key_cells_open_the_picker() {
+        let (mut s, jobs, replies) = fake_session(Kind::Postgres);
+        let table = |name: &str, n: i64| crate::db::TableRef {
+            schema: "public".into(),
+            name: name.into(),
+            is_view: false,
+            estimate: Some(n),
+            search_key: name.into(),
+            size: None,
+        };
+        s.tables = vec![table("clientes", 1_000_000), table("status", 5)];
+        let col = |t: &str, c: &str, ty: &str| crate::db::SchemaColumn {
+            schema: "public".into(),
+            table: t.into(),
+            column: c.into(),
+            data_type: ty.into(),
+            pk: c == "id",
+        };
+        s.schema_cols = vec![
+            col("clientes", "id", "integer"),
+            col("clientes", "nome", "text"),
+            col("status", "id", "integer"),
+            col("status", "descricao", "text"),
+        ];
+        let mut app = app_with(s);
+        app.open_table_filtered("public", "pedidos", String::new());
+        let fk = |t: &str| crate::db::FkRef {
+            schema: "public".into(),
+            table: t.into(),
+            column: "id".into(),
+        };
+        if let TabKind::Table(ts) = &mut app.tabs[0].kind {
+            ts.cols = vec![
+                ColumnInfo {
+                    name: "id".into(),
+                    data_type: "integer".into(),
+                    pk: true,
+                    nullable: false,
+                    has_default: true,
+                    references: None,
+                },
+                ColumnInfo {
+                    name: "cliente_id".into(),
+                    data_type: "integer".into(),
+                    pk: false,
+                    nullable: false,
+                    has_default: false,
+                    references: Some(fk("clientes")),
+                },
+                ColumnInfo {
+                    name: "status_id".into(),
+                    data_type: "integer".into(),
+                    pk: false,
+                    nullable: true,
+                    has_default: false,
+                    references: Some(fk("status")),
+                },
+            ];
+        }
+        app.tabs[0].result = Some(QueryResult {
+            columns: vec!["id".into(), "cliente_id".into(), "status_id".into()],
+            rows: vec![vec![Some("1".into()), Some("42".into()), Some("2".into())]],
+            ..Default::default()
+        });
+        let tab = app.tabs[0].id;
+        let fk_sql = |jobs: &Receiver<Job>| {
+            jobs.try_iter().find_map(|j| match j {
+                Job::FkOptions { sql, .. } => Some(sql),
+                _ => None,
+            })
+        };
+        let s = app.session.as_ref().unwrap();
+        handle_grid_event(&mut app.tabs[0], s, GridEvent::StartEdit(0, 2), true);
+        let p = app.tabs[0].fk_picker.as_ref().unwrap();
+        assert!(p.local && p.label.as_deref() == Some("descricao") && p.current.as_deref() == Some("2"));
+        assert!(
+            fk_sql(&jobs)
+                .unwrap()
+                .contains("ORDER BY \"descricao\" LIMIT 10001")
+        );
+        handle_grid_event(&mut app.tabs[0], s, GridEvent::StartEdit(0, 1), true);
+        let p = app.tabs[0].fk_picker.as_ref().unwrap();
+        assert!(!p.local && p.numeric_key && p.label.as_deref() == Some("nome"));
+        assert!(fk_sql(&jobs).unwrap().ends_with("LIMIT 50"));
+        assert!(
+            app.tabs[0].value_editor.is_none()
+                && matches!(&app.tabs[0].kind, TabKind::Table(ts) if ts.edit.is_none())
+        );
+        // Typed "mar", then "maria": the answer for "mar" comes first and is ignored.
+        app.tabs[0].fk_picker.as_mut().unwrap().search = "maria".into();
+        fk_search(&mut app.tabs[0], app.session.as_ref().unwrap());
+        let row = |k: &str, l: &str| vec![Some(k.to_string()), Some(l.to_string())];
+        for (search, rows) in [
+            ("mar", vec![row("7", "Marcos")]),
+            ("maria", vec![row("42", "Maria Souza")]),
+        ] {
+            replies
+                .send(Reply::FkOptions {
+                    tab,
+                    search: search.into(),
+                    res: Ok(QueryResult {
+                        rows,
+                        ..Default::default()
+                    }),
+                })
+                .unwrap();
+            app.poll();
+            let p = app.tabs[0].fk_picker.as_ref().unwrap();
+            let first = p
+                .options
+                .as_ref()
+                .and_then(|o| o.as_ref().ok())
+                .and_then(|o| o.first().cloned());
+            if search == "mar" {
+                assert!(first.is_none(), "stale answer ignored");
+            } else {
+                assert_eq!(first, Some(("42".into(), Some("Maria Souza".into()))));
+            }
+        }
     }
 
     /// Pinning picks what identifies a row: the primary key, else "id", else the first column.

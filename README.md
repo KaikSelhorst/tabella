@@ -120,6 +120,9 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
   JSON formatado, colorido e validado sem alterar números; volta compacto se veio compacto
 - Fixar um resultado no editor e comparar com os próximos: linhas novas, removidas e
   alteradas (antigo → novo), casadas pela chave escolhida ou pela posição
+- Chave estrangeira escolhida numa lista (Enter/duplo clique na célula, ou a lupa no painel e no
+  formulário de nova linha): id e um nome legível, com busca; tabelas pequenas filtradas na
+  hora, grandes buscadas no banco (pausa na digitação, 50 resultados, até 2 s por busca)
 - Barra de abas rola (inclusive com a roda do mouse), segue a aba ativa e lista todas quando não
   cabem
 

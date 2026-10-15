@@ -137,6 +137,13 @@ pub enum Job {
         tab: u64,
         sql: String,
     },
+    /// The foreign-key picker's options (a search capped at 2 s).
+    FkOptions {
+        tab: u64,
+        sql: String,
+        /// The search text they are for (a newer one may already be typed).
+        search: String,
+    },
     /// "Comparar estrutura": `target: None` is another schema of this connection.
     Compare {
         tab: u64,
@@ -296,6 +303,11 @@ pub enum Reply {
         tab: u64,
         res: DbResult<QueryResult>,
     },
+    FkOptions {
+        tab: u64,
+        search: String,
+        res: DbResult<QueryResult>,
+    },
     DumpProgress {
         tab: u64,
         progress: crate::dump::DumpProgress,
@@ -355,6 +367,7 @@ impl Reply {
             | Reply::Exported { tab, .. }
             | Reply::ColumnStats { tab, .. }
             | Reply::Distinct { tab, .. }
+            | Reply::FkOptions { tab, .. }
             | Reply::DumpDone { tab, .. }
             | Reply::Compared { tab, .. }
             | Reply::Preview { tab, .. }
@@ -489,6 +502,32 @@ pub(crate) fn run_script(
         }
     }
     (p, error)
+}
+
+/// A read that mustn't hold the connection: Postgres gets a 2 s statement timeout inside a
+/// savepoint (or a transaction of its own), undone right after, so a timeout never breaks a
+/// transaction the user has open. MySQL has the limit as a hint in the SQL.
+fn capped_read(conn: &mut Conn, pg: bool, in_tx: bool, sql: &str) -> DbResult<QueryResult> {
+    if !pg {
+        return conn.query(sql);
+    }
+    let (open, close) = if in_tx {
+        (
+            "SAVEPOINT dblite_read",
+            "ROLLBACK TO SAVEPOINT dblite_read; RELEASE SAVEPOINT dblite_read",
+        )
+    } else {
+        ("BEGIN", "ROLLBACK")
+    };
+    conn.query(&format!("{open}; SET LOCAL statement_timeout = 2000"))?;
+    let res = conn.query(sql);
+    conn.query(close)?;
+    res.map_err(|e| match e.to_string() {
+        m if m.contains("statement timeout") => {
+            DbError::Other("a busca passou de 2 s: digite mais do nome, ou o número da chave".into())
+        }
+        _ => e,
+    })
 }
 
 /// "Testar conexão": connects (through the SSH tunnel, if any) on its own thread and says
@@ -717,6 +756,11 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
                         },
                     }
                 }
+                Job::FkOptions { tab, sql, search } => Reply::FkOptions {
+                    tab,
+                    search,
+                    res: capped_read(&mut conn, pg, tx.open, &sql),
+                },
                 Job::Distinct { tab, sql } => Reply::Distinct {
                     tab,
                     res: conn.query(&sql),
@@ -1274,6 +1318,38 @@ mod tests {
         );
         assert!(err.is_some_and(|e| e.cancelled) && p.statements == 0);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A search that runs too long stops at 2 s, says so, and leaves an open transaction (and
+    /// the session's timeout) as they were.
+    #[test]
+    #[ignore]
+    fn capped_reads_never_break_the_transaction() {
+        let mut cfg = ConnConfig::new(Kind::Postgres);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 55432;
+        cfg.password = "pw".into();
+        cfg.database = "postgres".into();
+        let mut c = Conn::connect(&cfg, None).expect("connect");
+        let timeout = |c: &mut Conn| c.query("SHOW statement_timeout").unwrap().rows[0][0].clone();
+        let before = timeout(&mut c);
+        assert!(capped_read(&mut c, true, false, "SELECT 1").is_ok());
+        let err = capped_read(&mut c, true, false, "SELECT pg_sleep(3)")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("2 s"), "{err}");
+        assert_eq!(timeout(&mut c), before);
+        c.query("BEGIN").unwrap();
+        c.query("CREATE TEMP TABLE dbl_cap (x int)").unwrap();
+        assert!(capped_read(&mut c, true, true, "SELECT pg_sleep(3)").is_err());
+        // Still usable, with what was done before the search.
+        c.query("INSERT INTO dbl_cap VALUES (1)").unwrap();
+        c.query("COMMIT").unwrap();
+        assert_eq!(
+            c.query("SELECT count(*) FROM dbl_cap").unwrap().rows[0][0].as_deref(),
+            Some("1")
+        );
+        assert_eq!(timeout(&mut c), before);
     }
 
     #[test]

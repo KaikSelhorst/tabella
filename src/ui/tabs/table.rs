@@ -246,7 +246,22 @@ pub(super) fn insert_form(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     match structure::insert_form(ctx, id, &name, fields) {
         Some(InsertAction::Submit) => app::submit_insert(tab, s),
         Some(InsertAction::Cancel) => ts.insert = None,
+        Some(InsertAction::PickFk(i)) => {
+            let f = &fields[i];
+            if let Some(fk) = f.references.clone() {
+                let (column, current) = (f.name.clone(), Some(f.text.clone()).filter(|t| !t.is_empty()));
+                app::open_fk_picker(tab, s, app::PickFor::InsertField(i), &column, fk, current);
+            }
+        }
         None => {}
+    }
+    // The picker opened from the form fills the field.
+    if let Some((app::PickFor::InsertField(i), key)) = fk_dialog(ctx, tab, s)
+        && let TabKind::Table(ts) = &mut tab.kind
+        && let Some(f) = ts.insert.as_mut().and_then(|fields| fields.get_mut(i))
+    {
+        f.mode = app::FieldMode::Value;
+        f.text = key;
     }
 }
 

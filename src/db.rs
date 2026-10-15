@@ -2415,6 +2415,19 @@ mod tests {
                 .unwrap();
             assert_eq!(n.rows[0][0], list.rows[0][1], "{kind:?}: {cond}");
         }
+        // The foreign-key picker's queries run as they are (the MySQL time-limit hint too).
+        {
+            let schema = if kind == Kind::MySql { db } else { "public" };
+            let fk = FkRef {
+                schema: schema.into(),
+                table: "dbl_t".into(),
+                column: "id".into(),
+            };
+            for (local, search) in [(true, ""), (false, ""), (false, "1"), (false, "x")] {
+                let sql = crate::sql::fk_options(kind, &fk, Some("name"), true, local, search);
+                c.query(&sql).unwrap_or_else(|e| panic!("{kind:?}: {sql}: {e}"));
+            }
+        }
         // Errors say where they are: a typo in a keyword, a column, a table.
         let pos = |c: &mut Conn, sql: &str| c.query(sql).expect_err(sql).position_in(sql);
         let at = |c: &mut Conn, sql: &str| {

@@ -14,6 +14,8 @@ use crate::values::{ValueKind, column_info};
 
 pub enum DetailAction {
     Commit(usize, Option<String>),
+    /// Choose the foreign key's value from the referenced rows.
+    PickFk(usize),
     /// The field's value in the big editor.
     Open(usize),
     Copy(CopyAs),
@@ -200,6 +202,21 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                     }
                     ui.label(RichText::new(name).size(11.0).color(t.muted_foreground));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if can_edit && let Some(fk) = c.and_then(|c| c.references.as_ref()) {
+                            let pick = egui::Button::new(
+                                theme::icon(icon::MAGNIFYING_GLASS)
+                                    .size(11.0)
+                                    .color(t.muted_foreground),
+                            )
+                            .frame(false);
+                            if ui
+                                .add(pick)
+                                .on_hover_text(format!("Escolher em {}", fk.table))
+                                .clicked()
+                            {
+                                action = Some(DetailAction::PickFk(ci));
+                            }
+                        }
                         let open = egui::Button::new(
                             theme::icon(icon::ARROWS_OUT_SIMPLE)
                                 .size(11.0)

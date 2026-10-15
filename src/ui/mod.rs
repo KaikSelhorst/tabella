@@ -1799,6 +1799,44 @@ pub(crate) mod screenshots {
             ed.comparing = false;
         }
 
+        // The foreign-key picker over a big table, searched by name.
+        {
+            let app = harness.state_mut();
+            app.active = 0;
+            let row = |k: &str, l: &str| (k.to_string(), Some(l.to_string()));
+            app.tabs[0].fk_picker = Some(crate::app::FkPicker {
+                target: crate::app::PickFor::Cell(2, 1),
+                column: "cliente_id".into(),
+                fk: crate::db::FkRef {
+                    schema: "public".into(),
+                    table: "clientes".into(),
+                    column: "id".into(),
+                },
+                label: Some("nome".into()),
+                numeric_key: true,
+                local: false,
+                search: "maria".into(),
+                asked: "maria".into(),
+                typed_at: std::time::Instant::now() - std::time::Duration::from_secs(5),
+                loading: false,
+                options: Some(Ok(vec![
+                    row("42", "Maria Souza"),
+                    row("1077", "Maria Eduarda Lima"),
+                    row("23514", "Ana Maria Prado"),
+                    row("90211", "Mariana Costa"),
+                ])),
+                current: Some("1077".into()),
+                focused: true,
+            });
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/fk-picker.png"))
+                .unwrap();
+            harness.state_mut().tabs[0].fk_picker = None;
+        }
+
         // The big value editor with a JSON document.
         {
             let app = harness.state_mut();

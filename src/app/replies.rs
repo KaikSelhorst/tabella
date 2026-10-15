@@ -199,6 +199,26 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                 st.outcome = Some(res);
             }
         }
+        Reply::FkOptions { res, search, .. } => {
+            // An older search answered after a newer one was sent: wait for that one.
+            if let Some(p) = &mut t.fk_picker
+                && (p.local || search == p.asked.trim())
+            {
+                p.loading = false;
+                p.options = Some(
+                    res.map(|r| {
+                        r.rows
+                            .into_iter()
+                            .map(|row| {
+                                let mut it = row.into_iter();
+                                (it.next().flatten().unwrap_or_default(), it.next().flatten())
+                            })
+                            .collect()
+                    })
+                    .map_err(|e| e.to_string()),
+                );
+            }
+        }
         Reply::Distinct { res, .. } => {
             if let TabKind::Table(ts) = &mut t.kind
                 && let Some(vf) = &mut ts.value_filter

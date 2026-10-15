@@ -1299,6 +1299,94 @@ fn unwrap_parens(s: &str) -> &str {
     inner
 }
 
+/// Referenced tables up to this many rows are loaded whole for the foreign-key picker and
+/// filtered as you type; bigger ones are searched in the database.
+pub const FK_LOCAL_ROWS: i64 = 10_000;
+/// Rows a database search of the picker brings.
+pub const FK_SEARCH_ROWS: usize = 50;
+
+/// The rows the foreign-key picker lists: `(key, label)` of the referenced table. `search`
+/// empty: the start of the table (all of it when `local`). A number typed matches the key
+/// exactly (instant, by the primary key index); text is looked for inside the label.
+pub fn fk_options(
+    kind: Kind,
+    fk: &crate::db::FkRef,
+    label: Option<&str>,
+    numeric_key: bool,
+    local: bool,
+    search: &str,
+) -> String {
+    let key = kind.quote_ident(&fk.column);
+    let shown = label.map(|l| kind.quote_ident(l));
+    let cols = match &shown {
+        Some(l) => format!("{key}, {l}"),
+        None => format!("{key}, NULL"),
+    };
+    // MySQL stops a SELECT by itself after 2 s with this hint (Postgres: see the worker).
+    let select = match kind {
+        Kind::MySql => format!("SELECT /*+ MAX_EXECUTION_TIME(2000) */ {cols}"),
+        _ => format!("SELECT {cols}"),
+    };
+    let table = kind.qualified(&fk.schema, &fk.table);
+    if local {
+        let order = shown.as_ref().unwrap_or(&key);
+        return format!(
+            "{select} FROM {table} ORDER BY {order} LIMIT {}",
+            FK_LOCAL_ROWS + 1
+        );
+    }
+    let term = search.trim();
+    if term.is_empty() {
+        return format!("{select} FROM {table} LIMIT {FK_SEARCH_ROWS}");
+    }
+    let mut conds = vec![contains(kind, shown.as_ref().unwrap_or(&key), term)];
+    if numeric_key && term.parse::<i64>().is_ok() {
+        conds.push(format!("{key} = {term}"));
+    } else if !numeric_key {
+        conds.push(format!("{key} = {}", kind.quote_str(term)));
+    }
+    // No ORDER BY: the search stops at the first matches instead of sorting all of them.
+    format!(
+        "{select} FROM {table} WHERE {} LIMIT {FK_SEARCH_ROWS}",
+        conds.join(" OR ")
+    )
+}
+
+/// The referenced table's column worth showing beside the key: a name, title, e-mail… or else
+/// its first text column.
+pub fn fk_label(columns: &[(String, String)], key: &str) -> Option<String> {
+    const NAMES: &[&str] = &[
+        "nome",
+        "name",
+        "razao_social",
+        "nome_fantasia",
+        "titulo",
+        "title",
+        "descricao",
+        "description",
+        "email",
+        "login",
+        "username",
+        "usuario",
+        "sku",
+        "codigo",
+        "code",
+        "label",
+        "slug",
+    ];
+    let lower = |s: &str| s.to_lowercase();
+    NAMES
+        .iter()
+        .find_map(|n| columns.iter().find(|(c, _)| lower(c) == *n && c != key))
+        .or_else(|| {
+            columns.iter().find(|(c, t)| {
+                let t = lower(t);
+                c != key && (t.contains("char") || t.contains("text"))
+            })
+        })
+        .map(|(c, _)| c.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1863,5 +1951,60 @@ mod tests {
             Some("x > 1")
         );
         assert_eq!(unwrap_parens("(a) AND (b)"), "(a) AND (b)");
+    }
+
+    #[test]
+    fn foreign_key_picker_queries() {
+        let fk = crate::db::FkRef {
+            schema: "public".into(),
+            table: "clientes".into(),
+            column: "id".into(),
+        };
+        let k = Kind::Postgres;
+        assert_eq!(
+            fk_options(k, &fk, Some("nome"), true, true, ""),
+            "SELECT \"id\", \"nome\" FROM \"public\".\"clientes\" ORDER BY \"nome\" LIMIT 10001"
+        );
+        assert_eq!(
+            fk_options(k, &fk, Some("nome"), true, false, "42"),
+            "SELECT \"id\", \"nome\" FROM \"public\".\"clientes\" \
+             WHERE CAST(\"nome\" AS TEXT) ILIKE '%42%' OR \"id\" = 42 LIMIT 50"
+        );
+        // Text that isn't a number never meets a numeric key (it would be an error).
+        assert!(!fk_options(k, &fk, Some("nome"), true, false, "maria").contains("\"id\" ="));
+        let my = fk_options(Kind::MySql, &fk, None, false, false, "a'b");
+        assert!(
+            my.starts_with(
+                "SELECT /*+ MAX_EXECUTION_TIME(2000) */ `id`, NULL FROM `public`.`clientes` WHERE"
+            ),
+            "{my}"
+        );
+        assert!(my.contains("`id` = 'a''b'"), "{my}");
+
+        let cols = |v: &[(&str, &str)]| {
+            v.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            fk_label(
+                &cols(&[("id", "integer"), ("email", "text"), ("Nome", "text")]),
+                "id"
+            )
+            .as_deref(),
+            Some("Nome")
+        );
+        assert_eq!(
+            fk_label(
+                &cols(&[("id", "integer"), ("total", "numeric"), ("obs", "varchar(20)")]),
+                "id"
+            )
+            .as_deref(),
+            Some("obs")
+        );
+        assert_eq!(
+            fk_label(&cols(&[("id", "integer"), ("total", "numeric")]), "id"),
+            None
+        );
     }
 }

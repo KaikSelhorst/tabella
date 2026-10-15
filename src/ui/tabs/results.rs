@@ -95,6 +95,13 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         }
     }
     value_filter_dialog(ui.ctx(), tab, s);
+    // A value picked for a cell is an edit like any other (insert-form picks are the form's).
+    if tab.value_editor.is_none()
+        && !matches!(&tab.kind, TabKind::Table(ts) if ts.insert.is_some())
+        && let Some((app::PickFor::Cell(row, col), key)) = fk_dialog(ui.ctx(), tab, s)
+    {
+        app::handle_grid_event(tab, s, GridEvent::Commit(row, col, Some(key)), true);
+    }
     if let Some(e) = fill_dialog(ui.ctx(), tab) {
         app::handle_grid_event(tab, s, e, true);
     }
@@ -434,6 +441,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
             DetailAction::Commit(ci, v) => event = Some(GridEvent::Commit(row, ci, v)),
             DetailAction::Copy(how) => event = Some(GridEvent::Copy(row, how)),
             DetailAction::Open(ci) => event = Some(GridEvent::OpenValue(row, ci)),
+            DetailAction::PickFk(ci) => event = Some(GridEvent::StartEdit(row, ci)),
             // Hides it for this row only; clicking a cell brings it back. The toolbar toggle
             // is the persistent on/off.
             DetailAction::Close => tab.detail_hidden = Some(row),
@@ -1202,4 +1210,157 @@ fn pin_buttons(ui: &mut egui::Ui, pinned_at: Option<u64>, comparing: bool) -> Op
         }
     }
     action
+}
+
+/// "Escolher" a foreign key's value. Returns where it goes and the key chosen.
+pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Option<(app::PickFor, String)> {
+    let id = tab.id;
+    let p = tab.fk_picker.as_mut()?;
+    let t = theme::tokens();
+    let mut chosen: Option<String> = None;
+    let modal = egui::Modal::new(egui::Id::new(("fk_picker", id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::MAGNIFYING_GLASS).size(16.0).color(t.lime));
+                ui.label(egui::RichText::new(&p.column).size(15.0).color(t.foreground));
+                ui.label(
+                    egui::RichText::new(format!("→ {}.{}", p.fk.table, p.fk.column))
+                        .size(11.0)
+                        .color(t.subtle),
+                );
+            });
+            ui.add_space(8.0);
+            let hint = match (&p.label, p.numeric_key) {
+                (Some(l), true) => format!("Buscar por {l} ou pelo número de {}", p.fk.column),
+                (Some(l), false) => format!("Buscar por {l} ou {}", p.fk.column),
+                (None, _) => format!("Buscar por {}", p.fk.column),
+            };
+            let r = ui.add(
+                TextEdit::singleline(&mut p.search)
+                    .hint_text(hint)
+                    .desired_width(f32::INFINITY),
+            );
+            if !p.focused {
+                r.request_focus();
+                p.focused = true;
+            }
+            if r.changed() {
+                p.typed_at = std::time::Instant::now();
+            }
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            ui.add_space(6.0);
+            let needle = p.search.trim().to_lowercase();
+            let shown: Vec<&(String, Option<String>)> = match &p.options {
+                Some(Ok(rows)) => rows
+                    .iter()
+                    .filter(|(k, l)| {
+                        !p.local
+                            || needle.is_empty()
+                            || k.to_lowercase().contains(&needle)
+                            || l.as_deref().is_some_and(|l| l.to_lowercase().contains(&needle))
+                    })
+                    .take(200)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            egui::ScrollArea::vertical()
+                .max_height(340.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| match &p.options {
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(egui::RichText::new("Carregando…").color(t.muted_foreground));
+                        });
+                    }
+                    Some(Err(e)) => {
+                        ui.label(egui::RichText::new(e).color(t.destructive));
+                    }
+                    Some(Ok(_)) if shown.is_empty() => {
+                        ui.label(egui::RichText::new("Nada encontrado").color(t.subtle));
+                    }
+                    Some(Ok(_)) => {
+                        // Keys padded to the same width (monospace), so the labels line up.
+                        let key_width = shown.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+                        for (key, label) in &shown {
+                            let current = p.current.as_deref() == Some(key.as_str());
+                            let mut text = egui::text::LayoutJob::default();
+                            let mono = egui::FontId::monospace(12.5);
+                            text.append(
+                                &format!("{key:<key_width$}"),
+                                0.0,
+                                egui::TextFormat::simple(mono.clone(), t.number),
+                            );
+                            if let Some(l) = label {
+                                text.append(
+                                    &format!("   {l}"),
+                                    0.0,
+                                    egui::TextFormat::simple(egui::FontId::proportional(13.0), t.foreground),
+                                );
+                            }
+                            let r = ui.add(
+                                egui::Button::selectable(current, text)
+                                    .min_size(egui::vec2(ui.available_width(), 24.0)),
+                            );
+                            if r.clicked() {
+                                chosen = Some(key.clone());
+                            }
+                        }
+                    }
+                });
+            if enter && let Some((k, _)) = shown.first() {
+                chosen = Some(k.clone());
+            }
+            ui.add_space(6.0);
+            let note = match (&p.options, p.local) {
+                (Some(Ok(rows)), true) if rows.len() as i64 > crate::sql::FK_LOCAL_ROWS => {
+                    "Tabela grande: digite para filtrar".to_string()
+                }
+                (Some(Ok(_)), true) => format!("{} · filtra enquanto você digita", p.fk.table),
+                (_, false) if p.loading => "Buscando…".to_string(),
+                (_, false) => format!(
+                    "{} é grande: busca no banco, até {} resultados",
+                    p.fk.table,
+                    crate::sql::FK_SEARCH_ROWS
+                ),
+                _ => String::new(),
+            };
+            ui.label(egui::RichText::new(note).size(11.0).color(t.subtle));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                    p.focused = false;
+                    chosen = Some(String::new());
+                }
+            });
+        });
+    // Database search once typing pauses (not on every key).
+    if !p.local && p.search != p.asked {
+        let wait = std::time::Duration::from_millis(300);
+        let quiet = p.typed_at.elapsed();
+        if quiet >= wait && !p.loading {
+            app::fk_search(tab, s);
+            return None;
+        }
+        ctx.request_repaint_after(wait.saturating_sub(quiet));
+    }
+    let p = tab.fk_picker.as_ref()?;
+    let target = p.target;
+    match chosen {
+        // "Cancelar" (empty) or Esc: nothing chosen.
+        Some(k) if k.is_empty() => {
+            tab.fk_picker = None;
+            None
+        }
+        Some(k) => {
+            tab.fk_picker = None;
+            Some((target, k))
+        }
+        None if modal.should_close() => {
+            tab.fk_picker = None;
+            None
+        }
+        None => None,
+    }
 }

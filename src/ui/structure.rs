@@ -172,6 +172,8 @@ fn named_list(ui: &mut egui::Ui, items: &[(String, String)], empty: &str) {
 pub enum InsertAction {
     Submit,
     Cancel,
+    /// Choose field `i` (a foreign key) from the referenced rows.
+    PickFk(usize),
 }
 
 /// Modal "Nova linha": each column is left to its default, set to NULL, or given a value.
@@ -204,13 +206,17 @@ pub fn insert_form(
             // Short forms draw directly. Long ones scroll in a box of fixed height: a scroll area
             // that sizes itself to its content inside a modal that sizes itself to *its* content
             // kept resizing and made the whole app repaint non-stop.
-            if fields.len() <= SCROLL_AFTER {
-                insert_rows(ui, tab_id, fields);
+            let pick = if fields.len() <= SCROLL_AFTER {
+                insert_rows(ui, tab_id, fields)
             } else {
                 egui::ScrollArea::vertical()
                     .max_height(420.0)
                     .auto_shrink([false, false])
-                    .show(ui, |ui| insert_rows(ui, tab_id, fields));
+                    .show(ui, |ui| insert_rows(ui, tab_id, fields))
+                    .inner
+            };
+            if let Some(i) = pick {
+                action = Some(InsertAction::PickFk(i));
             }
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -237,13 +243,15 @@ const NAME_WIDTH: f32 = 150.0;
 /// Forms with more columns than this get a scroll box.
 const SCROLL_AFTER: usize = 10;
 
-fn insert_rows(ui: &mut egui::Ui, tab_id: u64, fields: &mut [InsertField]) {
+/// The form's rows; returns a foreign-key field whose "escolher" was clicked.
+fn insert_rows(ui: &mut egui::Ui, tab_id: u64, fields: &mut [InsertField]) -> Option<usize> {
     let t = theme::tokens();
+    let mut pick = None;
     egui::Grid::new(("insert_grid", tab_id))
         .num_columns(3)
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
-            for f in fields.iter_mut() {
+            for (i, f) in fields.iter_mut().enumerate() {
                 ui.vertical(|ui| {
                     // Fixed width and no wrapping: long names and types are cut with "…", not broken
                     // letter by letter.
@@ -269,13 +277,28 @@ fn insert_rows(ui: &mut egui::Ui, tab_id: u64, fields: &mut [InsertField]) {
                     }
                 });
                 if f.mode == FieldMode::Value {
-                    value_editor(ui, f);
+                    ui.horizontal(|ui| {
+                        value_editor(ui, f);
+                        if let Some(fk) = &f.references {
+                            let b = egui::Button::new(
+                                theme::icon(icon::MAGNIFYING_GLASS).color(t.muted_foreground),
+                            );
+                            if ui
+                                .add(b)
+                                .on_hover_text(format!("Escolher em {}", fk.table))
+                                .clicked()
+                            {
+                                pick = Some(i);
+                            }
+                        }
+                    });
                 } else {
                     ui.label("");
                 }
                 ui.end_row();
             }
         });
+    pick
 }
 
 fn value_editor(ui: &mut egui::Ui, f: &mut InsertField) {
@@ -313,6 +336,7 @@ mod tests {
         (0..n)
             .map(|i| InsertField {
                 name: format!("coluna_{i}"),
+                references: None,
                 data_type: "text".into(),
                 kind: ValueKind::Text,
                 nullable: true,
