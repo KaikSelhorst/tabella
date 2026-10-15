@@ -1059,6 +1059,17 @@ pub fn script_risk(script: &str) -> ScriptRisk {
             _ => {}
         }
     }
+    // Reads that still change things: Postgres' set_config can turn the session's read-only
+    // mode off, MySQL's INTO OUTFILE/DUMPFILE writes files on the server. Looked for in the
+    // raw text so quoting the name doesn't hide it. (A guard against accidents: a server user
+    // with only SELECT grants is what really keeps a connection read-only.)
+    let lower = script.to_ascii_lowercase();
+    if ["set_config", "outfile", "dumpfile"]
+        .iter()
+        .any(|w| lower.contains(w))
+    {
+        risk.writes = true;
+    }
     risk
 }
 
@@ -1510,6 +1521,10 @@ mod tests {
         assert_eq!(r.dangers, ["UPDATE sem WHERE"]);
         assert!(script_risk("insert into t values (1)").writes);
         assert!(script_risk("WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d").writes);
+        // Reads that undo read-only mode or write server files.
+        assert!(script_risk("SELECT set_config('default_transaction_read_only', 'off', false)").writes);
+        assert!(script_risk("select \"SET_CONFIG\"('x', 'y', false)").writes);
+        assert!(script_risk("SELECT * FROM t INTO OUTFILE '/tmp/x'").writes);
         assert_eq!(script_risk("select ';' ; truncate t").dangers, ["TRUNCATE"]);
     }
 

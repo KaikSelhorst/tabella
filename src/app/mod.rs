@@ -887,7 +887,7 @@ pub struct ConnForm {
 }
 
 pub struct ConnTest {
-    /// The settings tested (`Debug` of the config): a result says nothing once they change.
+    /// The settings tested (`ConnConfig::test_key`): a result says nothing once they change.
     pub key: String,
     pub rx: Receiver<Result<String, String>>,
     pub result: Option<Result<String, String>>,

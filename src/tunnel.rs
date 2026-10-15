@@ -4,7 +4,7 @@
 
 use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::db::SshConfig;
@@ -21,8 +21,12 @@ pub struct Tunnel {
 impl Tunnel {
     /// Forwards a local port to `db_host:db_port` as seen from the SSH server.
     pub fn open(ssh: &SshConfig, db_host: &str, db_port: u16) -> Result<Tunnel, String> {
+        check_arg("usuário SSH", &ssh.user, false)?;
+        check_arg("host SSH", &ssh.host, true)?;
+        check_arg("host do banco", db_host, true)?;
         let local_port = free_port().map_err(|e| format!("sem porta local livre: {e}"))?;
-        let mut cmd = Command::new("ssh");
+        let mut cmd = crate::programs::command("ssh")
+            .ok_or("cliente ssh não encontrado; instale o OpenSSH Client do Windows")?;
         cmd.args([
             "-N",
             // Fail instead of prompting (there is no terminal) or silently not forwarding.
@@ -100,6 +104,20 @@ impl Drop for Tunnel {
     }
 }
 
+/// These go on ssh's command line: a value starting with `-` would be read as an option (e.g.
+/// `-oProxyCommand=…` runs a program), and spaces or control characters have no place in them.
+/// Users may contain `@` (`joao@corp`: ssh splits at the last one); host names may not.
+fn check_arg(what: &str, v: &str, host: bool) -> Result<(), String> {
+    if v.trim().is_empty() {
+        return Err(format!("SSH: informe o {what}"));
+    }
+    if v.starts_with('-') || v.chars().any(|c| c.is_whitespace() || c.is_control()) || host && v.contains('@')
+    {
+        return Err(format!("SSH: {what} inválido: {v:?}"));
+    }
+    Ok(())
+}
+
 /// A port nobody listens on right now (the OS picks it; it is released for ssh to bind).
 fn free_port() -> std::io::Result<u16> {
     Ok(TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?.local_addr()?.port())
@@ -108,6 +126,37 @@ fn free_port() -> std::io::Result<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn option_like_fields_are_refused() {
+        let mut cfg = SshConfig {
+            host: "bastion.exemplo.com".into(),
+            port: 22,
+            user: "-oProxyCommand=calc".into(),
+            key_path: String::new(),
+        };
+        assert!(
+            Tunnel::open(&cfg, "db", 5432)
+                .err()
+                .unwrap()
+                .contains("usuário SSH inválido")
+        );
+        cfg.user = "deploy".into();
+        cfg.host = "-F/tmp/x".into();
+        assert!(
+            Tunnel::open(&cfg, "db", 5432)
+                .err()
+                .unwrap()
+                .contains("host SSH inválido")
+        );
+        cfg.host = "bastion.exemplo.com".into();
+        assert!(
+            Tunnel::open(&cfg, "db interno", 5432)
+                .err()
+                .unwrap()
+                .contains("host do banco")
+        );
+    }
 
     #[test]
     fn reports_ssh_failures_instead_of_hanging() {

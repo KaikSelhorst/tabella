@@ -2224,7 +2224,7 @@ pub(crate) mod screenshots {
             form.cfg.ssh = None;
             let (_tx, rx) = std::sync::mpsc::channel();
             app.conn_test = Some(crate::app::ConnTest {
-                key: format!("{:?}", form.cfg),
+                key: form.cfg.test_key(),
                 rx,
                 result: Some(Err(
                     "ERROR 1045 (28000): Access denied for user 'root'@'10.0.3.7' (using password: YES)"

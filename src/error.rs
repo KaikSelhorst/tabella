@@ -2,7 +2,7 @@
 pub enum DbError {
     #[error("{}", pg_message(.0))]
     Postgres(#[from] postgres::Error),
-    #[error("{0}")]
+    #[error("{}", with_cert_hint(.0.to_string()))]
     MySql(#[from] mysql::Error),
     #[error("{0}")]
     Sqlite(#[from] rusqlite::Error),
@@ -27,8 +27,21 @@ fn pg_message(e: &postgres::Error) -> String {
     }
     // Connection problems: the cause (refused, TLS, auth...) is in the source chain.
     match std::error::Error::source(e) {
-        Some(cause) => format!("{e}: {cause}"),
+        Some(cause) => with_cert_hint(format!("{e}: {cause}")),
         None => e.to_string(),
+    }
+}
+
+/// A certificate the client can't verify is usually a server with its own CA (AWS RDS,
+/// self-signed): say which switch the user wants.
+fn with_cert_hint(msg: String) -> String {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("certificate") || lower.contains("unknownissuer") {
+        format!(
+            "{msg} (o certificado do servidor não foi reconhecido; se ele usa uma CA própria, marque “Aceitar certificado inválido”)"
+        )
+    } else {
+        msg
     }
 }
 

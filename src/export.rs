@@ -192,13 +192,20 @@ fn xlsx_err(e: rust_xlsxwriter::XlsxError) -> std::io::Error {
 /// RFC 4180: quote fields with separators, quotes or line breaks; NULL is an empty field.
 fn csv_line<'a>(fields: impl Iterator<Item = Option<&'a str>>) -> String {
     fields
-        .map(|f| match f {
+        .map(|f| match f.map(defuse_formula) {
             None => String::new(),
             Some(v) if v.contains([',', '"', '\n', '\r']) => format!("\"{}\"", v.replace('"', "\"\"")),
-            Some(v) => v.to_string(),
+            Some(v) => v.into_owned(),
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// Spreadsheets run a cell starting with `=`, `+`, `-` or `@` as a formula (which can launch
+/// programs): such text gets a leading `'`, shown as plain text. Numbers like `-5` stay as they are.
+fn defuse_formula(v: &str) -> std::borrow::Cow<'_, str> {
+    let risky = v.starts_with(['=', '+', '-', '@', '\t', '\r']) && v.trim().parse::<f64>().is_err();
+    if risky { format!("'{v}").into() } else { v.into() }
 }
 
 /// A new file in the Downloads folder (or home), named after the table and the current time.
@@ -244,13 +251,10 @@ pub fn timestamp() -> String {
 /// Shows the file in the system file manager.
 pub fn reveal(path: &Path) {
     #[cfg(windows)]
-    let r = std::process::Command::new("explorer")
-        .arg(format!("/select,{}", path.display()))
-        .spawn();
+    let r = crate::programs::command("explorer")
+        .map(|mut c| c.arg(format!("/select,{}", path.display())).spawn());
     #[cfg(not(windows))]
-    let r = std::process::Command::new("xdg-open")
-        .arg(path.parent().unwrap_or(path))
-        .spawn();
+    let r = crate::programs::command("xdg-open").map(|mut c| c.arg(path.parent().unwrap_or(path)).spawn());
     drop(r);
 }
 
@@ -331,6 +335,16 @@ mod tests {
     #[test]
     fn csv_quotes_only_what_needs_it() {
         assert_eq!(export(Format::Csv), "id,nome,ok\n1,\"a, \"\"b\"\"\nc\",t\n2,,f\n");
+    }
+
+    #[test]
+    fn csv_cells_never_become_formulas() {
+        let line = csv_line(
+            ["=cmd|' /C calc'!A0", "-5", "-1.5e3", "@SUM(A1)", "+x", "a=b"]
+                .into_iter()
+                .map(Some),
+        );
+        assert_eq!(line, "'=cmd|' /C calc'!A0,-5,-1.5e3,'@SUM(A1),'+x,a=b");
     }
 
     #[test]

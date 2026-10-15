@@ -71,7 +71,8 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+/// `Debug` is written by hand below so the password never ends up in a log or panic message.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ConnConfig {
     /// Stable identity (secrets are stored under it), so renaming never orphans a password.
     /// Assigned by `config::load` / when first saved.
@@ -163,7 +164,37 @@ impl Default for SshConfig {
     }
 }
 
+impl std::fmt::Debug for ConnConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let password = if self.password.is_empty() { "" } else { "***" };
+        f.debug_struct("ConnConfig")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &password)
+            .field("database", &self.database)
+            .field("ssl", &self.ssl)
+            .field("ssl_insecure", &self.ssl_insecure)
+            .field("manual_commit", &self.manual_commit)
+            .field("preview_writes", &self.preview_writes)
+            .field("read_only", &self.read_only)
+            .field("color", &self.color)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("ssh", &self.ssh)
+            .finish()
+    }
+}
+
 impl ConnConfig {
+    /// Every setting, password included: a connection test's result applies only while this
+    /// stays the same. Kept in memory, never shown or logged.
+    pub fn test_key(&self) -> String {
+        format!("{self:?}\0{}", self.password)
+    }
+
     /// Whether `other` connects the same way (server, account, database and the session
     /// settings applied at connect time). The password is left out: the saved copy may not
     /// carry it (it lives in the keyring).

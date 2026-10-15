@@ -57,10 +57,11 @@ pub fn apply(cfg: &mut ConnConfig, url: &str) -> Result<(), String> {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         let v = decode(v)?.to_ascii_lowercase();
         match k.to_ascii_lowercase().as_str() {
-            // libpq: "require" encrypts without checking the certificate; "verify-*" checks it.
+            // libpq's "require" skips the certificate check, but cloud providers hand out URLs
+            // with it as the secure choice: the certificate is checked here too. A server with
+            // its own CA fails with a hint to tick "Aceitar certificado inválido".
             "sslmode" | "ssl-mode" | "ssl_mode" => match v.as_str() {
-                "require" | "required" => (next.ssl, next.ssl_insecure) = (true, true),
-                "verify-ca" | "verify-full" | "verify_ca" | "verify_identity" => {
+                "require" | "required" | "verify-ca" | "verify-full" | "verify_ca" | "verify_identity" => {
                     (next.ssl, next.ssl_insecure) = (true, false)
                 }
                 _ => (next.ssl, next.ssl_insecure) = (false, false),
@@ -141,7 +142,7 @@ mod tests {
             (c.user.as_str(), c.password.as_str(), c.database.as_str()),
             ("app@corp", "p:ss/w", "loja")
         );
-        assert!(c.ssl && c.ssl_insecure);
+        assert!(c.ssl && !c.ssl_insecure, "require still checks the certificate");
         assert_eq!(c.name, "manter", "app settings are kept");
     }
 

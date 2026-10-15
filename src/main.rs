@@ -15,6 +15,7 @@ mod filters;
 mod history;
 mod import;
 mod plan;
+mod programs;
 mod script;
 mod search;
 mod secrets;

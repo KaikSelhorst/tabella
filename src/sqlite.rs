@@ -2,6 +2,7 @@
 //! statement by statement like on the servers; values come back as text the same way.
 
 use fallible_iterator::FallibleIterator;
+use rusqlite::config::DbConfig;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 
@@ -22,9 +23,12 @@ pub fn open(cfg: &ConnConfig) -> DbResult<Connection> {
         OpenFlags::SQLITE_OPEN_READ_ONLY
     } else {
         OpenFlags::SQLITE_OPEN_READ_WRITE
-    } | OpenFlags::SQLITE_OPEN_URI
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    } | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let c = Connection::open_with_flags(path, flags)?;
+    // The file may come from anyone: its views and triggers can't call functions marked unsafe,
+    // and it can't corrupt itself through writable_schema and the like.
+    c.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+    c.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     // Another program writing the file: wait a little instead of failing at once.
     c.busy_timeout(std::time::Duration::from_secs(5))?;
     // Foreign keys are only enforced when asked, per connection.
@@ -439,6 +443,15 @@ pub(crate) mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
         stopper.join().unwrap();
         assert!(c.query("SELECT 1").is_ok());
+        // Files from anyone: no editing the schema table by hand, untrusted schema.
+        assert!(
+            c.query("PRAGMA writable_schema = ON; UPDATE sqlite_master SET sql = 'x'")
+                .is_err()
+        );
+        assert_eq!(
+            c.query("PRAGMA trusted_schema").unwrap().rows[0][0].as_deref(),
+            Some("0")
+        );
         // Read-only: the file opens, writes are refused.
         drop(c);
         let ro = crate::db::ConnConfig {

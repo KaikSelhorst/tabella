@@ -21,7 +21,7 @@ impl App {
         let t = theme::tokens();
         let duplicate = config::name_taken(&self.saved, &form.cfg.name, form.editing.as_deref());
         // A finished test arrives; a result for other settings is dropped.
-        let key = format!("{:?}", form.cfg);
+        let key = form.cfg.test_key();
         if let Some(test) = &mut self.conn_test {
             if test.key != key && test.result.is_some() {
                 self.conn_test = None;
@@ -48,6 +48,7 @@ impl App {
                     .spacing([12.0, 8.0])
                     .min_col_width(72.0)
                     .show(ui, |ui| {
+                        let is_new = form.editing.is_none();
                         let c = &mut form.cfg;
                         // Paste a URL from a provider or .env file to fill the fields below.
                         let url_id = egui::Id::new("conn_form_url");
@@ -128,7 +129,14 @@ impl App {
                             sqlite_file_rows(ui, c);
                         } else {
                             ui.label("Host");
-                            ui.add(TextEdit::singleline(&mut c.host).desired_width(FIELD_WIDTH));
+                            let was_local = c.is_local();
+                            let host = ui.add(TextEdit::singleline(&mut c.host).desired_width(FIELD_WIDTH));
+                            // A new connection to another machine starts encrypted (and verified),
+                            // unless the user already chose otherwise for the previous host. Through
+                            // SSH the tunnel already encrypts.
+                            if host.changed() && is_new && c.ssh.is_none() && c.ssl != was_local {
+                                c.ssl = !c.is_local();
+                            }
                             ui.end_row();
                             ui.label("Porta");
                             ui.add(egui::DragValue::new(&mut c.port).range(1..=65535));
@@ -158,12 +166,11 @@ impl App {
                                 ui.checkbox(&mut c.ssl_insecure, "Aceitar certificado inválido");
                                 ui.end_row();
                             }
-                            if !c.ssl && !c.is_local() {
+                            // Through SSH the tunnel encrypts the way out.
+                            if !c.ssl && !c.is_local() && c.ssh.is_none() {
                                 ui.label("");
                                 let msg = match c.kind {
-                                    Kind::Postgres => {
-                                        "Sem exigir TLS: usa criptografia só se o servidor oferecer"
-                                    }
+                                    Kind::Postgres => "Sem TLS: a senha pode ser interceptada na rede",
                                     Kind::MySql => "Sem criptografia: senha e dados trafegam em texto puro",
                                     Kind::Sqlite => "",
                                 };
@@ -320,7 +327,7 @@ impl App {
         cancel |= modal.should_close();
         if start_test && let Some(form) = &self.form {
             self.conn_test = Some(crate::app::ConnTest {
-                key: format!("{:?}", form.cfg),
+                key: form.cfg.test_key(),
                 rx: crate::worker::test_connection(form.cfg.clone(), ctx.clone()),
                 result: None,
             });
