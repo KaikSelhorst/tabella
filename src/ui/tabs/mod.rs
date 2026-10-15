@@ -100,93 +100,143 @@ impl App {
             .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 ui.set_height(32.0);
+                // More tabs than fit: the strip scrolls (the wheel too), follows the active tab,
+                // and a list at the end reaches any of them.
+                let overflow_id = egui::Id::new("tab_strip_overflow");
+                let overflowed = ui.data(|d| d.get_temp::<bool>(overflow_id)).unwrap_or(false);
+                let follow_id = egui::Id::new("tab_strip_active");
+                let active_id = self.tabs.get(self.active).map(|t| t.id);
+                let follow = ui.data(|d| d.get_temp::<Option<u64>>(follow_id)) != Some(active_id);
+                ui.data_mut(|d| d.insert_temp(follow_id, active_id));
+                let mut pick: Option<usize> = None;
                 ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for (i, tab) in self.tabs.iter().enumerate() {
-                        let glyph = match tab.kind {
-                            TabKind::Table(_) => icon::TABLE,
-                            TabKind::Sql(_) => icon::CODE,
-                            TabKind::Structure(_) => icon::TREE_STRUCTURE,
-                            TabKind::Activity(_) => icon::PULSE,
-                            TabKind::Design(_) => icon::PENCIL_SIMPLE,
-                            TabKind::Search(_) => icon::MAGNIFYING_GLASS,
-                            TabKind::History(_) => icon::CLOCK_COUNTER_CLOCKWISE,
-                            TabKind::Diagram(_) => icon::GRAPH,
-                            TabKind::Script(_) => icon::PLAY,
-                            TabKind::Dump(_) => icon::DOWNLOAD_SIMPLE,
-                            TabKind::Compare(_) => icon::GIT_DIFF,
-                        };
-                        let shown = if app::file_dirty(tab) {
-                            format!("{} •", tab.title)
-                        } else {
-                            tab.title.clone()
-                        };
-                        let label = theme::tab_label(ui, glyph, &shown, i == self.active);
-                        if label.clicked() {
-                            self.active = i;
-                        }
-                        let is_sql = matches!(tab.kind, TabKind::Sql(_));
-                        let closed = !self.closed.is_empty();
-                        let n = self.tabs.len();
-                        label.context_menu(|ui| {
-                            // Rename in place: type and press Enter.
-                            let name_id = egui::Id::new(("tab_name", tab.id));
-                            let mut name = ui
-                                .data(|d| d.get_temp::<String>(name_id))
-                                .unwrap_or_else(|| tab.title.clone());
-                            ui.label(egui::RichText::new("Nome da aba").size(11.0).color(t.subtle));
-                            let r = ui.add(TextEdit::singleline(&mut name).desired_width(200.0));
-                            if r.lost_focus()
-                                && ui.input(|i| i.key_pressed(Key::Enter))
-                                && !name.trim().is_empty()
-                            {
-                                action = Some(TabAction::Rename(i, name.trim().to_string()));
-                                ui.data_mut(|d| d.remove::<String>(name_id));
-                                ui.close();
-                            } else {
-                                ui.data_mut(|d| d.insert_temp(name_id, name));
-                            }
-                            ui.separator();
-                            if is_sql && ui.button("Duplicar").clicked() {
-                                action = Some(TabAction::Duplicate(i));
-                                ui.close();
-                            }
-                            if ui
-                                .add_enabled(n > 1, egui::Button::new("Fechar as outras"))
-                                .clicked()
-                            {
-                                action = Some(TabAction::CloseOthers(i, false));
-                                ui.close();
-                            }
-                            if ui
-                                .add_enabled(i + 1 < n, egui::Button::new("Fechar as da direita"))
-                                .clicked()
-                            {
-                                action = Some(TabAction::CloseOthers(i, true));
-                                ui.close();
-                            }
-                            if ui
-                                .add_enabled(
-                                    closed,
-                                    egui::Button::new("Reabrir aba fechada").shortcut_text("Ctrl+Shift+T"),
-                                )
-                                .clicked()
-                            {
-                                action = Some(TabAction::Reopen);
-                                ui.close();
-                            }
+                    let list_width = if overflowed { 32.0 } else { 0.0 };
+                    let scroll = egui::ScrollArea::horizontal()
+                        .id_salt("tab_strip")
+                        .max_width(ui.available_width() - list_width)
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| {
+                            ui.style_mut().always_scroll_the_only_direction = true;
+                            ui.horizontal_centered(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                for (i, tab) in self.tabs.iter().enumerate() {
+                                    let glyph = match tab.kind {
+                                        TabKind::Table(_) => icon::TABLE,
+                                        TabKind::Sql(_) => icon::CODE,
+                                        TabKind::Structure(_) => icon::TREE_STRUCTURE,
+                                        TabKind::Activity(_) => icon::PULSE,
+                                        TabKind::Design(_) => icon::PENCIL_SIMPLE,
+                                        TabKind::Search(_) => icon::MAGNIFYING_GLASS,
+                                        TabKind::History(_) => icon::CLOCK_COUNTER_CLOCKWISE,
+                                        TabKind::Diagram(_) => icon::GRAPH,
+                                        TabKind::Script(_) => icon::PLAY,
+                                        TabKind::Dump(_) => icon::DOWNLOAD_SIMPLE,
+                                        TabKind::Compare(_) => icon::GIT_DIFF,
+                                    };
+                                    let shown = if app::file_dirty(tab) {
+                                        format!("{} •", tab.title)
+                                    } else {
+                                        tab.title.clone()
+                                    };
+                                    let label = theme::tab_label(ui, glyph, &shown, i == self.active);
+                                    if label.clicked() {
+                                        self.active = i;
+                                    }
+                                    if follow && i == self.active {
+                                        label.scroll_to_me(None);
+                                    }
+                                    let is_sql = matches!(tab.kind, TabKind::Sql(_));
+                                    let closed = !self.closed.is_empty();
+                                    let n = self.tabs.len();
+                                    label.context_menu(|ui| {
+                                        // Rename in place: type and press Enter.
+                                        let name_id = egui::Id::new(("tab_name", tab.id));
+                                        let mut name = ui
+                                            .data(|d| d.get_temp::<String>(name_id))
+                                            .unwrap_or_else(|| tab.title.clone());
+                                        ui.label(
+                                            egui::RichText::new("Nome da aba").size(11.0).color(t.subtle),
+                                        );
+                                        let r = ui.add(TextEdit::singleline(&mut name).desired_width(200.0));
+                                        if r.lost_focus()
+                                            && ui.input(|i| i.key_pressed(Key::Enter))
+                                            && !name.trim().is_empty()
+                                        {
+                                            action = Some(TabAction::Rename(i, name.trim().to_string()));
+                                            ui.data_mut(|d| d.remove::<String>(name_id));
+                                            ui.close();
+                                        } else {
+                                            ui.data_mut(|d| d.insert_temp(name_id, name));
+                                        }
+                                        ui.separator();
+                                        if is_sql && ui.button("Duplicar").clicked() {
+                                            action = Some(TabAction::Duplicate(i));
+                                            ui.close();
+                                        }
+                                        if ui
+                                            .add_enabled(n > 1, egui::Button::new("Fechar as outras"))
+                                            .clicked()
+                                        {
+                                            action = Some(TabAction::CloseOthers(i, false));
+                                            ui.close();
+                                        }
+                                        if ui
+                                            .add_enabled(i + 1 < n, egui::Button::new("Fechar as da direita"))
+                                            .clicked()
+                                        {
+                                            action = Some(TabAction::CloseOthers(i, true));
+                                            ui.close();
+                                        }
+                                        if ui
+                                            .add_enabled(
+                                                closed,
+                                                egui::Button::new("Reabrir aba fechada")
+                                                    .shortcut_text("Ctrl+Shift+T"),
+                                            )
+                                            .clicked()
+                                        {
+                                            action = Some(TabAction::Reopen);
+                                            ui.close();
+                                        }
+                                    });
+                                    let x = theme::icon(icon::X).size(11.0).color(t.subtle);
+                                    if ui
+                                        .add(egui::Button::new(x).frame(false))
+                                        .on_hover_text("Fechar")
+                                        .clicked()
+                                    {
+                                        close = Some(i);
+                                    }
+                                    ui.add_space(12.0);
+                                }
+                            });
                         });
-                        let x = theme::icon(icon::X).size(11.0).color(t.subtle);
-                        if ui
-                            .add(egui::Button::new(x).frame(false))
-                            .on_hover_text("Fechar")
-                            .clicked()
-                        {
-                            close = Some(i);
-                        }
-                        ui.add_space(12.0);
+                    let hidden = scroll.content_size.x > scroll.inner_rect.width() + 1.0;
+                    ui.data_mut(|d| d.insert_temp(overflow_id, hidden));
+                    // The list button takes room: follow the active tab again next frame.
+                    if hidden != overflowed {
+                        ui.data_mut(|d| d.remove::<Option<u64>>(follow_id));
+                        ui.ctx().request_repaint();
+                    }
+                    if hidden {
+                        let list = theme::icon(icon::CARET_DOWN).color(t.muted_foreground);
+                        ui.menu_button(list, |ui| {
+                            egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
+                                for (i, tab) in self.tabs.iter().enumerate() {
+                                    if ui.selectable_label(i == self.active, &tab.title).clicked() {
+                                        pick = Some(i);
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        })
+                        .response
+                        .on_hover_text(format!("Todas as {} abas", self.tabs.len()));
                     }
                 });
+                if let Some(i) = pick {
+                    self.active = i;
+                }
             });
         let r = strip.response.rect;
         ui.painter()

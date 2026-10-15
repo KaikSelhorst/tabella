@@ -16,6 +16,7 @@ const COLUMN_PENALTY: i32 = 24;
 enum Cmd {
     Activity,
     Theme,
+    Fps,
     /// +1 / -1 steps; 0 back to 100%.
     Zoom(i32),
     History,
@@ -196,6 +197,17 @@ impl App {
                 cmd: Cmd::Zoom(steps),
             });
         }
+        items.push(Item {
+            icon: icon::GAUGE,
+            label: if self.show_fps {
+                "Esconder contador de FPS"
+            } else {
+                "Mostrar contador de FPS"
+            }
+            .into(),
+            detail: "diagnóstico: clique no contador para redesenhar na taxa do monitor".into(),
+            cmd: Cmd::Fps,
+        });
         items.push(Item {
             icon: icon::KEYBOARD,
             label: "Atalhos de teclado".into(),
@@ -435,6 +447,11 @@ impl App {
                 Cmd::Zoom(steps) => self.zoom_by(ctx, steps),
                 Cmd::History => self.open_history(),
                 Cmd::RunFile => self.pick_script(),
+                Cmd::Fps => {
+                    self.show_fps = !self.show_fps;
+                    // Hidden, it shouldn't keep redrawing at full rate either.
+                    self.max_fps &= self.show_fps;
+                }
                 Cmd::Dump => self.open_dump(crate::app::DumpScope::Database),
                 Cmd::Compare => self.open_compare(None),
                 Cmd::Diagram => self.open_diagram(None),

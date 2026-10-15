@@ -112,6 +112,12 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Comparar estrutura entre schemas ou bancos (inclusive de outra conexão, ex.: dev × produção)
   e gerar o SQL que iguala o destino; remoções destacadas e `DROP TABLE` só comentado
 - Importar Excel (.xlsx, .xls) e ODS no mesmo diálogo do CSV
+- "Testar conexão" no formulário (servidor e versão, ou o erro do servidor) sem salvar; o
+  formulário diz o que falta quando "Salvar" está desabilitado
+- Avisos no canto da tela: os informativos somem sozinhos, os de erro ficam até fechar (com
+  copiar)
+- Barra de abas rola (inclusive com a roda do mouse), segue a aba ativa e lista todas quando não
+  cabem
 
 ## Segurança
 

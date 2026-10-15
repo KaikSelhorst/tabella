@@ -31,17 +31,20 @@ use crate::sql::{self, FilterOp, PageQuery, Stmt};
 use crate::values::{self, CellRange, ValueKind};
 use crate::worker::{self, ExportSource, ExportSpec, Job, Reply, TxState};
 
-/// A message for the user, outside any tab (connection status, save problems).
+/// A message for the user, outside any tab (connection status, save problems), shown as a
+/// toast: information goes away by itself, errors stay until closed.
 pub struct Notice {
     pub text: String,
     pub error: bool,
+    pub at: Instant,
 }
 
 impl Notice {
-    fn info(text: impl Into<String>) -> Option<Self> {
+    pub fn info(text: impl Into<String>) -> Option<Self> {
         Some(Notice {
             text: text.into(),
             error: false,
+            at: Instant::now(),
         })
     }
 
@@ -49,6 +52,7 @@ impl Notice {
         Some(Notice {
             text: text.into(),
             error: true,
+            at: Instant::now(),
         })
     }
 }
@@ -835,6 +839,13 @@ pub struct ConnForm {
     pub cfg: ConnConfig,
 }
 
+pub struct ConnTest {
+    /// The settings tested (`Debug` of the config): a result says nothing once they change.
+    pub key: String,
+    pub rx: Receiver<Result<String, String>>,
+    pub result: Option<Result<String, String>>,
+}
+
 /// What the grid asks for. Produced by the UI, carried out by `handle_grid_event`.
 pub enum GridEvent {
     Sort(String),
@@ -906,6 +917,8 @@ pub struct App {
     pub master: Option<MasterPrompt>,
     pub session: Option<Session>,
     pub form: Option<ConnForm>,
+    /// "Testar conexão" in the form: running, or its outcome for the settings it was run with.
+    pub conn_test: Option<ConnTest>,
     pub palette: Option<Palette>,
     pub tabs: Vec<Tab>,
     pub active: usize,
@@ -918,6 +931,8 @@ pub struct App {
     /// Redraw every frame at the monitor's rate (for the FPS readout). Off by default: an idle
     /// app should use no CPU.
     pub max_fps: bool,
+    /// The FPS readout in the corner (Ctrl+P), off unless asked for.
+    pub show_fps: bool,
     pub history: Vec<Entry>,
     pub favorites: Vec<Favorite>,
     pub filters: Vec<SavedFilter>,
@@ -959,6 +974,7 @@ impl App {
             master: None,
             session: None,
             form: None,
+            conn_test: None,
             palette: None,
             tabs: vec![],
             active: 0,
@@ -967,6 +983,7 @@ impl App {
             schema_focus: None,
             notice: None,
             max_fps: false,
+            show_fps: false,
             history: history::load(),
             favorites: favorites::load(),
             filters: filters::load(),

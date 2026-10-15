@@ -231,11 +231,6 @@ impl App {
                     .size(11.0)
                     .color(theme::tokens().subtle),
             );
-            if let Some(n) = &self.notice {
-                let t = theme::tokens();
-                let color = if n.error { t.destructive } else { t.subtle };
-                ui.add(egui::Label::new(egui::RichText::new(&n.text).small().color(color)).wrap());
-            }
             return;
         };
         if !s.ready {

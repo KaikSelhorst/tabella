@@ -20,6 +20,17 @@ impl App {
         };
         let t = theme::tokens();
         let duplicate = config::name_taken(&self.saved, &form.cfg.name, form.editing.as_deref());
+        // A finished test arrives; a result for other settings is dropped.
+        let key = format!("{:?}", form.cfg);
+        if let Some(test) = &mut self.conn_test {
+            if test.key != key && test.result.is_some() {
+                self.conn_test = None;
+            } else if let Ok(r) = test.rx.try_recv() {
+                test.result = Some(r);
+            }
+        }
+        let test = self.conn_test.as_ref().filter(|t| t.key == key);
+        let mut start_test = false;
         // Modal dims everything behind it and closes on Esc / click outside.
         let modal = egui::Modal::new(egui::Id::new("connection_form"))
             .frame(theme::modal_frame(16))
@@ -231,6 +242,19 @@ impl App {
                             ui.end_row();
                         }
                     });
+                // The test's outcome, while the settings are the ones it ran with (above the
+                // buttons, wrapped to the form's width).
+                if let Some(test) = &test {
+                    let (glyph, text, color) = match &test.result {
+                        None => (icon::HOURGLASS, "Conectando…".to_string(), t.muted_foreground),
+                        Some(Ok(msg)) => (icon::CHECK_CIRCLE, msg.clone(), t.lime),
+                        Some(Err(e)) => (icon::WARNING_CIRCLE, e.clone(), t.destructive),
+                    };
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::Label::new(theme::icon_text(glyph, &format!(" {text}"), color, color)).wrap(),
+                    );
+                }
                 ui.add_space(16.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let ssh_ok = form
@@ -238,14 +262,49 @@ impl App {
                         .ssh
                         .as_ref()
                         .is_none_or(|s| !s.host.trim().is_empty() && !s.user.trim().is_empty());
-                    let valid = !form.cfg.name.trim().is_empty() && !duplicate && ssh_ok;
+                    // Say what is missing instead of just greying the button out.
+                    let missing = if form.cfg.name.trim().is_empty() {
+                        Some("Dê um nome à conexão")
+                    } else if duplicate {
+                        // Already said next to the name.
+                        Some("")
+                    } else if !ssh_ok {
+                        Some("Preencha usuário e servidor do SSH")
+                    } else {
+                        None
+                    };
                     save = ui
-                        .add_enabled(valid, theme::primary_button(None, "Salvar"))
+                        .add_enabled(missing.is_none(), theme::primary_button(None, "Salvar"))
+                        .on_disabled_hover_text(match missing {
+                            Some("") => "Já existe uma conexão com esse nome",
+                            m => m.unwrap_or_default(),
+                        })
                         .clicked();
                     cancel = ui.add(theme::outline_button("Cancelar")).clicked();
+                    let testing = test.as_ref().is_some_and(|t| t.result.is_none());
+                    if ui
+                        .add_enabled(!testing && ssh_ok, theme::outline_button("Testar conexão"))
+                        .on_hover_text("Conecta sem salvar, para conferir host, porta, usuário e senha")
+                        .clicked()
+                    {
+                        start_test = true;
+                    }
+                    if let Some(m) = missing.filter(|m| !m.is_empty()) {
+                        ui.label(egui::RichText::new(m).size(11.0).color(t.warning));
+                    }
                 });
             });
         cancel |= modal.should_close();
+        if start_test && let Some(form) = &self.form {
+            self.conn_test = Some(crate::app::ConnTest {
+                key: format!("{:?}", form.cfg),
+                rx: crate::worker::test_connection(form.cfg.clone(), ctx.clone()),
+                result: None,
+            });
+        }
+        if save || cancel {
+            self.conn_test = None;
+        }
         if save || cancel {
             ctx.data_mut(|d| d.remove::<(String, Option<String>)>(egui::Id::new("conn_form_url")));
         }
@@ -388,10 +447,7 @@ impl App {
             Ok(()) => {
                 let then = p.then.clone();
                 self.master = None;
-                self.notice = Some(Notice {
-                    text: format!("Senhas protegidas pelo {}", self.secrets.describe()),
-                    error: false,
-                });
+                self.notice = Notice::info(format!("Senhas protegidas pelo {}", self.secrets.describe()));
                 self.after_master(then);
             }
             Err(e) => {

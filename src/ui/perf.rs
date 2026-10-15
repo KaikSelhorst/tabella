@@ -35,7 +35,9 @@ impl Driver {
             ..Default::default()
         };
         let app = &mut self.app;
-        let out = self.ctx.run_ui(input, |ui| app.draw(ui));
+        let mut out = self.ctx.run_ui(input, |ui| app.draw(ui));
+        // No renderer here: the font textures are let go.
+        out.textures_delta.clear();
         std::hint::black_box(self.ctx.tessellate(out.shapes, out.pixels_per_point));
     }
 

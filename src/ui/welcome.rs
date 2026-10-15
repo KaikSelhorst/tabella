@@ -43,11 +43,6 @@ impl App {
 
             match &self.session {
                 None => {
-                    // Only problems are worth a line here ("Desconectado" is obvious on this screen).
-                    if let Some(n) = self.notice.as_ref().filter(|n| n.error) {
-                        ui.label(RichText::new(&n.text).color(t.destructive));
-                        ui.add_space(12.0);
-                    }
                     for c in &self.saved {
                         if connection_card(ui, c).clicked() {
                             connect = Some(c.id.clone());

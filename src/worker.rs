@@ -491,6 +491,45 @@ pub(crate) fn run_script(
     (p, error)
 }
 
+/// "Testar conexão": connects (through the SSH tunnel, if any) on its own thread and says
+/// which server answered and how fast, without touching the open session.
+pub fn test_connection(cfg: ConnConfig, ctx: eframe::egui::Context) -> Receiver<Result<String, String>> {
+    let (tx, rx) = channel();
+    thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let res = (|| {
+            let tunnel = match &cfg.ssh {
+                Some(ssh) => {
+                    Some(Tunnel::open(ssh, &cfg.host, cfg.port).map_err(|e| format!("túnel SSH: {e}"))?)
+                }
+                None => None,
+            };
+            let mut conn =
+                Conn::connect(&cfg, tunnel.as_ref().map(|t| t.local_port)).map_err(|e| e.to_string())?;
+            let ms = started.elapsed().as_millis();
+            let version = conn
+                .query("SELECT version()")
+                .ok()
+                .and_then(|r| r.rows.into_iter().next())
+                .and_then(|r| r.into_iter().next().flatten())
+                .map(|v| server_name(cfg.kind, &v))
+                .unwrap_or_default();
+            Ok(format!("Conectou em {ms} ms · {version}"))
+        })();
+        let _ = tx.send(res);
+        ctx.request_repaint();
+    });
+    rx
+}
+
+/// "PostgreSQL 16.4 (Debian …) on x86_64…" → "PostgreSQL 16.4"; MySQL's "8.0.39" → "MySQL 8.0.39".
+fn server_name(kind: crate::db::Kind, version: &str) -> String {
+    match kind {
+        crate::db::Kind::Postgres => version.split_whitespace().take(2).collect::<Vec<_>>().join(" "),
+        crate::db::Kind::MySql => format!("MySQL {}", version.split('-').next().unwrap_or(version)),
+    }
+}
+
 /// Both sides of "Comparar estrutura": the target on this connection, or on its own one
 /// (through its SSH tunnel), closed when done.
 fn compare_with(
@@ -1235,6 +1274,35 @@ mod tests {
         );
         assert!(err.is_some_and(|e| e.cancelled) && p.statements == 0);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    #[ignore]
+    fn connection_test_says_who_answered() {
+        let mut cfg = ConnConfig::new(Kind::Postgres);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 55432;
+        cfg.password = "pw".into();
+        cfg.database = "postgres".into();
+        let ctx = eframe::egui::Context::default();
+        let ok = test_connection(cfg.clone(), ctx.clone()).recv().unwrap().unwrap();
+        assert!(
+            ok.starts_with("Conectou em ") && ok.contains("PostgreSQL 1"),
+            "{ok}"
+        );
+        cfg.password = "errada".into();
+        let err = test_connection(cfg.clone(), ctx.clone())
+            .recv()
+            .unwrap()
+            .unwrap_err();
+        assert!(err.contains("password"), "{err}");
+        cfg.kind = Kind::MySql;
+        cfg.port = 53306;
+        cfg.password = "pw".into();
+        cfg.user = "root".into();
+        cfg.database = "test".into();
+        let ok = test_connection(cfg, ctx).recv().unwrap().unwrap();
+        assert!(ok.contains("MySQL 8"), "{ok}");
     }
 
     /// Same connection (two schemas) and a separate one to the same server: same differences.

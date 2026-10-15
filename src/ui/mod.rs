@@ -18,6 +18,7 @@ mod structure;
 mod syntax;
 mod tabs;
 pub mod theme;
+mod toast;
 mod welcome;
 
 use eframe::egui;
@@ -29,6 +30,9 @@ pub use egui_phosphor::regular as icon;
 impl App {
     /// Small FPS readout in the bottom-left corner (under the sidebar); click it to toggle max-rate redraw.
     fn fps_overlay(&mut self, ctx: &egui::Context) {
+        if !self.show_fps {
+            return;
+        }
         let t = theme::tokens();
         egui::Area::new(egui::Id::new("fps"))
             .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -4.0])
@@ -109,6 +113,7 @@ impl App {
             .frame(egui::Frame::new().fill(t.background))
             .show(ui, |ui| self.central(ui));
         self.fps_overlay(ui.ctx());
+        self.notice_toast(ui.ctx());
         let ctx = ui.ctx().clone();
         self.connection_form(&ctx);
         self.palette_ui(&ctx);
@@ -1755,6 +1760,42 @@ pub(crate) mod screenshots {
             .unwrap();
         harness.state_mut().master = None;
 
+        // Notices: an error stays (with copy and close), information fades.
+        harness.state_mut().notice =
+            crate::app::Notice::error("Não foi possível: relation \"clientes_antigos\" already exists");
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/toast-error.png"))
+            .unwrap();
+        harness.state_mut().notice =
+            crate::app::Notice::info("Salvo em C:\\Users\\voce\\Downloads\\consulta.sql");
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/toast-info.png"))
+            .unwrap();
+        harness.state_mut().notice = None;
+
+        // Many tabs: the strip scrolls and keeps the active one in view.
+        {
+            let app = harness.state_mut();
+            for i in 0..24 {
+                app.open_sql(format!("SELECT {i};"));
+            }
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/many-tabs.png"))
+                .unwrap();
+            let app = harness.state_mut();
+            app.tabs.truncate(2);
+            app.active = 0;
+        }
+
         // "Comparar estrutura" against another connection, with differences.
         {
             harness.state_mut().open_compare(None);
@@ -2005,6 +2046,28 @@ pub(crate) mod screenshots {
         });
         harness.run();
         harness.render().unwrap().save(format!("{dir}/form.png")).unwrap();
+        // Named, and tested: the server's answer under the buttons.
+        {
+            let app = harness.state_mut();
+            let form = app.form.as_mut().unwrap();
+            form.cfg.name = "loja-producao".into();
+            form.cfg.ssh = None;
+            let (_tx, rx) = std::sync::mpsc::channel();
+            app.conn_test = Some(crate::app::ConnTest {
+                key: format!("{:?}", form.cfg),
+                rx,
+                result: Some(Err(
+                    "ERROR 1045 (28000): Access denied for user 'root'@'10.0.3.7' (using password: YES)"
+                        .into(),
+                )),
+            });
+        }
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/form-test.png"))
+            .unwrap();
     }
 }
 
