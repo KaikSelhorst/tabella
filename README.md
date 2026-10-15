@@ -102,6 +102,16 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
 - Executar arquivo `.sql` grande (`Ctrl+P` ou menu de arquivo do editor) sem abrir no editor:
   lê comando a comando (entende `DELIMITER`, `$$` e `COPY … FROM stdin` do pg_dump), mostra o
   progresso, para no primeiro erro dizendo a linha, pode ser cancelado e roda numa transação
+- Erro de SQL marcado no editor: o trecho fica sublinhado, o cursor vai até ele e a mensagem
+  diz linha e coluna
+- Filtro por coluna estilo Excel (clique direito no cabeçalho → "Filtrar valores…"): valores
+  distintos com contagem, marcar/desmarcar e busca; vira `IN`/`NOT IN` no WHERE e a coluna ganha
+  um funil
+- Exportar tabela, schema ou banco como `.sql` (estrutura e/ou dados, views, funções, triggers),
+  em blocos e com progresso; recarrega com "Executar arquivo .sql", psql ou mysql
+- Comparar estrutura entre schemas ou bancos (inclusive de outra conexão, ex.: dev × produção)
+  e gerar o SQL que iguala o destino; remoções destacadas e `DROP TABLE` só comentado
+- Importar Excel (.xlsx, .xls) e ODS no mesmo diálogo do CSV
 
 ## Segurança
 

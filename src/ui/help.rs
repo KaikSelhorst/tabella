@@ -33,6 +33,10 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Ctrl+P → Executar arquivo .sql",
                 "Roda um dump/migração grande comando a comando, com progresso",
             ),
+            (
+                "Ctrl+P → Exportar banco / Comparar estrutura",
+                "Dump .sql; diferenças com outro schema ou banco e o SQL para igualar",
+            ),
             ("Ctrl+Tab / Ctrl+Shift+Tab", "Próxima / aba anterior"),
             ("F1", "Esta tela"),
             (
@@ -79,7 +83,7 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+F", "Buscar no resultado (tabelas: busca no banco)"),
             (
                 "Clique direito no cabeçalho",
-                "Estatísticas, fixar, esconder colunas",
+                "Filtrar valores (como no Excel), estatísticas, fixar, esconder colunas",
             ),
         ],
     ),
