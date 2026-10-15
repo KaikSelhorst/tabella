@@ -154,6 +154,28 @@ fn frame_times() {
         tab.selected = None;
     }
 
+    // The 5000 x 20 result pinned, then compared with a changed copy of itself.
+    {
+        let tab = &mut harness.state_mut().tabs[1];
+        let before = tab.result.clone().unwrap();
+        let ed = tab.editor_mut().unwrap();
+        ed.pin(&before, None);
+        ed.comparing = true;
+        ed.hide_equal = false;
+        let mut now = before.clone();
+        for r in (0..5000).step_by(7) {
+            now.rows[r][1] = Some(format!("mudou {r}"));
+        }
+        now.elapsed = Duration::from_millis(1);
+        tab.result = Some(now);
+    }
+    report("editor: comparando 5000 x 20 com o fixado", harness.time(30));
+    {
+        let ed = harness.state_mut().tabs[1].editor_mut().unwrap();
+        ed.pinned = None;
+        ed.comparing = false;
+    }
+
     // A big script in the editor (5000 lines).
     {
         let tab = &mut harness.state_mut().tabs[1];

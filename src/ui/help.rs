@@ -83,6 +83,10 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             ("Delete", "Marcar as linhas selecionadas para exclusão"),
             ("Enter / F2 / duplo clique", "Editar a célula"),
+            (
+                "Shift+Enter",
+                "Abrir o valor no editor grande (JSON formatado, textos longos)",
+            ),
             ("Ctrl+clique", "Abrir a linha de uma chave estrangeira"),
             ("Ctrl+F", "Buscar no resultado (tabelas: busca no banco)"),
             (

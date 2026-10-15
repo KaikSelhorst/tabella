@@ -116,6 +116,10 @@ Cliente leve de banco de dados para **PostgreSQL** e **MySQL**, feito em Rust co
   formulário diz o que falta quando "Salvar" está desabilitado
 - Avisos no canto da tela: os informativos somem sozinhos, os de erro ficam até fechar (com
   copiar)
+- Editor grande para valores longos (menu da célula, Shift+Enter ou ↗ no painel de detalhes):
+  JSON formatado, colorido e validado sem alterar números; volta compacto se veio compacto
+- Fixar um resultado no editor e comparar com os próximos: linhas novas, removidas e
+  alteradas (antigo → novo), casadas pela chave escolhida ou pela posição
 - Barra de abas rola (inclusive com a roda do mouse), segue a aba ativa e lista todas quando não
   cabem
 

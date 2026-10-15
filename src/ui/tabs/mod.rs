@@ -27,6 +27,7 @@ mod compare;
 mod dump;
 mod editor;
 mod query_history;
+mod result_diff;
 mod results;
 mod script;
 mod search;

@@ -157,6 +157,11 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
     {
         chart_spec = chart::default_spec(res, &result_kinds);
     }
+    let (pinned_at, comparing) = match &tab.kind {
+        TabKind::Sql(ed) => (ed.pinned.as_ref().map(|p| p.at), ed.comparing),
+        _ => (None, false),
+    };
+    let mut pin_action: Option<PinAction> = None;
     if !editable {
         egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(8, 2))
@@ -172,8 +177,11 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
                     }
                     let chartable =
                         is_sql && chart::default_spec(res, &result_kinds).is_some() && !res.rows.is_empty();
-                    if chartable {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if is_sql {
+                            pin_action = pin_buttons(ui, pinned_at, comparing);
+                        }
+                        if chartable {
                             let on = chart_spec.is_some();
                             let color = if on { t.lime } else { t.muted_foreground };
                             let b = egui::Button::new(theme::icon_text(
@@ -194,10 +202,38 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
                                     chart::default_spec(res, &result_kinds)
                                 };
                             }
-                        });
-                    }
+                        }
+                    });
                 });
             });
+    }
+    // Pin / compare / unpin, then the comparison in place of the grid while it is on.
+    if let TabKind::Sql(ed) = &mut tab.kind {
+        match pin_action {
+            Some(PinAction::Pin) => {
+                let key = ed.source.as_ref().and_then(|src| {
+                    let pk = src.pk_names();
+                    (pk.len() == 1).then(|| pk[0].clone())
+                });
+                ed.pin(res, key);
+            }
+            Some(PinAction::Compare(on)) => ed.comparing = on,
+            Some(PinAction::Unpin) => {
+                ed.pinned = None;
+                ed.comparing = false;
+            }
+            None => {}
+        }
+        if ed.comparing
+            && let Some(p) = &ed.pinned
+        {
+            let done =
+                super::result_diff::diff_view(ui, tab.id, p, res, &mut ed.compare_key, &mut ed.hide_equal);
+            if done {
+                ed.comparing = false;
+            }
+            return;
+        }
     }
     if res.columns.is_empty() {
         return;
@@ -1115,4 +1151,55 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
         tab.value_editor = None;
     }
     event
+}
+
+enum PinAction {
+    Pin,
+    Compare(bool),
+    Unpin,
+}
+
+/// "Fixar" while nothing is pinned; then "Comparar", "Fixar este" and unpin.
+fn pin_buttons(ui: &mut egui::Ui, pinned_at: Option<u64>, comparing: bool) -> Option<PinAction> {
+    let t = theme::tokens();
+    let mut action = None;
+    let button = |glyph: &str, text: &str, color: egui::Color32| {
+        egui::Button::new(theme::icon_text(glyph, text, color, t.foreground)).frame(false)
+    };
+    match pinned_at {
+        None => {
+            if ui
+                .add(button(icon::PUSH_PIN, "Fixar", t.muted_foreground))
+                .on_hover_text("Guarda este resultado para comparar com os próximos")
+                .clicked()
+            {
+                action = Some(PinAction::Pin);
+            }
+        }
+        Some(at) => {
+            let unpin =
+                egui::Button::new(theme::icon(icon::PUSH_PIN_SLASH).color(t.muted_foreground)).frame(false);
+            if ui.add(unpin).on_hover_text("Desafixar").clicked() {
+                action = Some(PinAction::Unpin);
+            }
+            if !comparing
+                && ui
+                    .add(button(icon::PUSH_PIN, "Fixar este", t.muted_foreground))
+                    .on_hover_text("Troca o fixado por este resultado")
+                    .clicked()
+            {
+                action = Some(PinAction::Pin);
+            }
+            let color = if comparing { t.lime } else { t.muted_foreground };
+            let when = crate::history::ago(at, crate::history::now());
+            if ui
+                .add(button(icon::GIT_DIFF, "Comparar com o fixado", color))
+                .on_hover_text(format!("Fixado {when}: linhas novas, removidas e alteradas"))
+                .clicked()
+            {
+                action = Some(PinAction::Compare(!comparing));
+            }
+        }
+    }
+    action
 }

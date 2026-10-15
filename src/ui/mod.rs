@@ -1760,6 +1760,45 @@ pub(crate) mod screenshots {
             .unwrap();
         harness.state_mut().master = None;
 
+        // A pinned result against the current one.
+        {
+            let app = harness.state_mut();
+            app.active = 1;
+            let tab = &mut app.tabs[1];
+            let before = tab.result.clone().unwrap();
+            let ed = tab.editor_mut().unwrap();
+            ed.last_query =
+                "SELECT id, nome, email, ativo, saldo, criado_em FROM clientes ORDER BY id".into();
+            ed.pin(&before, None);
+            ed.comparing = true;
+            let mut now = before.clone();
+            now.rows[2][4] = Some("150.00".into());
+            now.rows[6][3] = Some("f".into());
+            now.rows[9][1] = Some("Cliente Dez".into());
+            now.rows.remove(4);
+            now.rows.push(vec![
+                Some("41".into()),
+                Some("Cliente 41".into()),
+                Some("novo@exemplo.com".into()),
+                Some("t".into()),
+                None,
+                Some("2026-10-14 09:00:00".into()),
+            ]);
+            now.elapsed = std::time::Duration::from_millis(4);
+            tab.result = Some(now);
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/result-diff.png"))
+                .unwrap();
+            let tab = &mut harness.state_mut().tabs[1];
+            tab.result = Some(before);
+            let ed = tab.editor_mut().unwrap();
+            ed.pinned = None;
+            ed.comparing = false;
+        }
+
         // The big value editor with a JSON document.
         {
             let app = harness.state_mut();

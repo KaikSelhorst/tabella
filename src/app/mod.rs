@@ -469,11 +469,39 @@ pub struct Editor {
     pub last_run: Option<Instant>,
     /// Where the last error is in `text` (chars), underlined until the text changes.
     pub error_at: Option<(usize, usize)>,
+    /// A result kept to compare the next ones against, and the comparison's settings.
+    pub pinned: Option<Box<Pinned>>,
+    pub comparing: bool,
+    /// Column that pairs the rows up (`None`: by position).
+    pub compare_key: Option<String>,
+    pub hide_equal: bool,
     /// Move the cursor to `error_at` on the next frame.
     pub error_jump: bool,
 }
 
+pub struct Pinned {
+    pub result: QueryResult,
+    pub sql: String,
+    /// When it was pinned (`history::now`).
+    pub at: u64,
+}
+
 impl Editor {
+    /// Keeps `res` (what `sql` returned) to compare later results against.
+    pub fn pin(&mut self, res: &QueryResult, key_hint: Option<String>) {
+        self.pinned = Some(Box::new(Pinned {
+            result: res.clone(),
+            sql: self.last_query.clone(),
+            at: history::now(),
+        }));
+        self.comparing = false;
+        // A primary key, an "id", or the first column: what usually identifies a row.
+        self.compare_key = key_hint
+            .filter(|k| res.columns.contains(k))
+            .or_else(|| res.columns.iter().find(|c| c.eq_ignore_ascii_case("id")).cloned())
+            .or_else(|| res.columns.first().cloned());
+    }
+
     pub fn new(text: String) -> Self {
         Editor {
             text,
@@ -491,6 +519,10 @@ impl Editor {
             last_run: None,
             error_at: None,
             error_jump: false,
+            pinned: None,
+            comparing: false,
+            compare_key: None,
+            hide_equal: true,
         }
     }
 }
@@ -3851,6 +3883,25 @@ mod poll_tests {
         handle_grid_event(&mut tab, &s, GridEvent::OpenValue(1, col), false);
         let ve = tab.value_editor.as_ref().unwrap();
         assert!(!ve.editable && ve.null);
+    }
+
+    /// Pinning picks what identifies a row: the primary key, else "id", else the first column.
+    #[test]
+    fn pinning_guesses_the_row_key() {
+        let res = |cols: &[&str]| QueryResult {
+            columns: cols.iter().map(|c| c.to_string()).collect(),
+            ..Default::default()
+        };
+        let mut ed = Editor::new("SELECT 1".into());
+        ed.last_query = "SELECT codigo, ID FROM t".into();
+        ed.pin(&res(&["codigo", "ID"]), Some("codigo".into()));
+        assert_eq!(ed.compare_key.as_deref(), Some("codigo"));
+        assert_eq!(ed.pinned.as_ref().unwrap().sql, "SELECT codigo, ID FROM t");
+        ed.pin(&res(&["nome", "ID"]), None);
+        assert_eq!(ed.compare_key.as_deref(), Some("ID"));
+        ed.pin(&res(&["nome", "uf"]), Some("id".into()));
+        assert_eq!(ed.compare_key.as_deref(), Some("nome"));
+        assert!(!ed.comparing);
     }
 
     /// The cached overlay follows every change to the edits and to the result.

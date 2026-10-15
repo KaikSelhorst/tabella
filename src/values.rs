@@ -462,6 +462,115 @@ pub fn looks_like_json(text: &str) -> bool {
     (t.starts_with('{') || t.starts_with('[')) && json_check(text).is_ok()
 }
 
+/// How a row of the current result relates to the pinned one.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RowDiff {
+    /// Only in the pinned result (row there).
+    Removed(usize),
+    /// Only in the current result (row there).
+    Added(usize),
+    /// In both, with these columns (of `ResultDiff::columns`) different.
+    Changed(usize, usize, Vec<usize>),
+    Same(usize, usize),
+}
+
+/// The pinned result (`a`) against the current one (`b`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResultDiff {
+    /// Every column: the current result's, then those only the pinned one has.
+    pub columns: Vec<String>,
+    /// Where each of `columns` is in `a` and in `b`.
+    pub in_a: Vec<Option<usize>>,
+    pub in_b: Vec<Option<usize>>,
+    pub rows: Vec<RowDiff>,
+    pub removed: usize,
+    pub added: usize,
+    pub changed: usize,
+    pub same: usize,
+}
+
+impl ResultDiff {
+    pub fn cell<'a>(
+        &self,
+        a: &'a QueryResult,
+        b: &'a QueryResult,
+        row: &RowDiff,
+        col: usize,
+    ) -> (Option<&'a Option<String>>, Option<&'a Option<String>>) {
+        let at = |res: &'a QueryResult, idx: Option<usize>, r: Option<usize>| Some(&res.rows[r?][idx?]);
+        let (ra, rb) = match row {
+            RowDiff::Removed(r) => (Some(*r), None),
+            RowDiff::Added(r) => (None, Some(*r)),
+            RowDiff::Changed(x, y, _) | RowDiff::Same(x, y) => (Some(*x), Some(*y)),
+        };
+        (at(a, self.in_a[col], ra), at(b, self.in_b[col], rb))
+    }
+}
+
+/// Matches the rows of two results by the values of `key` (a column both have), or by
+/// position without one, and says what changed. Columns only one side has are shown but
+/// don't make a row "changed".
+pub fn diff_results(a: &QueryResult, b: &QueryResult, key: Option<&str>) -> ResultDiff {
+    let mut columns: Vec<String> = b.columns.clone();
+    columns.extend(a.columns.iter().filter(|c| !b.columns.contains(c)).cloned());
+    let pos = |res: &QueryResult, name: &String| res.columns.iter().position(|c| c == name);
+    let in_a: Vec<Option<usize>> = columns.iter().map(|c| pos(a, c)).collect();
+    let in_b: Vec<Option<usize>> = columns.iter().map(|c| pos(b, c)).collect();
+    let mut d = ResultDiff {
+        columns,
+        in_a,
+        in_b,
+        ..Default::default()
+    };
+    let shared: Vec<(usize, usize, usize)> = (0..d.columns.len())
+        .filter_map(|c| Some((c, d.in_a[c]?, d.in_b[c]?)))
+        .collect();
+    let compare = |ra: usize, rb: usize| -> Vec<usize> {
+        shared
+            .iter()
+            .filter(|(_, ia, ib)| a.rows[ra][*ia] != b.rows[rb][*ib])
+            .map(|(c, _, _)| *c)
+            .collect()
+    };
+    // Pinned rows by key (several with the same key pair up in order).
+    let key_cols = key.and_then(|k| Some((pos(a, &k.to_string())?, pos(b, &k.to_string())?)));
+    let mut matched_a = vec![false; a.rows.len()];
+    let mut by_key: std::collections::HashMap<&Option<String>, std::collections::VecDeque<usize>> =
+        Default::default();
+    if let Some((ka, _)) = key_cols {
+        for (r, row) in a.rows.iter().enumerate() {
+            by_key.entry(&row[ka]).or_default().push_back(r);
+        }
+    }
+    for (rb, row) in b.rows.iter().enumerate() {
+        let ra = match key_cols {
+            Some((_, kb)) => by_key.get_mut(&row[kb]).and_then(|q| q.pop_front()),
+            None => (rb < a.rows.len()).then_some(rb),
+        };
+        let Some(ra) = ra else {
+            d.added += 1;
+            d.rows.push(RowDiff::Added(rb));
+            continue;
+        };
+        matched_a[ra] = true;
+        let changed = compare(ra, rb);
+        if changed.is_empty() {
+            d.same += 1;
+            d.rows.push(RowDiff::Same(ra, rb));
+        } else {
+            d.changed += 1;
+            d.rows.push(RowDiff::Changed(ra, rb, changed));
+        }
+    }
+    for (ra, m) in matched_a.iter().enumerate() {
+        if !m {
+            d.removed += 1;
+            d.rows.push(RowDiff::Removed(ra));
+        }
+    }
+    d
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -654,5 +763,47 @@ mod tests {
         let (line, col, _) = json_check("{\n  \"a\": 1,\n  \"b\" 2\n}").unwrap_err();
         assert_eq!((line, col), (3, 7));
         assert!(looks_like_json(" [1]") && !looks_like_json("\"x\"") && !looks_like_json("{ruim"));
+    }
+
+    #[test]
+    fn results_compare_by_key_or_position() {
+        let r = |cols: &[&str], rows: &[&[&str]]| QueryResult {
+            columns: cols.iter().map(|c| c.to_string()).collect(),
+            rows: rows
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|v| (*v != "NULL").then(|| v.to_string()))
+                        .collect()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let a = r(
+            &["id", "nome", "saldo"],
+            &[&["1", "ana", "10"], &["2", "bia", "20"], &["3", "caio", "30"]],
+        );
+        // Reordered, one changed, one gone, one new, a new column, one column dropped.
+        let b = r(
+            &["id", "nome", "uf"],
+            &[&["3", "caio", "SP"], &["1", "ANA", "RJ"], &["4", "duda", "MG"]],
+        );
+        let d = diff_results(&a, &b, Some("id"));
+        assert_eq!(d.columns, ["id", "nome", "uf", "saldo"]);
+        assert_eq!((d.removed, d.added, d.changed, d.same), (1, 1, 1, 1));
+        assert_eq!(d.rows[0], RowDiff::Same(2, 0));
+        assert_eq!(d.rows[1], RowDiff::Changed(0, 1, vec![1]));
+        assert_eq!(d.rows[2], RowDiff::Added(2));
+        assert_eq!(d.rows[3], RowDiff::Removed(1));
+        let (old, new) = d.cell(&a, &b, &d.rows[1], 1);
+        assert_eq!((old, new), (Some(&Some("ana".into())), Some(&Some("ANA".into()))));
+        // By position: row 0 against row 0, and so on.
+        let p = diff_results(&a, &b, None);
+        assert_eq!((p.removed, p.added, p.changed, p.same), (0, 0, 3, 0));
+        // Repeated keys pair up in order; NULL keys match each other.
+        let a = r(&["k", "v"], &[&["x", "1"], &["x", "2"], &["NULL", "3"]]);
+        let b = r(&["k", "v"], &[&["x", "1"], &["x", "9"], &["NULL", "3"]]);
+        let d = diff_results(&a, &b, Some("k"));
+        assert_eq!((d.removed, d.added, d.changed, d.same), (0, 0, 1, 2));
     }
 }
