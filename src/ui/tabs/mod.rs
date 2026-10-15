@@ -151,6 +151,7 @@ impl App {
                                         tab.title.clone()
                                     };
                                     let label = theme::tab_label(ui, glyph, &shown, i == self.active);
+                                    let label_rect = label.rect;
                                     if label.clicked() {
                                         self.active = i;
                                     }
@@ -212,11 +213,11 @@ impl App {
                                         }
                                     });
                                     let x = theme::icon(icon::X).size(11.0).color(t.subtle);
-                                    if ui
-                                        .add(egui::Button::new(x).frame(false))
-                                        .on_hover_text("Fechar")
-                                        .clicked()
-                                    {
+                                    let x = ui.add(egui::Button::new(x).frame(false)).on_hover_text("Fechar");
+                                    if i == self.active {
+                                        theme::tab_underline(ui, label_rect.union(x.rect));
+                                    }
+                                    if x.clicked() {
                                         close = Some(i);
                                     }
                                     ui.add_space(12.0);

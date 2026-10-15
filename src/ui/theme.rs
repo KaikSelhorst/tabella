@@ -382,6 +382,8 @@ pub fn outline_button(text: impl Into<String>) -> egui::Button<'static> {
 }
 
 /// Underline tab with a leading icon: active = foreground with a 2px lime bar, inactive = muted.
+/// A tab's icon and name. The active tab's underline is drawn by `tab_underline`, once the
+/// whole tab (close button included) is laid out.
 pub fn tab_label(ui: &mut egui::Ui, glyph: &str, text: &str, active: bool) -> egui::Response {
     let t = tokens();
     let (ic, tc) = if active {
@@ -390,12 +392,14 @@ pub fn tab_label(ui: &mut egui::Ui, glyph: &str, text: &str, active: bool) -> eg
         (t.subtle, t.muted_foreground)
     };
     let r = ui.add(egui::Label::new(icon_text(glyph, text, ic, tc)).sense(egui::Sense::click()));
-    if active {
-        let y = ui.max_rect().bottom() - 1.0;
-        ui.painter()
-            .hline(r.rect.x_range().expand(4.0), y, Stroke::new(2.0, t.lime));
-    }
     r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The lime line under the active tab, across all of it: from its icon to its close button.
+pub fn tab_underline(ui: &egui::Ui, tab: egui::Rect) {
+    let y = ui.max_rect().bottom() - 1.0;
+    ui.painter()
+        .hline(tab.x_range().expand(4.0), y, Stroke::new(2.0, tokens().lime));
 }
 
 #[cfg(test)]

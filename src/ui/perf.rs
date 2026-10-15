@@ -261,3 +261,24 @@ fn contact_sheets() {
         eprintln!("{n:02}: {}", names.join(" | "));
     }
 }
+
+/// A zoomed piece of a screenshot, to look at details:
+/// `DBLITE_CROP=<in.png>:<x>,<y>,<w>,<h>:<scale>:<out.png> cargo test crop_shot -- --ignored`.
+#[test]
+#[ignore]
+fn crop_shot() {
+    use image::imageops;
+    let Ok(spec) = std::env::var("DBLITE_CROP") else {
+        return;
+    };
+    let parts: Vec<&str> = spec.split(':').collect();
+    let [input, rect, scale, output] = parts[..] else {
+        panic!("in.png:x,y,w,h:scale:out.png")
+    };
+    let n: Vec<u32> = rect.split(',').map(|v| v.parse().unwrap()).collect();
+    let scale: u32 = scale.parse().unwrap();
+    let img = image::open(input).unwrap().to_rgba8();
+    let piece = imageops::crop_imm(&img, n[0], n[1], n[2], n[3]).to_image();
+    let big = imageops::resize(&piece, n[2] * scale, n[3] * scale, imageops::FilterType::Nearest);
+    big.save(output).unwrap();
+}

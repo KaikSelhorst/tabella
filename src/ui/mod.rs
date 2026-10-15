@@ -1929,7 +1929,11 @@ pub(crate) mod screenshots {
                     pk: false,
                 };
                 st.data = Some(crate::db::TableStructure {
-                    columns: vec![col("mes", "date"), col("pedidos", "bigint"), col("total", "numeric")],
+                    columns: vec![
+                        col("mes", "date"),
+                        col("pedidos", "bigint"),
+                        col("total", "numeric"),
+                    ],
                     ddl: "CREATE TABLE \"public\".\"vendas_mensais\" (…);".into(),
                     ..Default::default()
                 });
