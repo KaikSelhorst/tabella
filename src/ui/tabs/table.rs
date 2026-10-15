@@ -166,7 +166,7 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             !s.cfg.read_only,
                             egui::Button::new(theme::icon(icon::UPLOAD_SIMPLE).color(t.muted_foreground)),
                         )
-                        .on_hover_text("Importar CSV (ou arraste um arquivo .csv para a janela)")
+                        .on_hover_text("Importar CSV ou Excel (ou arraste o arquivo para a janela)")
                         .on_disabled_hover_text("Conexão somente leitura")
                         .clicked();
                     let structure = theme::icon_text(
@@ -193,13 +193,16 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     if let Some((format, whole)) = export {
         app::start_export(tab, s, format, whole);
     }
-    // A .csv dropped on the window opens the import dialog with it.
+    // A .csv or spreadsheet dropped on the window opens the import dialog with it.
     let dropped = ui.ctx().input(|i| {
         i.raw
             .dropped_files
             .iter()
             .map(|f| f.path())
-            .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")))
+            .find(|p| {
+                p.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv"))
+                    || crate::import::is_spreadsheet(p)
+            })
             .map(|p| p.display().to_string())
     });
     if (import_csv || dropped.is_some()) && !s.cfg.read_only {

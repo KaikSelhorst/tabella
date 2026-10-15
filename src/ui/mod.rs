@@ -646,6 +646,18 @@ mod screenshots {
                 ts.import = None;
             }
             let _ = std::fs::remove_file(csv);
+            let xlsx = crate::import::tests::xlsx("shot");
+            crate::app::open_import(&mut harness.state_mut().tabs[0], Some(xlsx.display().to_string()));
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/import-xlsx.png"))
+                .unwrap();
+            if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
+                ts.import = None;
+            }
+            let _ = std::fs::remove_file(xlsx);
         }
         harness.state_mut().session.as_mut().unwrap().cfg.color = None;
         {

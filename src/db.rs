@@ -2368,6 +2368,36 @@ mod tests {
             spec.mapping = vec![None, None];
             assert!(run(&mut c, &spec, false).is_err());
             let _ = std::fs::remove_file(path);
+
+            // The same from Excel: id, name and a date-time column.
+            let path = crate::import::tests::xlsx(&format!("{kind:?}"));
+            let spec = ImportSpec {
+                path: path.clone(),
+                delimiter: 0,
+                mapping: vec![
+                    Some("id".into()),
+                    Some("name".into()),
+                    None,
+                    None,
+                    None,
+                    Some("at".into()),
+                ],
+                ..spec
+            };
+            assert_eq!(run(&mut c, &spec, false).unwrap(), 2, "{kind:?}");
+            let r = c
+                .query("SELECT name, at FROM dbl_t WHERE id IN (20, 21) ORDER BY id")
+                .unwrap();
+            assert_eq!(r.rows[0][0].as_deref(), Some("João Ávila"), "{kind:?}");
+            assert!(
+                r.rows[0][1]
+                    .as_deref()
+                    .is_some_and(|v| v.starts_with("2026-10-14 13:05:00")),
+                "{kind:?}: {:?}",
+                r.rows
+            );
+            assert_eq!(r.rows[1], vec![None, None], "{kind:?}");
+            let _ = std::fs::remove_file(path);
         }
         // "Filtrar valores": the list and the condition it builds run as they are.
         {

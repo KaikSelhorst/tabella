@@ -1,5 +1,6 @@
-//! CSV import into an existing table: the file is read as it goes and inserted in multi-row
-//! batches inside one transaction, so either every row lands or none does.
+//! CSV or spreadsheet (.xlsx, .xls, .ods) import into an existing table: rows are inserted in
+//! multi-row batches inside one transaction, so either every row lands or none does. A CSV is
+//! read as it goes; a spreadsheet's first sheet is read whole (Excel stops at ~1M rows anyway).
 
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,8 @@ const MAX_PARAMS: usize = 60_000;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Preview {
     pub delimiter: u8,
+    /// Spreadsheets: the sheet read (the first one).
+    pub sheet: Option<String>,
     /// Column names from the first line, or "coluna 1", "coluna 2"... without a header.
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
@@ -43,6 +46,11 @@ pub struct ImportSpec {
 /// Reads the start of the file: delimiter (`,`, `;` or tab, whichever the first line has most
 /// of), header and a few rows.
 pub fn preview(path: &Path, has_header: bool) -> Result<Preview, String> {
+    if is_spreadsheet(path) {
+        let (sheet, mut rows) = sheet_rows(path)?;
+        rows.truncate(PREVIEW_ROWS + 1);
+        return finish_preview(rows, has_header, 0, Some(sheet));
+    }
     let bytes = read_start(path).map_err(|e| format!("não foi possível ler {}: {e}", path.display()))?;
     let text = decode(&bytes);
     let first = text.lines().next().unwrap_or("");
@@ -62,6 +70,15 @@ pub fn preview(path: &Path, has_header: bool) -> Result<Preview, String> {
         let Ok(rec) = rec else { break };
         rows.push(rec.iter().map(decode).collect::<Vec<String>>());
     }
+    finish_preview(rows, has_header, delimiter, None)
+}
+
+fn finish_preview(
+    mut rows: Vec<Vec<String>>,
+    has_header: bool,
+    delimiter: u8,
+    sheet: Option<String>,
+) -> Result<Preview, String> {
     if rows.is_empty() {
         return Err("o arquivo está vazio".into());
     }
@@ -76,6 +93,7 @@ pub fn preview(path: &Path, has_header: bool) -> Result<Preview, String> {
     rows.truncate(PREVIEW_ROWS);
     Ok(Preview {
         delimiter,
+        sheet,
         headers,
         rows,
     })
@@ -106,12 +124,21 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec, nested: bool) -> DbResult<u64> {
     }
     let names: Vec<String> = targets.iter().map(|(_, c)| c.clone()).collect();
     let per_batch = (MAX_PARAMS / names.len()).clamp(1, BATCH_ROWS);
-    let mut reader = csv::ReaderBuilder::new()
-        .delimiter(spec.delimiter)
-        .has_headers(spec.has_header)
-        .flexible(true)
-        .from_path(&spec.path)
-        .map_err(|e| DbError::Other(format!("não foi possível abrir o arquivo: {e}")))?;
+    let records: Box<dyn Iterator<Item = Result<Vec<String>, String>>> = if is_spreadsheet(&spec.path) {
+        let (_, rows) = sheet_rows(&spec.path).map_err(DbError::Other)?;
+        Box::new(rows.into_iter().skip(usize::from(spec.has_header)).map(Ok))
+    } else {
+        let reader = csv::ReaderBuilder::new()
+            .delimiter(spec.delimiter)
+            .has_headers(spec.has_header)
+            .flexible(true)
+            .from_path(&spec.path)
+            .map_err(|e| DbError::Other(format!("não foi possível abrir o arquivo: {e}")))?;
+        Box::new(reader.into_byte_records().map(|r| {
+            r.map(|rec| rec.iter().map(decode).collect())
+                .map_err(|e| e.to_string())
+        }))
+    };
 
     conn.atomically(nested, |conn| {
         let mut batch: Vec<Vec<Option<String>>> = Vec::with_capacity(per_batch);
@@ -134,7 +161,7 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec, nested: bool) -> DbResult<u64> {
             batch.clear();
             Ok(())
         };
-        for (n, rec) in reader.byte_records().enumerate() {
+        for (n, rec) in records.enumerate() {
             let rec = rec.map_err(|e| {
                 DbError::Other(format!(
                     "linha {} do arquivo: {e}. Nada foi importado.",
@@ -144,7 +171,7 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec, nested: bool) -> DbResult<u64> {
             let row = targets
                 .iter()
                 .map(|(i, col)| {
-                    let v = rec.get(*i).map(decode).unwrap_or_default();
+                    let v = rec.get(*i).cloned().unwrap_or_default();
                     if v.is_empty() && spec.empty_is_null {
                         return Ok(None);
                     }
@@ -213,6 +240,66 @@ pub fn normalize_number(v: &str) -> String {
     }
 }
 
+/// .xlsx, .xlsm, .xls or .ods, by its extension.
+pub fn is_spreadsheet(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| ["xlsx", "xlsm", "xls", "ods"].contains(&e.to_lowercase().as_str()))
+}
+
+/// The first sheet's name and its cells as text: numbers as typed (`42`, `1520.3`), dates as
+/// `2026-10-14` / `2026-10-14 13:05:00`, booleans as `true`/`false`, errors and blanks empty.
+pub fn sheet_rows(path: &Path) -> Result<(String, Vec<Vec<String>>), String> {
+    use calamine::{Data, Reader};
+    let mut book =
+        calamine::open_workbook_auto(path).map_err(|e| format!("não foi possível ler a planilha: {e}"))?;
+    let name = book
+        .sheet_names()
+        .first()
+        .cloned()
+        .ok_or("a planilha não tem abas")?;
+    let range = book
+        .worksheet_range(&name)
+        .map_err(|e| format!("não foi possível ler a aba {name}: {e}"))?;
+    let cell = |c: &Data| match c {
+        Data::Empty | Data::Error(_) => String::new(),
+        Data::String(s) | Data::DateTimeIso(s) | Data::DurationIso(s) => s.clone(),
+        Data::Bool(b) => b.to_string(),
+        Data::Int(i) => i.to_string(),
+        Data::Float(f) if f.fract() == 0.0 && f.abs() < 1e15 => format!("{}", *f as i64),
+        Data::Float(f) => f.to_string(),
+        Data::DateTime(d) => excel_date(d.as_f64()),
+    };
+    let rows = range.rows().map(|r| r.iter().map(cell).collect()).collect();
+    Ok((name, rows))
+}
+
+/// An Excel serial date (days since 1899-12-30, time as the fraction) as ISO text.
+fn excel_date(serial: f64) -> String {
+    let secs = (serial * 86_400.0).round() as i64 - 25_569 * 86_400;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    if rem == 0 {
+        format!("{y:04}-{m:02}-{d:02}")
+    } else {
+        format!(
+            "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
+            rem / 3600,
+            rem % 3600 / 60,
+            rem % 60
+        )
+    }
+}
+
 /// Enough of the file for the preview.
 fn read_start(path: &Path) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
@@ -231,7 +318,7 @@ fn decode(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn file(name: &str, body: &[u8]) -> PathBuf {
@@ -260,6 +347,65 @@ mod tests {
         let p = file("bom.csv", "\u{feff}id,nome\n1,Zé\n".as_bytes());
         assert_eq!(preview(&p, true).unwrap().headers, ["id", "nome"]);
         let _ = std::fs::remove_file(p);
+    }
+
+    /// A real .xlsx: numbers as typed, dates as ISO, booleans, accents and blanks.
+    pub fn xlsx(name: &str) -> PathBuf {
+        use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
+        let path = std::env::temp_dir().join(format!("dblite-import-{}-{name}.xlsx", std::process::id()));
+        let mut book = Workbook::new();
+        let sheet = book.add_worksheet().set_name("Clientes").unwrap();
+        let date = Format::new().set_num_format("yyyy-mm-dd");
+        let stamp = Format::new().set_num_format("yyyy-mm-dd hh:mm:ss");
+        for (c, h) in ["codigo", "nome", "saldo", "ativo", "nascimento", "em"]
+            .iter()
+            .enumerate()
+        {
+            sheet.write_string(0, c as u16, *h).unwrap();
+        }
+        sheet.write_number(1, 0, 20.0).unwrap();
+        sheet.write_string(1, 1, "João Ávila").unwrap();
+        sheet.write_number(1, 2, 1520.3).unwrap();
+        sheet.write_boolean(1, 3, true).unwrap();
+        let d = ExcelDateTime::from_ymd(1990, 5, 17).unwrap();
+        sheet.write_datetime_with_format(1, 4, &d, &date).unwrap();
+        let t = ExcelDateTime::from_ymd(2026, 10, 14)
+            .unwrap()
+            .and_hms(13, 5, 0)
+            .unwrap();
+        sheet.write_datetime_with_format(1, 5, &t, &stamp).unwrap();
+        sheet.write_number(2, 0, 21.0).unwrap();
+        // Row 3 leaves the name and the rest blank.
+        book.save(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn reads_spreadsheets() {
+        let path = xlsx("unit");
+        let (sheet, rows) = sheet_rows(&path).unwrap();
+        assert_eq!(sheet, "Clientes");
+        assert_eq!(
+            rows[1],
+            [
+                "20",
+                "João Ávila",
+                "1520.3",
+                "true",
+                "1990-05-17",
+                "2026-10-14 13:05:00"
+            ]
+        );
+        assert_eq!(rows[2][0], "21");
+        assert!(rows[2][1..].iter().all(String::is_empty), "{:?}", rows[2]);
+        let pv = preview(&path, true).unwrap();
+        assert_eq!(pv.sheet.as_deref(), Some("Clientes"));
+        assert_eq!(pv.headers[0], "codigo");
+        assert_eq!(pv.rows.len(), 2);
+        // Numbers from the sheet are already plain: "1520.3" stays 1520.3.
+        assert_eq!(normalize_number("1520.3"), "1520.3");
+        assert!(is_spreadsheet(Path::new("a.XLSX")) && !is_spreadsheet(Path::new("a.csv")));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

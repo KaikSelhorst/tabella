@@ -30,7 +30,7 @@ pub fn import_form(
             ui.set_width(720.0);
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::UPLOAD_SIMPLE).size(16.0).color(t.lime));
-                ui.label(RichText::new(format!("Importar CSV em {table}")).size(15.0).color(t.foreground));
+                ui.label(RichText::new(format!("Importar CSV ou Excel em {table}")).size(15.0).color(t.foreground));
             });
             ui.label(
                 RichText::new("Tudo numa transação: se uma linha falhar, nada é importado. Números como 1.520,30 e booleanos como sim/não são convertidos.")
@@ -40,7 +40,7 @@ pub fn import_form(
             ui.add_space(8.0);
             ui.add(
                 TextEdit::singleline(&mut form.path)
-                    .hint_text("Caminho do arquivo .csv (ou arraste o arquivo para a janela)")
+                    .hint_text("Caminho do arquivo .csv, .xlsx, .xls ou .ods (ou arraste o arquivo para a janela)")
                     .font(egui::FontId::monospace(12.5))
                     .desired_width(f32::INFINITY),
             );
@@ -59,14 +59,15 @@ pub fn import_form(
                     ui.label(RichText::new(e).color(t.destructive));
                 }
                 Some((_, _, Ok(pv))) => {
-                    let sep = match pv.delimiter {
-                        b';' => "ponto e vírgula",
-                        b'\t' => "tab",
-                        _ => "vírgula",
+                    let source = match (&pv.sheet, pv.delimiter) {
+                        (Some(sheet), _) => format!("aba {sheet}"),
+                        (None, b';') => "separador: ponto e vírgula".into(),
+                        (None, b'\t') => "separador: tab".into(),
+                        (None, _) => "separador: vírgula".into(),
                     };
                     ui.label(
                         RichText::new(format!(
-                            "{} coluna(s) · separador: {sep} · prévia das primeiras {PREVIEW_ROWS} linhas",
+                            "{} coluna(s) · {source} · prévia das primeiras {PREVIEW_ROWS} linhas",
                             pv.headers.len()
                         ))
                         .size(11.0)
