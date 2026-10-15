@@ -88,6 +88,12 @@ pub(super) fn summary(res: &QueryResult) -> String {
 pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     let s = cx.s;
     stats_dialog(ui.ctx(), tab, s);
+    if let Some(e) = value_dialog(ui.ctx(), tab) {
+        // Saved: a pending change like any other edit.
+        if let Some(Effect::Copy(text)) = app::handle_grid_event(tab, s, e, true) {
+            ui.ctx().copy_text(text);
+        }
+    }
     value_filter_dialog(ui.ctx(), tab, s);
     if let Some(e) = fill_dialog(ui.ctx(), tab) {
         app::handle_grid_event(tab, s, e, true);
@@ -391,6 +397,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         match a {
             DetailAction::Commit(ci, v) => event = Some(GridEvent::Commit(row, ci, v)),
             DetailAction::Copy(how) => event = Some(GridEvent::Copy(row, how)),
+            DetailAction::Open(ci) => event = Some(GridEvent::OpenValue(row, ci)),
             // Hides it for this row only; clicking a cell brings it back. The toolbar toggle
             // is the persistent on/off.
             DetailAction::Close => tab.detail_hidden = Some(row),
@@ -747,6 +754,8 @@ pub(super) fn keyboard_event(
             Some(GridEvent::FillDown)
         } else if can_edit && i.key_pressed(Key::Delete) {
             Some(GridEvent::DeleteRows)
+        } else if i.modifiers.shift && i.key_pressed(Key::Enter) {
+            Some(GridEvent::OpenValue(row, col))
         } else if can_edit && (i.key_pressed(Key::Enter) || i.key_pressed(Key::F2)) {
             Some(GridEvent::StartEdit(row, col))
         } else if i.key_pressed(Key::ArrowDown) {
@@ -959,4 +968,151 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
     } else if cancel || modal.should_close() {
         ts.value_filter = None;
     }
+}
+
+/// The big editor for one value: JSON laid out, colored and checked; long text with room.
+/// Returns the edit to make when saved.
+pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEvent> {
+    let id = tab.id;
+    let ve = tab.value_editor.as_mut()?;
+    let t = theme::tokens();
+    let screen = ctx.content_rect();
+    let json = ve.json_column || ve.text.trim_start().starts_with(['{', '[']);
+    let check = (json && !ve.null).then(|| values::json_check(&ve.text));
+    let changed = ve.value() != ve.original;
+    let can_save = ve.editable && changed && !(ve.json_column && check.as_ref().is_some_and(Result::is_err));
+    let (mut save, mut close) = (false, false);
+    let modal = egui::Modal::new(egui::Id::new(("value_editor", id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width((screen.width() * 0.7).clamp(480.0, 1100.0));
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::ARROWS_OUT_SIMPLE).size(16.0).color(t.lime));
+                ui.label(egui::RichText::new(&ve.column).size(15.0).color(t.foreground));
+                ui.label(egui::RichText::new(&ve.data_type).size(11.0).color(t.subtle));
+                ui.label(
+                    egui::RichText::new(format!("linha {}", ve.row + 1))
+                        .size(11.0)
+                        .color(t.subtle),
+                );
+                if !ve.editable {
+                    ui.label(
+                        egui::RichText::new("· somente leitura")
+                            .size(11.0)
+                            .color(t.subtle),
+                    );
+                }
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let valid = check.as_ref().is_some_and(Result::is_ok);
+                if json && ve.editable && !ve.null {
+                    if ui.add_enabled(valid, egui::Button::new("Formatar")).clicked() {
+                        ve.text = values::json_pretty(&ve.text);
+                    }
+                    if ui.add_enabled(valid, egui::Button::new("Compactar")).clicked() {
+                        ve.text = values::json_compact(&ve.text);
+                    }
+                }
+                if ui.button("Copiar").clicked() {
+                    ui.ctx().copy_text(ve.text.clone());
+                }
+                if ve.editable {
+                    ui.checkbox(&mut ve.null, "NULL")
+                        .on_hover_text("Salvar a célula como NULL");
+                }
+            });
+            ui.add_space(4.0);
+            let cache = egui::Id::new(("value_editor_galley", id));
+            let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                // A big document is colored once, not on every frame.
+                let key = egui::Id::new((buf.as_str(), wrap.to_bits(), json, theme::is_light()));
+                if let Some((k, g)) =
+                    ui.data(|d| d.get_temp::<(egui::Id, std::sync::Arc<egui::Galley>)>(cache))
+                    && k == key
+                {
+                    return g;
+                }
+                let font = egui::FontId::monospace(12.5);
+                let mut job = if json {
+                    syntax::highlight_json(buf.as_str(), font)
+                } else {
+                    egui::text::LayoutJob::simple(buf.as_str().to_string(), font, t.foreground, wrap)
+                };
+                job.wrap.max_width = wrap;
+                let g = ui.fonts_mut(|f| f.layout_job(job));
+                ui.data_mut(|d| d.insert_temp(cache, (key, g.clone())));
+                g
+            };
+            egui::ScrollArea::vertical()
+                .max_height(screen.height() * 0.6)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    let edit = if ve.editable && !ve.null {
+                        TextEdit::multiline(&mut ve.text)
+                    } else {
+                        // Selectable and copyable, not editable.
+                        let mut shown = if ve.null { "NULL" } else { ve.text.as_str() };
+                        return ui.add(
+                            TextEdit::multiline(&mut shown)
+                                .code_editor()
+                                .desired_rows(16)
+                                .desired_width(f32::INFINITY)
+                                .layouter(&mut layouter),
+                        );
+                    };
+                    ui.add(
+                        edit.code_editor()
+                            .desired_rows(16)
+                            .desired_width(f32::INFINITY)
+                            .layouter(&mut layouter),
+                    )
+                });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let lines = ve.text.lines().count().max(1);
+                let size = format!("{} caracteres · {lines} linha(s)", ve.text.chars().count());
+                ui.label(egui::RichText::new(size).size(11.0).color(t.subtle));
+                match &check {
+                    Some(Ok(())) => {
+                        ui.label(egui::RichText::new("· JSON válido").size(11.0).color(t.lime));
+                    }
+                    Some(Err((line, col, _))) => {
+                        let msg = format!("· JSON inválido: linha {line}, coluna {col}");
+                        ui.label(egui::RichText::new(msg).size(11.0).color(t.destructive));
+                    }
+                    None => {}
+                }
+                if ve.compact && ve.editable {
+                    ui.label(
+                        egui::RichText::new("· volta compacto ao salvar, como estava")
+                            .size(11.0)
+                            .color(t.subtle),
+                    );
+                }
+            });
+            ui.add_space(12.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ve.editable {
+                    let why = if !changed {
+                        "Nada mudou"
+                    } else {
+                        "Coluna JSON: corrija o JSON antes de salvar"
+                    };
+                    save = ui
+                        .add_enabled(can_save, theme::primary_button(None, "Salvar"))
+                        .on_hover_text("Fica pendente, como as outras edições (Ctrl+S grava)")
+                        .on_disabled_hover_text(why)
+                        .clicked();
+                }
+                let label = if ve.editable { "Cancelar" } else { "Fechar" };
+                close = ui.add(theme::outline_button(label)).clicked();
+            });
+        });
+    let event = save.then(|| GridEvent::Commit(ve.row, ve.col, ve.value()));
+    // Esc or a click outside closes it only when nothing would be lost.
+    if save || close || (modal.should_close() && !changed) {
+        tab.value_editor = None;
+    }
+    event
 }

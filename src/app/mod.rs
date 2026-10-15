@@ -595,6 +595,8 @@ pub struct Tab {
     pub pending_sql: Option<String>,
     /// SQL waiting for the user to confirm destructive statements.
     pub confirm_run: Option<String>,
+    /// A cell's value open in the big editor.
+    pub value_editor: Option<ValueEditor>,
     /// Last export of this tab: file and row count, shown until dismissed.
     pub exported: Option<(PathBuf, u64)>,
     /// A script's result sets when it returned more than one, in order. The one on screen lives
@@ -662,6 +664,7 @@ impl Tab {
             detail_hidden: None,
             pending_sql: None,
             confirm_run: None,
+            value_editor: None,
             exported: None,
             sets: Vec::new(),
             set_shown: 0,
@@ -846,6 +849,37 @@ pub struct ConnTest {
     pub result: Option<Result<String, String>>,
 }
 
+/// A long value (JSON, text, XML…) in an editor of its own.
+pub struct ValueEditor {
+    pub row: usize,
+    pub col: usize,
+    pub column: String,
+    pub data_type: String,
+    pub text: String,
+    /// The value as it came (`None`: NULL); saving the same thing changes nothing.
+    pub original: Option<String>,
+    /// Set NULL when saved (the text is kept in case it's unset again).
+    pub null: bool,
+    pub editable: bool,
+    /// A `json`/`jsonb` column: only valid JSON is saved.
+    pub json_column: bool,
+    /// The value was JSON on one line: it goes back compact, only the layout shown changes.
+    pub compact: bool,
+}
+
+impl ValueEditor {
+    /// What saving writes: `None` for NULL, the JSON compacted again if it came compact.
+    pub fn value(&self) -> Option<String> {
+        if self.null {
+            return None;
+        }
+        if self.compact && values::json_check(&self.text).is_ok() {
+            return Some(values::json_compact(&self.text));
+        }
+        Some(self.text.clone())
+    }
+}
+
 /// What the grid asks for. Produced by the UI, carried out by `handle_grid_event`.
 pub enum GridEvent {
     Sort(String),
@@ -870,6 +904,8 @@ pub enum GridEvent {
     Paste(String),
     /// Profile of a column: counts, distinct values, range, most common values.
     ColumnStats(usize),
+    /// The cell's value in the big editor (`row`, `col`).
+    OpenValue(usize, usize),
     /// "Filtrar valores" of a column (table tabs).
     FilterValues(usize),
     /// Hide a shown column, or show a hidden one.
@@ -2880,6 +2916,31 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
                 CopyAs::Insert => sql::insert_row(k, &table, &res.columns, &res.rows[*row]),
             }));
         }
+        GridEvent::OpenValue(row, col) => {
+            let (row, col) = (*row, *col);
+            let column = res.columns[col].clone();
+            let info = cols.iter().find(|c| c.name == column);
+            let original = res.rows[row][col].clone();
+            let text = original.clone().unwrap_or_default();
+            let data_type = info.map_or(String::new(), |c| c.data_type.clone());
+            let json_column = data_type.starts_with("json");
+            let is_json = values::looks_like_json(&text);
+            tab.selected = Some((row, col));
+            tab.value_editor = Some(ValueEditor {
+                row,
+                col,
+                // An expression of an editor's SELECT isn't a column that can be written.
+                editable: editable && info.is_some(),
+                json_column,
+                compact: is_json && !text.contains('\n'),
+                text: if is_json { values::json_pretty(&text) } else { text },
+                null: original.is_none(),
+                original,
+                column,
+                data_type,
+            });
+            return None;
+        }
         GridEvent::Extend(row, col) => {
             tab.anchor = tab.anchor.or(tab.selected).or(Some((*row, *col)));
             tab.selected = Some((*row, *col));
@@ -3171,6 +3232,7 @@ pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable:
         | GridEvent::FollowIncoming(..)
         | GridEvent::ColumnStats(..)
         | GridEvent::FilterValues(..)
+        | GridEvent::OpenValue(..)
         | GridEvent::ToggleColumn(..)
         | GridEvent::ShowAllColumns
         | GridEvent::TogglePin(..)
@@ -3326,7 +3388,7 @@ pub mod tests {
         (s, jobs, replies)
     }
 
-    fn table_tab() -> Tab {
+    pub(super) fn table_tab() -> Tab {
         let col = |name: &str, ty: &str, pk| ColumnInfo {
             name: name.into(),
             data_type: ty.into(),
@@ -3745,6 +3807,50 @@ mod poll_tests {
         assert_eq!(app.tabs[2].title, "Relatório (cópia)");
         app.close_others(2, false);
         assert_eq!(app.tabs.len(), 1);
+    }
+
+    /// A compact JSON opens laid out, is edited there and goes back compact as a pending
+    /// change; a read-only result opens it only to look.
+    #[test]
+    fn big_value_editor_round_trip() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut tab = super::tests::table_tab();
+        if let TabKind::Table(ts) = &mut tab.kind {
+            ts.cols.push(ColumnInfo {
+                name: "dados".into(),
+                data_type: "jsonb".into(),
+                pk: false,
+                nullable: true,
+                has_default: false,
+                references: None,
+            });
+        }
+        let res = tab.result.as_mut().unwrap();
+        res.rows
+            .push(vec![Some("8".into()), Some("t".into()), Some("bia".into())]);
+        res.columns.push("dados".into());
+        for (i, row) in res.rows.iter_mut().enumerate() {
+            row.push((i == 0).then(|| r#"{"preco":1520.30,"tags":["a"]}"#.to_string()));
+        }
+        let col = res.columns.len() - 1;
+        handle_grid_event(&mut tab, &s, GridEvent::OpenValue(0, col), true);
+        let ve = tab.value_editor.as_mut().unwrap();
+        assert!(ve.editable && ve.json_column && ve.compact);
+        assert_eq!(
+            ve.text,
+            "{\n  \"preco\": 1520.30,\n  \"tags\": [\n    \"a\"\n  ]\n}"
+        );
+        assert_eq!(ve.value(), ve.original, "opening alone changes nothing");
+        ve.text = ve.text.replace("1520.30", "99.90");
+        let v = ve.value();
+        assert_eq!(v.as_deref(), Some(r#"{"preco":99.90,"tags":["a"]}"#));
+        tab.value_editor = None;
+        handle_grid_event(&mut tab, &s, GridEvent::Commit(0, col, v), true);
+        assert!(has_unsaved(&tab));
+        // Not editable: opens anyway, to read.
+        handle_grid_event(&mut tab, &s, GridEvent::OpenValue(1, col), false);
+        let ve = tab.value_editor.as_ref().unwrap();
+        assert!(!ve.editable && ve.null);
     }
 
     /// The cached overlay follows every change to the edits and to the result.

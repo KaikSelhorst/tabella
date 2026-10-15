@@ -704,6 +704,20 @@ pub fn grid(
                             event = Some(GridEvent::Select(ri, ci));
                         }
                         r.context_menu(|ui| {
+                            let open = if can_edit {
+                                "Abrir valor para editar…"
+                            } else {
+                                "Abrir valor…"
+                            };
+                            if ui
+                                .add(egui::Button::new(open).shortcut_text("Shift+Enter"))
+                                .on_hover_text("Editor grande: JSON formatado e validado, textos longos")
+                                .clicked()
+                            {
+                                event = Some(GridEvent::OpenValue(ri, ci));
+                                ui.close();
+                            }
+                            ui.separator();
                             if let Some(f) = fk
                                 && ui
                                     .button(format!("Abrir {} ({} = este valor)", f.table, f.column))

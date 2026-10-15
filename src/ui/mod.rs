@@ -1760,6 +1760,32 @@ pub(crate) mod screenshots {
             .unwrap();
         harness.state_mut().master = None;
 
+        // The big value editor with a JSON document.
+        {
+            let app = harness.state_mut();
+            app.active = 0;
+            let raw = r#"{"cliente":{"id":3,"nome":"Cliente 3","vip":true},"itens":[{"sku":"A-10","qtd":2,"preco":1520.30},{"sku":"B-7","qtd":1,"preco":89.90}],"cupom":null,"obs":"entregar à tarde, portão \"azul\""}"#;
+            app.tabs[0].value_editor = Some(crate::app::ValueEditor {
+                row: 2,
+                col: 2,
+                column: "dados".into(),
+                data_type: "jsonb".into(),
+                text: crate::values::json_pretty(raw),
+                original: Some(raw.into()),
+                null: false,
+                editable: true,
+                json_column: true,
+                compact: true,
+            });
+            harness.run();
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/value-editor.png"))
+                .unwrap();
+            harness.state_mut().tabs[0].value_editor = None;
+        }
+
         // Notices: an error stays (with copy and close), information fades.
         harness.state_mut().notice =
             crate::app::Notice::error("Não foi possível: relation \"clientes_antigos\" already exists");

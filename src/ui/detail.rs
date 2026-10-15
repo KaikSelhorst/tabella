@@ -14,6 +14,8 @@ use crate::values::{ValueKind, column_info};
 
 pub enum DetailAction {
     Commit(usize, Option<String>),
+    /// The field's value in the big editor.
+    Open(usize),
     Copy(CopyAs),
     Close,
 }
@@ -198,6 +200,19 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                     }
                     ui.label(RichText::new(name).size(11.0).color(t.muted_foreground));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let open = egui::Button::new(
+                            theme::icon(icon::ARROWS_OUT_SIMPLE)
+                                .size(11.0)
+                                .color(t.muted_foreground),
+                        )
+                        .frame(false);
+                        if ui
+                            .add(open)
+                            .on_hover_text("Abrir no editor grande (Shift+Enter na grade)")
+                            .clicked()
+                        {
+                            action = Some(DetailAction::Open(ci));
+                        }
                         // Booleans have NULL inside their own selector below.
                         let nullable = c.is_none_or(|c| c.nullable);
                         if can_edit && nullable && value.is_some() && kinds[ci] != ValueKind::Bool {

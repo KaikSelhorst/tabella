@@ -370,6 +370,98 @@ pub fn format_number(n: f64) -> String {
     }
 }
 
+/// JSON laid out one item per line, indented by two. Only the whitespace between tokens
+/// changes: numbers and strings stay exactly as written (`1520.30` is not turned into
+/// `1520.3`, big integers keep every digit), so saving it back changes nothing but layout.
+pub fn json_pretty(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 2);
+    let mut depth = 0usize;
+    let mut chars = text.trim().chars().peekable();
+    let newline = |out: &mut String, depth: usize| {
+        out.push('\n');
+        out.push_str(&"  ".repeat(depth));
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => copy_string(&mut out, &mut chars),
+            '{' | '[' => {
+                out.push(c);
+                // Empty ones stay on their line: `{}`, `[]`.
+                skip_ws(&mut chars);
+                if chars.peek().is_some_and(|n| *n == '}' || *n == ']') {
+                    out.push(chars.next().unwrap_or(' '));
+                } else {
+                    depth += 1;
+                    newline(&mut out, depth);
+                }
+            }
+            '}' | ']' => {
+                depth = depth.saturating_sub(1);
+                newline(&mut out, depth);
+                out.push(c);
+            }
+            ',' => {
+                out.push(',');
+                newline(&mut out, depth);
+            }
+            ':' => out.push_str(": "),
+            c if c.is_whitespace() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// JSON on one line, without the whitespace between tokens (strings and numbers untouched).
+pub fn json_compact(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.trim().chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => copy_string(&mut out, &mut chars),
+            c if c.is_whitespace() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Copies a string literal (the opening quote already read), escapes included.
+fn copy_string(out: &mut String, chars: &mut std::iter::Peekable<std::str::Chars>) {
+    out.push('"');
+    while let Some(c) = chars.next() {
+        out.push(c);
+        match c {
+            '\\' => {
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                }
+            }
+            '"' => return,
+            _ => {}
+        }
+    }
+}
+
+fn skip_ws(chars: &mut std::iter::Peekable<std::str::Chars>) {
+    while chars.peek().is_some_and(|c| c.is_whitespace()) {
+        chars.next();
+    }
+}
+
+/// Whether `text` is JSON; if not, where it breaks (1-based line and column).
+pub fn json_check(text: &str) -> Result<(), (usize, usize, String)> {
+    serde_json::from_str::<serde::de::IgnoredAny>(text)
+        .map(|_| ())
+        .map_err(|e| (e.line(), e.column(), e.to_string()))
+}
+
+/// An object or array (what is worth formatting), as opposed to a bare string or number.
+pub fn looks_like_json(text: &str) -> bool {
+    let t = text.trim_start();
+    (t.starts_with('{') || t.starts_with('[')) && json_check(text).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -546,5 +638,21 @@ mod tests {
         ];
         let v: serde_json::Value = serde_json::from_str(&row_json(&res, &cols, 0)).unwrap();
         assert_eq!(v, serde_json::json!({"id": 7, "ativo": true, "nome": null}));
+    }
+
+    #[test]
+    fn json_layout_keeps_every_value() {
+        let src = r#"{"preco":1520.30,"id":12345678901234567890,"tags":[],"o":{},"s":"a, {b} \"c\": d","l":[1, 2]}"#;
+        let pretty = json_pretty(src);
+        assert_eq!(
+            pretty,
+            "{\n  \"preco\": 1520.30,\n  \"id\": 12345678901234567890,\n  \"tags\": [],\n  \"o\": {},\n  \
+             \"s\": \"a, {b} \\\"c\\\": d\",\n  \"l\": [\n    1,\n    2\n  ]\n}"
+        );
+        assert!(json_check(&pretty).is_ok());
+        assert_eq!(json_compact(&pretty), src.replace(", 2", ",2"));
+        let (line, col, _) = json_check("{\n  \"a\": 1,\n  \"b\" 2\n}").unwrap_err();
+        assert_eq!((line, col), (3, 7));
+        assert!(looks_like_json(" [1]") && !looks_like_json("\"x\"") && !looks_like_json("{ruim"));
     }
 }

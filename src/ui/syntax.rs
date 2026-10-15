@@ -211,6 +211,53 @@ pub fn highlight(text: &str, font: FontId) -> LayoutJob {
     job
 }
 
+/// JSON in color: keys, strings, numbers, true/false/null, punctuation.
+pub fn highlight_json(text: &str, font: FontId) -> LayoutJob {
+    let t = theme::tokens();
+    let mut job = LayoutJob::default();
+    let fmt = |c: Color32| TextFormat::simple(font.clone(), c);
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < text.len() {
+        let start = i;
+        let c = bytes[i];
+        let color = if c == b'"' {
+            i += 1;
+            while i < text.len() && bytes[i] != b'"' {
+                i += if bytes[i] == b'\\' { 2 } else { 1 };
+            }
+            i = (i + 1).min(text.len());
+            // A key is a string followed by ':'.
+            let key = text[i..].trim_start().starts_with(':');
+            if key { t.info } else { color(Kind::Str, t) }
+        } else if c == b'-' || c.is_ascii_digit() {
+            while i < text.len() && matches!(bytes[i], b'0'..=b'9' | b'.' | b'-' | b'+' | b'e' | b'E') {
+                i += 1;
+            }
+            t.number
+        } else if c.is_ascii_alphabetic() {
+            while i < text.len() && bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            if &text[start..i] == "null" {
+                t.subtle
+            } else {
+                t.boolean
+            }
+        } else {
+            // Punctuation and whitespace, up to the next token (whole chars).
+            i += text[i..].chars().next().map_or(1, char::len_utf8);
+            while i < text.len() && !matches!(bytes[i], b'"' | b'-' | b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z')
+            {
+                i += text[i..].chars().next().map_or(1, char::len_utf8);
+            }
+            t.muted_foreground
+        };
+        job.append(&text[start..i], 0.0, fmt(color));
+    }
+    job
+}
+
 /// Underlines `range` (bytes) in red: where the last error is.
 pub fn mark_error(job: &mut LayoutJob, range: std::ops::Range<usize>) {
     let t = super::theme::tokens();
@@ -277,5 +324,19 @@ mod tests {
             .map(|(_, s)| s)
             .collect();
         assert_eq!(params, [":id", ":nome"]);
+    }
+
+    #[test]
+    fn json_colors_cover_every_byte() {
+        let text = "{\"nome\": \"João \\\"Zé\\\" Ávila\", \"v\": -1.5e3, \"ok\": true, \"x\": null, \"l\": [1, \"é\"]}";
+        let job = highlight_json(text, FontId::monospace(12.0));
+        let covered: String = job
+            .sections
+            .iter()
+            .map(|s| &text[s.byte_range.start.0..s.byte_range.end.0])
+            .collect();
+        assert_eq!(covered, text);
+        // Unterminated strings (while typing) don't panic either.
+        let _ = highlight_json("{\"a\": \"sem fim \\", FontId::monospace(12.0));
     }
 }
