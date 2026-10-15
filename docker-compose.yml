@@ -2,6 +2,7 @@
 #
 #   docker compose --profile test up -d --wait   # what `cargo test -- --ignored` expects
 #   docker compose --profile dev up -d --wait    # heavy sample data (millions of rows; ~3 min to seed)
+#   docker compose --profile company up -d --wait  # Northstar Global, a fictional multinational (English)
 #
 # Test databases are throwaway (no volumes). Dev data is re-seeded on first start of a fresh
 # container; `docker compose --profile dev down` resets it.
@@ -97,3 +98,25 @@ services:
       <<: *mysql-health
       interval: 3s
       retries: 120 # the seed takes a few minutes
+
+  # Northstar Global: HR, catalog, inventory, sales, finance, support and marketing for a fictional
+  # multinational, ~13M rows. Seeded once into the named volume (a few minutes);
+  # `docker compose --profile company down -v` throws it away. Uses port 5432 like dev-pg.
+  company-pg:
+    profiles: [company]
+    image: postgres:16-alpine
+    environment: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: northstar }
+    ports: ["${COMPANY_PG_PORT:-5432}:5432"]
+    # Parallel queries over the big tables need more than Docker's default 64 MB.
+    shm_size: 1gb
+    command: ["-c", "shared_preload_libraries=pg_stat_statements"]
+    volumes:
+      - company-pg-data:/var/lib/postgresql/data
+      - ./dev/company:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 5s
+      retries: 240
+
+volumes:
+  company-pg-data:
