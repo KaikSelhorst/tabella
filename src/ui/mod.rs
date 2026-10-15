@@ -1901,6 +1901,21 @@ pub(crate) mod screenshots {
             .unwrap();
         harness.state_mut().notice = None;
 
+        // A view's tab has the eye, like the sidebar.
+        {
+            harness.state_mut().open_table("public", "vendas_mensais");
+            // It stays loading (no database here): a few frames, not "until it settles".
+            harness.run_steps(3);
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/view-tab.png"))
+                .unwrap();
+            let app = harness.state_mut();
+            app.tabs.pop();
+            app.active = 0;
+        }
+
         // Many tabs: the strip scrolls and keeps the active one in view.
         {
             let app = harness.state_mut();

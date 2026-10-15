@@ -120,8 +120,17 @@ impl App {
                             ui.style_mut().always_scroll_the_only_direction = true;
                             ui.horizontal_centered(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
+                                let is_view = |schema: &str, table: &str| {
+                                    self.session.as_ref().is_some_and(|s| {
+                                        s.tables
+                                            .iter()
+                                            .any(|t| t.is_view && t.schema == schema && t.name == table)
+                                    })
+                                };
                                 for (i, tab) in self.tabs.iter().enumerate() {
-                                    let glyph = match tab.kind {
+                                    let glyph = match &tab.kind {
+                                        // A view opens like a table; its tab shows the sidebar's eye.
+                                        TabKind::Table(ts) if is_view(&ts.schema, &ts.table) => icon::EYE,
                                         TabKind::Table(_) => icon::TABLE,
                                         TabKind::Sql(_) => icon::CODE,
                                         TabKind::Structure(_) => icon::TREE_STRUCTURE,
