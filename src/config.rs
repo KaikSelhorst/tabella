@@ -1,47 +1,13 @@
 //! Saved connections. The JSON file never holds passwords: they live in the secret store
 //! (see `secrets`).
 
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::db::ConnConfig;
 use crate::secrets::SecretStore;
+use crate::store::StoreError;
 
-/// Writes a file only the current user can read: created with mode 600 on unix (so it is never
-/// briefly world-readable). On Windows the per-user AppData folder is already private.
-pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut file = opts.open(path)?;
-    #[cfg(unix)]
-    {
-        // `mode` only applies to new files; tighten ones created by older versions too.
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    file.write_all(contents.as_bytes())
-}
-
-/// Where dblite keeps its files. `DBLITE_CONFIG_DIR` overrides it (tests, portable setups).
-pub fn dir() -> Option<PathBuf> {
-    match std::env::var_os("DBLITE_CONFIG_DIR") {
-        Some(d) => Some(PathBuf::from(d)),
-        None => dirs::config_dir().map(|d| d.join("dblite")),
-    }
-}
-
-fn path() -> Option<PathBuf> {
-    dir().map(|d| d.join("connections.json"))
-}
+const FILE: &str = "connections.json";
 
 /// A random id for a new connection.
 pub fn new_id() -> String {
@@ -63,14 +29,22 @@ pub fn name_taken(list: &[ConnConfig], name: &str, except_id: Option<&str>) -> b
         .any(|c| Some(c.id.as_str()) != except_id && c.name.trim().eq_ignore_ascii_case(name))
 }
 
+/// What `load` found.
+pub struct Loaded {
+    pub list: Vec<ConnConfig>,
+    /// The file needs rewriting: plain-text passwords from older versions, or connections that
+    /// had no id yet.
+    pub outdated: bool,
+    /// The file existed but could not be used (see `store::load_at`).
+    pub warning: Option<String>,
+}
+
 /// Saved connections, with passwords filled in from the secret store when it can be read now.
-/// The flag says the file needs rewriting: plain-text passwords from older versions, or
-/// connections that had no id yet.
-pub fn load(store: &SecretStore) -> (Vec<ConnConfig>, bool) {
-    let mut list: Vec<ConnConfig> = path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+pub fn load(store: &SecretStore) -> Loaded {
+    let crate::store::Loaded {
+        value: mut list,
+        warning,
+    } = crate::store::load::<Vec<ConnConfig>>(FILE);
     let mut outdated = list.iter().any(|c| !c.password.is_empty());
     for c in &mut list {
         if c.id.is_empty() {
@@ -79,7 +53,11 @@ pub fn load(store: &SecretStore) -> (Vec<ConnConfig>, bool) {
         }
     }
     fill_passwords(&mut list, store);
-    (list, outdated)
+    Loaded {
+        list,
+        outdated,
+        warning,
+    }
 }
 
 /// Fills empty passwords from the store (e.g. right after the vault is unlocked). Older versions
@@ -95,15 +73,22 @@ pub fn fill_passwords(list: &mut [ConnConfig], store: &SecretStore) {
     }
 }
 
-/// Writes the connections without passwords; those go to the secret store. Returns how many
-/// passwords could not be stored (store locked): they stay in memory for this session only.
-pub fn save(list: &[ConnConfig], store: &mut SecretStore) -> Result<usize, String> {
-    let path = path().ok_or("diretório de configuração não encontrado")?;
-    save_at(&path, list, store)
+/// How a save went for the passwords (the file itself was written).
+#[derive(Debug, Default, PartialEq)]
+pub struct Saved {
+    /// Passwords the store refused (locked): they stay in memory for this session only.
+    pub not_stored: usize,
+    /// Old copies the store could not remove.
+    pub not_removed: usize,
 }
 
-fn save_at(path: &Path, list: &[ConnConfig], store: &mut SecretStore) -> Result<usize, String> {
-    let mut not_stored = 0;
+/// Writes the connections without passwords; those go to the secret store.
+pub fn save(list: &[ConnConfig], store: &mut SecretStore) -> Result<Saved, StoreError> {
+    save_at(&crate::store::path(FILE)?, list, store)
+}
+
+fn save_at(path: &Path, list: &[ConnConfig], store: &mut SecretStore) -> Result<Saved, StoreError> {
+    let mut report = Saved::default();
     let stripped: Vec<ConnConfig> = list
         .iter()
         .cloned()
@@ -112,25 +97,29 @@ fn save_at(path: &Path, list: &[ConnConfig], store: &mut SecretStore) -> Result<
                 c.id = new_id();
             }
             if c.password.is_empty() {
-                store.delete(&c.id);
+                if store.delete(&c.id).is_err() {
+                    report.not_removed += 1;
+                }
             } else if store.set(&c.id, &c.password).is_err() {
-                not_stored += 1;
+                report.not_stored += 1;
             }
             // Drop any copy an older version kept under the name.
-            store.delete(&c.name);
+            if store.delete(&c.name).is_err() {
+                report.not_removed += 1;
+            }
             // Never written to disk in plain text, whatever happened above.
             c.password.clear();
             c
         })
         .collect();
-    let json = serde_json::to_string_pretty(&stripped).map_err(|e| e.to_string())?;
-    write_private(path, &json).map_err(|e| e.to_string())?;
-    Ok(not_stored)
+    crate::store::save_at(path, &stripped)?;
+    Ok(report)
 }
 
-pub fn forget(cfg: &ConnConfig, store: &mut SecretStore) {
-    store.delete(&cfg.id);
-    store.delete(&cfg.name);
+/// Removes a deleted connection's password (under its id, and its name for older versions).
+pub fn forget(cfg: &ConnConfig, store: &mut SecretStore) -> Result<(), crate::secrets::SecretError> {
+    store.delete(&cfg.id)?;
+    store.delete(&cfg.name)
 }
 
 #[cfg(test)]
@@ -165,12 +154,12 @@ mod tests {
         let save_to = |list: &[ConnConfig], store: &mut SecretStore| save_at(&file, list, store);
 
         // Locked vault: the connection is saved, the password is not (and not in plain text).
-        assert_eq!(save_to(&[c.clone()], &mut store).unwrap(), 1);
+        assert_eq!(save_to(&[c.clone()], &mut store).unwrap().not_stored, 1);
         assert!(!std::fs::read_to_string(&file).unwrap().contains("hunter2"));
 
         // With the vault created, the password goes there, still not into the file.
         store.vault_mut().unwrap().create("senha-mestra-boa").unwrap();
-        assert_eq!(save_to(&[c.clone()], &mut store).unwrap(), 0);
+        assert_eq!(save_to(&[c.clone()], &mut store).unwrap(), Saved::default());
         assert!(!std::fs::read_to_string(&file).unwrap().contains("hunter2"));
         assert!(
             !std::fs::read_to_string(dir.join("vault.json"))

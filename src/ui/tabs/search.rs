@@ -1,6 +1,7 @@
 //! "Buscar valor em todas as tabelas".
 
 use super::*;
+use std::fmt::Write as _;
 
 /// "Buscar valor em todas as tabelas": the term, options, progress and where it was found.
 pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
@@ -74,10 +75,10 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         st.hits.len()
                     );
                     if st.skipped > 0 {
-                        text.push_str(&format!(" · {} grandes puladas", st.skipped));
+                        let _ = write!(text, " · {} grandes puladas", st.skipped);
                     }
                     if !st.errors.is_empty() {
-                        text.push_str(&format!(" · {} com erro", st.errors.len()));
+                        let _ = write!(text, " · {} com erro", st.errors.len());
                     }
                     let r = ui.label(egui::RichText::new(text).size(12.0).color(t.muted_foreground));
                     if !st.errors.is_empty() {

@@ -9,7 +9,10 @@ use std::time::Instant;
 
 use eframe::egui;
 
+mod grid_events;
 mod replies;
+
+pub use grid_events::handle_grid_event;
 
 use crate::config;
 use crate::db::{
@@ -834,6 +837,17 @@ impl Tab {
     }
 }
 
+/// The one dialog over the window, if any: opening another replaces it. (The connection form
+/// and the master-password prompt are separate: the latter opens over the former.)
+pub enum Dialog {
+    Palette(Palette),
+    /// F1 shortcuts screen.
+    Help,
+    Favorite(FavPrompt),
+    Path(PathPrompt),
+    TableAction(TableActionPrompt),
+}
+
 /// Ctrl+P command palette: fuzzy search over tables, connections and actions.
 #[derive(Default)]
 pub struct Palette {
@@ -1107,7 +1121,7 @@ pub struct App {
     pub form: Option<ConnForm>,
     /// "Testar conexão" in the form: running, or its outcome for the settings it was run with.
     pub conn_test: Option<ConnTest>,
-    pub palette: Option<Palette>,
+    pub dialog: Option<Dialog>,
     pub tabs: Vec<Tab>,
     pub active: usize,
     next_id: u64,
@@ -1128,20 +1142,15 @@ pub struct App {
     restore: Option<session::Saved>,
     /// Current window size, saved on exit.
     pub window: Option<[f32; 2]>,
-    pub fav_prompt: Option<FavPrompt>,
     /// Row detail panel on the right of the grid.
     pub show_detail: bool,
     /// Sidebar lists tables by size (biggest first) instead of by name.
     pub sort_by_size: bool,
     /// The window was asked to close with a transaction open: ask what to do with it.
     pub quit_prompt: bool,
-    /// F1 shortcuts screen.
-    pub help: bool,
     /// Recently closed tabs, newest last.
     pub closed: Vec<SavedTab>,
-    pub path_prompt: Option<PathPrompt>,
     pub settings: crate::settings::Settings,
-    pub table_action: Option<TableActionPrompt>,
     /// The window title announces a finished job (cleared when the window is focused).
     title_changed: bool,
     /// Close the window once the transaction has been ended.
@@ -1153,17 +1162,36 @@ pub struct App {
 
 impl App {
     pub fn new(ctx: &egui::Context) -> Self {
-        let secrets = SecretStore::detect();
-        let (saved, outdated) = config::load(&secrets);
+        let mut secrets = SecretStore::detect();
+        let conns = config::load(&secrets);
+        let history = history::load();
+        let favorites = favorites::load();
+        let filters = filters::load();
+        let settings = crate::settings::load();
+        let last = session::load();
+        // Files that existed but couldn't be read were backed up; say so instead of starting
+        // empty without a word.
+        let warnings: Vec<String> = [
+            conns.warning,
+            secrets.take_warning(),
+            history.warning,
+            favorites.warning,
+            filters.warning,
+            settings.warning,
+            last.warning,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         let mut app = Self {
             ctx: ctx.clone(),
-            saved,
+            saved: conns.list,
             secrets,
             master: None,
             session: None,
             form: None,
             conn_test: None,
-            palette: None,
+            dialog: None,
             tabs: vec![],
             active: 0,
             next_id: 1,
@@ -1172,20 +1200,16 @@ impl App {
             notice: None,
             max_fps: false,
             show_fps: false,
-            history: history::load(),
-            favorites: favorites::load(),
-            filters: filters::load(),
+            history: history.value,
+            favorites: favorites.value,
+            filters: filters.value,
             restore: None,
             window: None,
-            fav_prompt: None,
             show_detail: true,
             sort_by_size: false,
             quit_prompt: false,
-            help: false,
             closed: Vec::new(),
-            path_prompt: None,
-            settings: crate::settings::load(),
-            table_action: None,
+            settings: settings.value,
             title_changed: false,
             quit_after_tx: false,
             frames: 0,
@@ -1196,14 +1220,14 @@ impl App {
             .secrets
             .locked_vault()
             .is_some_and(|v| app.saved.iter().any(|c| v.has(&c.id) || v.has(&c.name)));
-        if outdated {
+        if conns.outdated {
             // Plain-text passwords or missing ids from older versions: rewrite the file now.
             app.save_connections();
         } else if vault_has_any {
             app.ask_master(AfterMaster::Nothing);
         }
         // Pick up where the last run stopped: same connection, then its tabs (see `poll`).
-        let last = session::load();
+        let last = last.value;
         if let Some(id) = last.conn.clone()
             && app.find_saved(&id).is_some()
         {
@@ -1212,6 +1236,9 @@ impl App {
         }
         #[cfg(feature = "dev-conn")]
         app.add_dev_connections();
+        if !warnings.is_empty() {
+            app.notice = Notice::error(warnings.join("\n"));
+        }
         app
     }
 
@@ -1334,11 +1361,11 @@ impl App {
                         self.save_file_as(i, path);
                     }
                 } else {
-                    self.path_prompt = Some(PathPrompt {
+                    self.dialog = Some(Dialog::Path(PathPrompt {
                         save_tab: Some(t.id),
                         path: suggested,
                         run: false,
-                    });
+                    }));
                 }
             }
         }
@@ -1351,11 +1378,11 @@ impl App {
                 self.open_file(path);
             }
         } else {
-            self.path_prompt = Some(PathPrompt {
+            self.dialog = Some(Dialog::Path(PathPrompt {
                 save_tab: None,
                 path: String::new(),
                 run: false,
-            });
+            }));
         }
     }
 
@@ -1512,12 +1539,20 @@ impl App {
 
     fn write_connections(&mut self) {
         match config::save(&self.saved, &mut self.secrets) {
-            Ok(0) => {}
-            Ok(n) => {
+            Ok(r) if r.not_stored > 0 => {
                 self.notice = Notice::info(format!(
-                    "{n} senha(s) não foram salvas em disco (só nesta sessão)"
+                    "{} senha(s) não foram salvas em disco (só nesta sessão)",
+                    r.not_stored
                 ))
             }
+            Ok(r) if r.not_removed > 0 => {
+                self.notice = Notice::error(format!(
+                    "{} senha(s) antiga(s) não puderam ser apagadas de: {}",
+                    r.not_removed,
+                    self.secrets.describe()
+                ))
+            }
+            Ok(_) => {}
             Err(e) => self.notice = Notice::error(format!("Erro ao salvar conexões: {e}")),
         }
     }
@@ -1556,8 +1591,15 @@ impl App {
         if self.session.as_ref().is_some_and(|s| s.cfg.id == removed.id) {
             self.disconnect();
         }
-        config::forget(&removed, &mut self.secrets);
+        let forgot = config::forget(&removed, &mut self.secrets);
         self.save_connections();
+        if forgot.is_err() {
+            self.notice = Notice::error(format!(
+                "A senha de “{}” não pôde ser apagada de: {}",
+                removed.name,
+                self.secrets.describe()
+            ));
+        }
     }
 
     pub fn ask_master(&mut self, then: AfterMaster) {
@@ -2060,11 +2102,11 @@ impl App {
                 self.open_script(path);
             }
         } else {
-            self.path_prompt = Some(PathPrompt {
+            self.dialog = Some(Dialog::Path(PathPrompt {
                 save_tab: None,
                 path: String::new(),
                 run: true,
-            });
+            }));
         }
     }
 
@@ -3039,382 +3081,6 @@ pub fn explain(tab: &mut Tab, s: &Session, sql: &str, analyze: bool) {
         sql: one,
         analyze,
     });
-}
-
-/// Carries out what the grid asked for. Returns text to put on the clipboard, if any.
-pub fn handle_grid_event(tab: &mut Tab, s: &Session, event: GridEvent, editable: bool) -> Option<Effect> {
-    let k = s.cfg.kind;
-    let Some(res) = &tab.result else { return None };
-    let no_cols = Vec::new();
-    let cols = editable_ref(&tab.kind).map_or(&no_cols, |ts| &ts.cols);
-    let kinds = values::column_kinds(res, cols);
-
-    // Things that work on any result, editable or not.
-    match &event {
-        GridEvent::Select(row, col) => {
-            tab.selected = Some((*row, *col));
-            tab.anchor = None;
-            tab.detail_hidden = None;
-            if let TabKind::Table(ts) = &mut tab.kind {
-                ts.bool_pick = None;
-            }
-            return None;
-        }
-        GridEvent::Copy(row, how) => {
-            let table = match &tab.kind {
-                TabKind::Table(ts) => k.qualified(&ts.schema, &ts.table),
-                // An editable editor result knows its table too.
-                TabKind::Sql(ed) if let Some(src) = &ed.source => k.qualified(&src.schema, &src.table),
-                _ => "tabela".to_string(),
-            };
-            return Some(Effect::Copy(match how {
-                CopyAs::Json => values::row_json(res, cols, *row),
-                CopyAs::Insert => sql::insert_row(k, &table, &res.columns, &res.rows[*row]),
-            }));
-        }
-        // A foreign key is chosen from the referenced rows instead of typed.
-        GridEvent::StartEdit(row, col)
-            if editable
-                && let Some(fk) = cols
-                    .iter()
-                    .find(|c| c.name == res.columns[*col])
-                    .and_then(|c| c.references.clone()) =>
-        {
-            let (row, col) = (*row, *col);
-            let column = res.columns[col].clone();
-            let current = res.rows[row][col].clone();
-            tab.selected = Some((row, col));
-            open_fk_picker(tab, s, PickFor::Cell(row, col), &column, fk, current);
-            return None;
-        }
-        GridEvent::OpenValue(row, col) => {
-            let (row, col) = (*row, *col);
-            let column = res.columns[col].clone();
-            let info = cols.iter().find(|c| c.name == column);
-            let original = res.rows[row][col].clone();
-            let text = original.clone().unwrap_or_default();
-            let data_type = info.map_or(String::new(), |c| c.data_type.clone());
-            let json_column = data_type.starts_with("json");
-            let is_json = values::looks_like_json(&text);
-            tab.selected = Some((row, col));
-            tab.value_editor = Some(ValueEditor {
-                row,
-                col,
-                // An expression of an editor's SELECT isn't a column that can be written.
-                editable: editable && info.is_some(),
-                json_column,
-                compact: is_json && !text.contains('\n'),
-                text: if is_json { values::json_pretty(&text) } else { text },
-                null: original.is_none(),
-                original,
-                column,
-                data_type,
-            });
-            return None;
-        }
-        GridEvent::Extend(row, col) => {
-            tab.anchor = tab.anchor.or(tab.selected).or(Some((*row, *col)));
-            tab.selected = Some((*row, *col));
-            return None;
-        }
-        GridEvent::SelectAll => {
-            let view = tab.view();
-            if let (false, Some(&first), Some(&last)) = (res.rows.is_empty(), view.first(), view.last()) {
-                tab.anchor = Some((0, first));
-                tab.selected = Some((res.rows.len() - 1, last));
-            }
-            return None;
-        }
-        GridEvent::ToggleColumn(col) => {
-            let name = res.columns[*col].clone();
-            if let Some(i) = tab.hidden_cols.iter().position(|n| *n == name) {
-                tab.hidden_cols.remove(i);
-            } else {
-                tab.hidden_cols.push(name);
-                // A selection on a column that just went away would be invisible.
-                if tab.selected.is_some_and(|(_, c)| c == *col) {
-                    tab.selected = None;
-                    tab.anchor = None;
-                }
-            }
-            return None;
-        }
-        GridEvent::ShowAllColumns => {
-            tab.hidden_cols.clear();
-            return None;
-        }
-        GridEvent::TogglePin(col) => {
-            let name = res.columns[*col].clone();
-            if let Some(i) = tab.pinned_cols.iter().position(|n| *n == name) {
-                tab.pinned_cols.remove(i);
-            } else {
-                tab.pinned_cols.push(name);
-            }
-            return None;
-        }
-        GridEvent::FilterValues(col) => {
-            let name = res.columns[*col].clone();
-            open_value_filter(tab, s, &name);
-            return None;
-        }
-        GridEvent::ColumnStats(col) => {
-            let name = res.columns[*col].clone();
-            let kind = kinds[*col];
-            match &mut tab.kind {
-                // Tables: the database counts every row that passes the filter.
-                TabKind::Table(ts) => {
-                    let filter = ts.effective_filter(k);
-                    let ordered = matches!(kind, ValueKind::Number | ValueKind::Date);
-                    let (summary, top) = sql::column_stats(k, &ts.schema, &ts.table, &name, &filter, ordered);
-                    let scope = if filter.is_empty() {
-                        "tabela inteira".to_string()
-                    } else {
-                        "linhas que passam no filtro".to_string()
-                    };
-                    tab.col_stats = Some(StatsView {
-                        column: name,
-                        scope,
-                        data: None,
-                    });
-                    tab.begin_job();
-                    s.send(Job::ColumnStats {
-                        tab: tab.id,
-                        summary,
-                        top,
-                    });
-                }
-                // Editor results: only what was loaded.
-                _ => {
-                    let data = values::local_column_stats(res, *col, kind);
-                    tab.col_stats = Some(StatsView {
-                        column: name,
-                        scope: format!("{} linha(s) carregadas", res.rows.len()),
-                        data: Some(Ok(data)),
-                    });
-                }
-            }
-            return None;
-        }
-        GridEvent::CopyMarkdown => {
-            let view = tab.view();
-            let range = tab.range().unwrap_or(CellRange {
-                r0: 0,
-                r1: res.rows.len().saturating_sub(1),
-                cols: view,
-            });
-            if res.rows.is_empty() {
-                return None;
-            }
-            let overlay = editable_ref(&tab.kind).and_then(|ts| ts.overlay(res));
-            let shown = overlay.as_ref().map_or(res, |o| &o.result);
-            return Some(Effect::Copy(values::to_markdown(shown, &range, &kinds)));
-        }
-        GridEvent::CopyCells { headers } => {
-            let range = tab.selection()?;
-            // Copy what the grid shows, pending edits included.
-            let overlay = editable_ref(&tab.kind).and_then(|ts| ts.overlay(res));
-            let shown = overlay.as_ref().map_or(res, |o| &o.result);
-            return Some(Effect::Copy(values::to_tsv(shown, &range, *headers)));
-        }
-        GridEvent::FollowIncoming(row, i) => {
-            let TabKind::Table(ts) = &tab.kind else {
-                return None;
-            };
-            let fk = ts.incoming.get(*i)?;
-            let col = res.columns.iter().position(|c| *c == fk.target)?;
-            let value = res.rows[*row][col].as_deref()?;
-            let filter = sql::filter_condition(k, &fk.column, FilterOp::Eq, Some(value));
-            return Some(Effect::OpenFiltered {
-                schema: fk.schema.clone(),
-                table: fk.table.clone(),
-                filter,
-            });
-        }
-        GridEvent::FollowFk(row, col) => {
-            let info = cols.iter().find(|c| c.name == res.columns[*col])?;
-            let target = info.references.as_ref()?;
-            let value = res.rows[*row][*col].as_deref()?;
-            let filter = sql::filter_condition(k, &target.column, FilterOp::Eq, Some(value));
-            return Some(Effect::OpenFiltered {
-                schema: target.schema.clone(),
-                table: target.table.clone(),
-                filter,
-            });
-        }
-        // Filtering doesn't change data, so read-only tables get it too.
-        GridEvent::Filter(row, col, op) => {
-            let cond = sql::filter_condition(k, &res.columns[*col], *op, res.rows[*row][*col].as_deref());
-            if let TabKind::Table(ts) = &mut tab.kind {
-                ts.filter = sql::and(&ts.filter, &cond);
-                ts.page = 0;
-                reload(tab, s);
-            }
-            return None;
-        }
-        _ => {}
-    }
-
-    let selection = tab.selection();
-    let view = tab.view();
-    let is_table = matches!(tab.kind, TabKind::Table(_));
-    let ts = editable_mut(&mut tab.kind)?;
-    if !editable {
-        return None;
-    }
-    match event {
-        // Editor results keep the order their query asked for.
-        GridEvent::Sort(_) if !is_table => {}
-        // Expressions and aliases in an editor's SELECT aren't columns of the table.
-        GridEvent::StartEdit(_, col) if !ts.cols.iter().any(|c| c.name == res.columns[col]) => {
-            tab.error = Some(format!(
-                "\"{}\" não é uma coluna de {}: não dá para editar",
-                res.columns[col], ts.table
-            ));
-        }
-        GridEvent::Sort(col) => {
-            ts.order = match &ts.order {
-                Some((c, true)) if *c == col => Some((col, false)),
-                Some((c, false)) if *c == col => None,
-                _ => Some((col, true)),
-            };
-            ts.page = 0;
-            reload(tab, s);
-        }
-        // Booleans open a true/false/NULL dropdown; nothing is written until a value is picked.
-        GridEvent::StartEdit(row, col) if kinds[col] == ValueKind::Bool => {
-            tab.selected = Some((row, col));
-            ts.bool_pick = Some((row, col));
-        }
-        GridEvent::StartEdit(row, col) => {
-            let text = res.rows[row][col].clone().unwrap_or_default();
-            tab.selected = Some((row, col));
-            ts.edit = Some(Edit {
-                row,
-                col,
-                original: text.clone(),
-                text,
-                focused: false,
-            });
-        }
-        GridEvent::CancelEdit => {
-            ts.edit = None;
-            ts.bool_pick = None;
-        }
-        GridEvent::Commit(row, col, val) => {
-            ts.edit = None;
-            ts.bool_pick = None;
-            if let Err(e) = set_cell(ts, res, &kinds, k, (row, col), val) {
-                tab.error = Some(e);
-            }
-        }
-        // Fills from the selection's top-left corner; whatever falls outside the page is left out.
-        GridEvent::Paste(text) => {
-            let sel = selection?;
-            let top = sel.r0;
-            // Columns go rightwards in on-screen order from the selection's first one.
-            let start = view.iter().position(|&c| c == sel.cols[0]).unwrap_or(0);
-            let cells = values::parse_tsv(&text);
-            let mut skipped = 0;
-            for (dr, line) in cells.iter().enumerate() {
-                for (dc, v) in line.iter().enumerate() {
-                    let row = top + dr;
-                    let Some(&col) = view.get(start + dc).filter(|_| row < res.rows.len()) else {
-                        skipped += 1;
-                        continue;
-                    };
-                    // Spreadsheets have no NULL: the word itself stands for it, as the grid shows it.
-                    let val = (v != "NULL").then(|| v.clone());
-                    if let Err(e) = set_cell(ts, res, &kinds, k, (row, col), val) {
-                        tab.error = Some(e);
-                        return None;
-                    }
-                }
-            }
-            let rows = cells.len().min(res.rows.len().saturating_sub(top));
-            let cols = cells
-                .iter()
-                .map(Vec::len)
-                .max()
-                .unwrap_or(0)
-                .min(view.len().saturating_sub(start));
-            if rows > 0 && cols > 0 {
-                tab.anchor = Some((top, view[start]));
-                tab.selected = Some((top + rows - 1, view[start + cols - 1]));
-            }
-            tab.error = (skipped > 0)
-                .then(|| format!("{skipped} célula(s) coladas ficaram fora da página e foram ignoradas."));
-        }
-        // Toggles: deleting an already-deleted row restores it.
-        GridEvent::DeleteRow(row) => {
-            let key = ts.row_key(res, row);
-            let before = ts.changes.len();
-            ts.changes
-                .retain(|c| !matches!(c, Change::Delete { key: k2 } if *k2 == key));
-            if ts.changes.len() == before {
-                ts.changes.push(Change::Delete { key });
-            }
-        }
-        GridEvent::DuplicateRow(row) => {
-            open_duplicate_form(tab, row);
-        }
-        GridEvent::AskFill => tab.fill_prompt = Some(String::new()),
-        GridEvent::FillSelection(value) => {
-            let Some(sel) = &selection else { return None };
-            tab.fill_prompt = None;
-            for row in sel.r0..=sel.r1 {
-                for &col in &sel.cols {
-                    if let Err(e) = set_cell(ts, res, &kinds, k, (row, col), value.clone()) {
-                        tab.error = Some(e);
-                        return None;
-                    }
-                }
-            }
-        }
-        GridEvent::FillDown => {
-            let Some(sel) = &selection else { return None };
-            // The first row as the grid shows it, pending edits included.
-            let overlay = ts.overlay(res);
-            let shown = overlay.as_ref().map_or(res, |o| &o.result);
-            let top: Vec<Option<String>> = sel.cols.iter().map(|&c| shown.rows[sel.r0][c].clone()).collect();
-            for row in sel.r0 + 1..=sel.r1 {
-                for (i, &col) in sel.cols.iter().enumerate() {
-                    if let Err(e) = set_cell(ts, res, &kinds, k, (row, col), top[i].clone()) {
-                        tab.error = Some(e);
-                        return None;
-                    }
-                }
-            }
-        }
-        GridEvent::DeleteRows => {
-            let Some(sel) = &selection else { return None };
-            for row in sel.r0..=sel.r1 {
-                let key = ts.row_key(res, row);
-                if !ts
-                    .changes
-                    .iter()
-                    .any(|c| matches!(c, Change::Delete { key: k2 } if *k2 == key))
-                {
-                    ts.changes.push(Change::Delete { key });
-                }
-            }
-        }
-        GridEvent::Select(..)
-        | GridEvent::CopyMarkdown
-        | GridEvent::FollowIncoming(..)
-        | GridEvent::ColumnStats(..)
-        | GridEvent::FilterValues(..)
-        | GridEvent::OpenValue(..)
-        | GridEvent::ToggleColumn(..)
-        | GridEvent::ShowAllColumns
-        | GridEvent::TogglePin(..)
-        | GridEvent::Extend(..)
-        | GridEvent::SelectAll
-        | GridEvent::CopyCells { .. }
-        | GridEvent::Copy(..)
-        | GridEvent::Filter(..)
-        | GridEvent::FollowFk(..) => {}
-    }
-    None
 }
 
 /// Records a new value for a cell as a pending change (saved together with Ctrl+S). Typed

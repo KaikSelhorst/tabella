@@ -40,6 +40,8 @@ impl Format {
 
 /// Excel's last row (1 048 576, the header included).
 const XLSX_MAX_ROWS: u64 = 1_048_575;
+/// Excel's column limit.
+const XLSX_MAX_COLS: usize = 16_384;
 
 /// Where rows go: a text file written as it goes, or a sheet saved at the end.
 enum Sink {
@@ -72,7 +74,12 @@ impl Writer {
         cols: &[ColumnInfo],
     ) -> std::io::Result<Self> {
         let out = if format == Format::Xlsx {
-            // Header in bold, frozen above the data.
+            if first.columns.len() > XLSX_MAX_COLS {
+                return Err(std::io::Error::other(
+                    "o Excel aceita até 16.384 colunas: exporte em CSV para mais que isso",
+                ));
+            }
+            // Header in bold, frozen above the data. Column numbers fit in u16 from here on.
             let mut sheet = rust_xlsxwriter::Worksheet::new();
             let bold = rust_xlsxwriter::Format::new().set_bold();
             for (c, name) in first.columns.iter().enumerate() {
@@ -112,53 +119,30 @@ impl Writer {
     }
 
     pub fn rows(&mut self, rows: &[Vec<Option<String>>]) -> std::io::Result<()> {
-        if let Sink::Xlsx { sheet, .. } = &mut self.out {
-            for row in rows {
-                if self.written >= XLSX_MAX_ROWS {
-                    return Err(std::io::Error::other(
-                        "o Excel aceita até 1.048.575 linhas: exporte em CSV para mais que isso",
-                    ));
-                }
-                let r = (self.written + 1) as u32;
-                for (c, v) in row.iter().enumerate() {
-                    let Some(v) = v else { continue };
-                    let c = c as u16;
-                    // Numbers and booleans as such, so Excel can sum and filter them.
-                    let done = match self.kinds.get(c as usize) {
-                        Some(ValueKind::Number) => {
-                            v.trim().parse::<f64>().ok().map(|n| sheet.write_number(r, c, n))
-                        }
-                        Some(ValueKind::Bool) => {
-                            crate::sql::parse_bool(v).map(|b| sheet.write_boolean(r, c, b))
-                        }
-                        _ => None,
-                    };
-                    match done {
-                        Some(res) => res.map(|_| ()).map_err(xlsx_err)?,
-                        None => sheet.write_string(r, c, v).map(|_| ()).map_err(xlsx_err)?,
-                    }
-                }
-                self.written += 1;
-            }
-            return Ok(());
-        }
-        let Sink::Text(out) = &mut self.out else {
-            unreachable!()
-        };
         for row in rows {
-            match self.format {
-                Format::Csv => writeln!(out, "{}", csv_line(row.iter().map(|v| v.as_deref())))?,
-                Format::Json => {
-                    let sep = if self.written == 0 { "\n  " } else { ",\n  " };
-                    let obj = values::json_object(&self.columns, &self.kinds, row);
-                    write!(out, "{sep}{}", serde_json::to_string(&obj).unwrap_or_default())?;
+            match &mut self.out {
+                Sink::Xlsx { sheet, .. } => {
+                    if self.written >= XLSX_MAX_ROWS {
+                        return Err(std::io::Error::other(
+                            "o Excel aceita até 1.048.575 linhas: exporte em CSV para mais que isso",
+                        ));
+                    }
+                    xlsx_row(sheet, (self.written + 1) as u32, &self.kinds, row)?;
                 }
-                Format::Sql => writeln!(
-                    out,
-                    "{}",
-                    crate::sql::insert_row(self.kind, &self.table, &self.columns, row)
-                )?,
-                Format::Xlsx => {}
+                Sink::Text(out) => match self.format {
+                    Format::Csv => writeln!(out, "{}", csv_line(row.iter().map(|v| v.as_deref())))?,
+                    Format::Json => {
+                        let sep = if self.written == 0 { "\n  " } else { ",\n  " };
+                        let obj = values::json_object(&self.columns, &self.kinds, row);
+                        write!(out, "{sep}{}", serde_json::to_string(&obj).unwrap_or_default())?;
+                    }
+                    Format::Sql => writeln!(
+                        out,
+                        "{}",
+                        crate::sql::insert_row(self.kind, &self.table, &self.columns, row)
+                    )?,
+                    Format::Xlsx => {}
+                },
             }
             self.written += 1;
         }
@@ -183,6 +167,30 @@ impl Writer {
         }
         Ok(self.written)
     }
+}
+
+/// One spreadsheet row (`r`, 0 is the header). Numbers and booleans as such, so Excel can sum
+/// and filter them.
+fn xlsx_row(
+    sheet: &mut rust_xlsxwriter::Worksheet,
+    r: u32,
+    kinds: &[ValueKind],
+    row: &[Option<String>],
+) -> std::io::Result<()> {
+    for (c, v) in row.iter().enumerate() {
+        let Some(v) = v else { continue };
+        let c = c as u16;
+        let done = match kinds.get(c as usize) {
+            Some(ValueKind::Number) => v.trim().parse::<f64>().ok().map(|n| sheet.write_number(r, c, n)),
+            Some(ValueKind::Bool) => crate::sql::parse_bool(v).map(|b| sheet.write_boolean(r, c, b)),
+            _ => None,
+        };
+        match done {
+            Some(res) => res.map(|_| ()).map_err(xlsx_err)?,
+            None => sheet.write_string(r, c, v).map(|_| ()).map_err(xlsx_err)?,
+        }
+    }
+    Ok(())
 }
 
 fn xlsx_err(e: rust_xlsxwriter::XlsxError) -> std::io::Error {

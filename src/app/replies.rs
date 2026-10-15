@@ -1,6 +1,9 @@
 //! Replies from the connection's worker thread, applied to the session and the tabs.
 
 use super::*;
+use std::fmt::Write as _;
+
+use crate::error::DbResult;
 
 /// What a tab's reply may need besides the tab and the session.
 struct TabReplyCx<'a> {
@@ -13,6 +16,9 @@ struct TabReplyCx<'a> {
 impl App {
     /// Applies every reply that arrived since the last frame.
     pub fn poll(&mut self) {
+        if let Some(e) = crate::history::take_write_error() {
+            self.notice = Notice::error(format!("Erro ao salvar o histórico: {e}"));
+        }
         let mut restore = None;
         let mut designed: Vec<(u64, String, String)> = Vec::new();
         // Tabs that just stopped being busy, and for how long they were.
@@ -205,18 +211,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                 && (p.local || search == p.asked.trim())
             {
                 p.loading = false;
-                p.options = Some(
-                    res.map(|r| {
-                        r.rows
-                            .into_iter()
-                            .map(|row| {
-                                let mut it = row.into_iter();
-                                (it.next().flatten().unwrap_or_default(), it.next().flatten())
-                            })
-                            .collect()
-                    })
-                    .map_err(|e| e.to_string()),
-                );
+                p.options = Some(res.map(fk_options).map_err(|e| e.to_string()));
             }
         }
         Reply::Distinct { res, .. } => {
@@ -270,99 +265,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
             }
             Err(e) => t.error = Some(e.to_string()),
         },
-        Reply::Rows { res, notice, .. } => {
-            let ran = t.pending_sql.take();
-            // A plain SELECT of one table from the editor: its rows can be edited in place.
-            let source = match (&t.kind, &ran, &*res) {
-                (TabKind::Sql(_), Some(sql), Ok(r)) if r.previous.is_empty() && !r.rows.is_empty() => {
-                    sql::editable_select(sql).and_then(|(schema, table)| {
-                        resolve_table(s, schema.as_deref(), &table).map(|(sc, tb)| (sc, tb, sql.clone()))
-                    })
-                }
-                _ => None,
-            };
-            if let Some((schema, table, query)) = source
-                && let Some(ed) = t.editor_mut()
-            {
-                ed.source = Some(Box::new(TableState::new(&schema, &table, None)));
-                ed.source_query = query;
-                t.begin_job();
-                s.send(Job::Columns {
-                    tab: t.id,
-                    schema,
-                    table,
-                });
-            }
-            let spot = match (&*res, &ran, t.editor()) {
-                (Err(e), Some(sql), Some(ed)) => locate_error(&ed.text, sql, e),
-                _ => None,
-            };
-            if let Some(sql) = ran {
-                let (ok, ms) = match &*res {
-                    Ok(r) => (true, r.elapsed.as_millis() as u64),
-                    Err(_) => (false, 0),
-                };
-                let entry = Entry {
-                    conn: s.cfg.name.clone(),
-                    sql,
-                    at: history::now(),
-                    ok,
-                    ms,
-                };
-                history::push(cx.history, entry);
-            }
-            // The activity list refreshes every few seconds: keep the selected session
-            // selected (by id) instead of dropping the selection each time.
-            let keep = match (&t.kind, t.selected, &t.result, &*res) {
-                (TabKind::Activity(_), Some((row, col)), Some(old), Ok(new)) => {
-                    let id = old.rows.get(row).and_then(|r| r.first()).cloned();
-                    new.rows
-                        .iter()
-                        .position(|r| r.first() == id.as_ref())
-                        .map(|r| (r, col))
-                }
-                _ => None,
-            };
-            t.selected = keep;
-            t.anchor = None;
-            match *res {
-                Ok(mut r) => {
-                    let earlier = std::mem::take(&mut r.previous);
-                    t.sets.clear();
-                    if !earlier.is_empty() {
-                        t.sets = earlier;
-                        t.sets.push(QueryResult::default());
-                        t.set_shown = t.sets.len() - 1;
-                    }
-                    t.result = Some(r);
-                    if let TabKind::Design(d) = &t.kind {
-                        cx.designed
-                            .push((t.id, d.schema.trim().to_string(), d.table.trim().to_string()));
-                    }
-                    match &mut t.kind {
-                        // Refreshes every 2 s must not wipe the outcome of a kill.
-                        TabKind::Activity(st) => {
-                            t.error = None;
-                            if notice.is_some() {
-                                st.kill_error = notice;
-                            }
-                        }
-                        _ => t.error = notice,
-                    }
-                }
-                Err(e) => {
-                    let mut message = e.to_string();
-                    if let Some(sp) = &spot {
-                        message.push_str(&format!(" (linha {}, coluna {})", sp.line, sp.column));
-                    }
-                    if let Some(ed) = t.editor_mut() {
-                        ed.error_jump = spot.is_some();
-                        ed.error_at = spot.map(|sp| (sp.start, sp.end));
-                    }
-                    t.error = Some(message);
-                }
-            }
-        }
+        Reply::Rows { res, notice, .. } => on_rows(t, s, *res, notice, cx),
         Reply::Count { res, .. } => {
             if let TabKind::Table(ts) = &mut t.kind {
                 ts.total = res.ok();
@@ -440,4 +343,122 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
         // `Reply::tab` sends the connection's own replies to `on_session_reply`.
         _ => {}
     }
+}
+
+/// Rows of `SELECT key, label`: the choices of a foreign key picker.
+fn fk_options(r: QueryResult) -> Vec<(String, Option<String>)> {
+    r.rows
+        .into_iter()
+        .map(|row| {
+            let mut it = row.into_iter();
+            (it.next().flatten().unwrap_or_default(), it.next().flatten())
+        })
+        .collect()
+}
+
+/// A statement's rows (or error) for an editor, table or activity tab.
+fn on_rows(
+    t: &mut Tab,
+    s: &Session,
+    res: DbResult<QueryResult>,
+    notice: Option<String>,
+    cx: &mut TabReplyCx,
+) {
+    let ran = t.pending_sql.take();
+    if let (TabKind::Sql(_), Some(sql), Ok(r)) = (&t.kind, &ran, &res)
+        && r.previous.is_empty()
+        && !r.rows.is_empty()
+    {
+        make_editable(t, s, sql);
+    }
+    let spot = match (&res, &ran, t.editor()) {
+        (Err(e), Some(sql), Some(ed)) => locate_error(&ed.text, sql, e),
+        _ => None,
+    };
+    if let Some(sql) = ran {
+        let (ok, ms) = match &res {
+            Ok(r) => (true, u64::try_from(r.elapsed.as_millis()).unwrap_or(u64::MAX)),
+            Err(_) => (false, 0),
+        };
+        let entry = Entry {
+            conn: s.cfg.name.clone(),
+            sql,
+            at: history::now(),
+            ok,
+            ms,
+        };
+        history::push(cx.history, entry);
+    }
+    t.selected = kept_activity_selection(t, &res);
+    t.anchor = None;
+    match res {
+        Ok(mut r) => {
+            let earlier = std::mem::take(&mut r.previous);
+            t.sets.clear();
+            if !earlier.is_empty() {
+                t.sets = earlier;
+                t.sets.push(QueryResult::default());
+                t.set_shown = t.sets.len() - 1;
+            }
+            t.result = Some(r);
+            if let TabKind::Design(d) = &t.kind {
+                cx.designed
+                    .push((t.id, d.schema.trim().to_string(), d.table.trim().to_string()));
+            }
+            match &mut t.kind {
+                // Refreshes every 2 s must not wipe the outcome of a kill.
+                TabKind::Activity(st) => {
+                    t.error = None;
+                    if notice.is_some() {
+                        st.kill_error = notice;
+                    }
+                }
+                _ => t.error = notice,
+            }
+        }
+        Err(e) => {
+            let mut message = e.to_string();
+            if let Some(sp) = &spot {
+                let _ = write!(message, " (linha {}, coluna {})", sp.line, sp.column);
+            }
+            if let Some(ed) = t.editor_mut() {
+                ed.error_jump = spot.is_some();
+                ed.error_at = spot.map(|sp| (sp.start, sp.end));
+            }
+            t.error = Some(message);
+        }
+    }
+}
+
+/// A plain SELECT of one table from the editor: its rows can be edited in place once the
+/// table's columns arrive.
+fn make_editable(t: &mut Tab, s: &Session, sql: &str) {
+    let Some((schema, table)) =
+        sql::editable_select(sql).and_then(|(schema, table)| resolve_table(s, schema.as_deref(), &table))
+    else {
+        return;
+    };
+    let Some(ed) = t.editor_mut() else { return };
+    ed.source = Some(Box::new(TableState::new(&schema, &table, None)));
+    ed.source_query = sql.to_string();
+    t.begin_job();
+    s.send(Job::Columns {
+        tab: t.id,
+        schema,
+        table,
+    });
+}
+
+/// The activity list refreshes every few seconds: keep the selected session selected (by id)
+/// instead of dropping the selection each time.
+fn kept_activity_selection(t: &Tab, res: &DbResult<QueryResult>) -> Option<(usize, usize)> {
+    let (TabKind::Activity(_), Some((row, col)), Some(old), Ok(new)) = (&t.kind, t.selected, &t.result, res)
+    else {
+        return None;
+    };
+    let id = old.rows.get(row).and_then(|r| r.first())?;
+    new.rows
+        .iter()
+        .position(|r| r.first() == Some(id))
+        .map(|r| (r, col))
 }

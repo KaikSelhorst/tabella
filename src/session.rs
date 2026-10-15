@@ -1,9 +1,9 @@
 //! What was open when the app closed (connection, tabs, window size), restored on the next start.
 //! Passwords are not part of it: reconnecting goes through the normal secret store.
 
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
+
+use crate::store::{self, Loaded, StoreError};
 
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 pub struct Saved {
@@ -42,23 +42,15 @@ pub enum SavedTab {
     },
 }
 
-fn path() -> Option<PathBuf> {
-    crate::config::dir().map(|d| d.join("session.json"))
-}
+const FILE: &str = "session.json";
 
-pub fn load() -> Saved {
-    path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+pub fn load() -> Loaded<Saved> {
+    store::load(FILE)
 }
 
 /// SQL editors can hold data, so the file is private like the others.
-pub fn save(s: &Saved) {
-    let Some(path) = path() else { return };
-    if let Ok(json) = serde_json::to_string_pretty(s) {
-        let _ = crate::config::write_private(&path, &json);
-    }
+pub fn save(s: &Saved) -> Result<(), StoreError> {
+    store::save(FILE, s)
 }
 
 #[cfg(test)]

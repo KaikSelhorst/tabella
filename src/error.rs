@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
     #[error("{}", pg_message(.0))]
@@ -18,10 +20,10 @@ fn pg_message(e: &postgres::Error) -> String {
     if let Some(db) = e.as_db_error() {
         let mut out = db.message().to_string();
         if let Some(d) = db.detail() {
-            out.push_str(&format!(" — {d}"));
+            let _ = write!(out, " — {d}");
         }
         if let Some(h) = db.hint() {
-            out.push_str(&format!(" (dica: {h})"));
+            let _ = write!(out, " (dica: {h})");
         }
         return out;
     }

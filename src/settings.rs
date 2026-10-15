@@ -1,8 +1,8 @@
 //! Preferences kept between runs (`settings.json`): the theme and the zoom.
 
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
+
+use crate::store::{self, Loaded, StoreError};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -33,22 +33,16 @@ impl Settings {
     }
 }
 
-fn path() -> Option<PathBuf> {
-    crate::config::dir().map(|d| d.join("settings.json"))
+const FILE: &str = "settings.json";
+
+pub fn load() -> Loaded<Settings> {
+    let mut l: Loaded<Settings> = store::load(FILE);
+    l.value = l.value.clamped();
+    l
 }
 
-pub fn load() -> Settings {
-    path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str::<Settings>(&s).ok())
-        .unwrap_or_default()
-        .clamped()
-}
-
-pub fn save(s: &Settings) -> Result<(), String> {
-    let path = path().ok_or("diretório de configuração não encontrado")?;
-    let json = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-    crate::config::write_private(&path, &json).map_err(|e| e.to_string())
+pub fn save(s: &Settings) -> Result<(), StoreError> {
+    store::save(FILE, s)
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@ use eframe::egui::{self, TextEdit};
 
 use super::icon;
 use super::theme;
-use crate::app::{App, MasterMode, Notice};
+use crate::app::{App, Dialog, MasterMode, Notice};
 use crate::config;
 use crate::db::{ConnConfig, Kind, SshConfig, Tag};
 
@@ -525,7 +525,9 @@ fn color_picker(ui: &mut egui::Ui, color: &mut Option<Tag>) {
 impl App {
     /// "Salvar consulta": a name, and whether it shows on every connection.
     pub fn favorite_prompt(&mut self, ctx: &egui::Context) {
-        let Some(p) = &mut self.fav_prompt else { return };
+        let Some(Dialog::Favorite(p)) = &mut self.dialog else {
+            return;
+        };
         let t = theme::tokens();
         let (mut save, mut cancel) = (false, false);
         let modal = egui::Modal::new(egui::Id::new("favorite_prompt"))
@@ -580,11 +582,11 @@ impl App {
                 });
             });
         if save {
-            if let Some(p) = self.fav_prompt.take() {
+            if let Some(Dialog::Favorite(p)) = self.dialog.take() {
                 self.add_favorite(p);
             }
         } else if cancel || modal.should_close() {
-            self.fav_prompt = None;
+            self.dialog = None;
         }
     }
 }

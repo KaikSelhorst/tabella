@@ -23,6 +23,7 @@ mod session;
 mod settings;
 mod sql;
 mod sqlite;
+mod store;
 mod tls;
 mod tunnel;
 mod ui;
@@ -34,9 +35,10 @@ use eframe::egui;
 
 fn main() -> eframe::Result {
     // Same size as when it was last closed.
-    let size = session::load().window.unwrap_or([1100.0, 700.0]);
+    // Problems reading these files are reported by `App::new`, which reads them again.
+    let size = session::load().value.window.unwrap_or([1100.0, 700.0]);
     // Preferences first: the theme is built from them.
-    let prefs = settings::load();
+    let prefs = settings::load().value;
     ui::theme::set_light(prefs.light);
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size(size)

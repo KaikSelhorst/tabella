@@ -125,80 +125,15 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     None => {}
                 }
                 export = export_menu(ui, false, can_export, compact);
-                let explain_label = theme::tool(icon::TREE_VIEW, "Explicar", compact, t.muted_foreground, t.foreground);
-                ui.menu_button(explain_label, |ui| {
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("Plano estimado").shortcut_text("Ctrl+E"))
-                        .on_hover_text("EXPLAIN: como o banco pretende executar, sem executar")
-                        .clicked()
-                    {
-                        explain = Some((one.clone(), false));
-                        ui.close();
-                    }
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("Plano executado (ANALYZE)"))
-                        .on_hover_text("EXPLAIN ANALYZE: executa a consulta e mede cada etapa (só leitura)")
-                        .clicked()
-                    {
-                        explain = Some((one.clone(), true));
-                        ui.close();
-                    }
-                });
+                if let Some(analyze) = explain_menu(ui, busy, compact) {
+                    explain = Some((one.clone(), analyze));
+                }
                 // "Repetir a cada": the last query again on a timer (reads only).
                 let last_reads = !tab_last_query.trim().is_empty() && !sql::script_risk(&tab_last_query).writes;
-                let repeat_label = match *repeat {
-                    Some(n) => theme::icon_text(icon::ARROWS_CLOCKWISE, &format!("a cada {n} s"), t.lime, t.lime),
-                    None => theme::icon_text(icon::ARROWS_CLOCKWISE, "Repetir", t.muted_foreground, t.foreground),
-                };
-                let repeat_label: egui::WidgetText = if compact && repeat.is_none() {
-                    theme::icon(icon::ARROWS_CLOCKWISE).color(t.muted_foreground).into()
-                } else {
-                    repeat_label.into()
-                };
-                ui.add_enabled_ui(last_reads || repeat.is_some(), |ui| {
-                    ui.menu_button(repeat_label, |ui| {
-                        ui.label(
-                            egui::RichText::new("Roda a última consulta de novo, sozinha")
-                                .size(11.0)
-                                .color(t.subtle),
-                        );
-                        for (n, label) in [(None, "Desligado"), (Some(2), "2 s"), (Some(5), "5 s"), (Some(10), "10 s"), (Some(30), "30 s"), (Some(60), "1 min")] {
-                            if ui.selectable_label(*repeat == n, label).clicked() {
-                                *repeat = n;
-                                ui.close();
-                            }
-                        }
-                    })
-                    .response
-                    .on_disabled_hover_text("Execute uma consulta de leitura primeiro (SELECT…)");
-                });
-                let file_label = theme::icon(icon::FOLDER_OPEN).color(t.muted_foreground);
-                ui.menu_button(file_label, |ui| {
-                    if ui.add(egui::Button::new("Abrir arquivo…").shortcut_text("Ctrl+O")).clicked() {
-                        file_menu_action = Some(Request::OpenFile);
-                        ui.close();
-                    }
-                    if !s.cfg.read_only
-                        && ui
-                            .button("Executar arquivo…")
-                            .on_hover_text("Roda um .sql grande comando a comando, sem abrir no editor")
-                            .clicked()
-                    {
-                        file_menu_action = Some(Request::RunFile);
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.add(egui::Button::new("Salvar").shortcut_text("Ctrl+S")).clicked() {
-                        file_menu_action = Some(Request::SaveFile(false));
-                        ui.close();
-                    }
-                    if ui.add(egui::Button::new("Salvar como…").shortcut_text("Ctrl+Shift+S")).clicked() {
-                        file_menu_action = Some(Request::SaveFile(true));
-                        ui.close();
-                    }
-                })
-                .response
-                .on_hover_text(if has_file { "Arquivo .sql desta aba" } else { "Abrir ou salvar como arquivo .sql" });
+                repeat_menu(ui, repeat, last_reads, compact);
+                if let Some(r) = file_menu(ui, s.cfg.read_only, has_file) {
+                    file_menu_action = Some(r);
+                }
                 let format = theme::tool(icon::TEXT_ALIGN_LEFT, "Formatar", compact, t.muted_foreground, t.foreground);
                 if ui
                     .button(format)
@@ -219,28 +154,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     detail_toggle(ui, cx.show_detail);
-                    // Where unqualified names go, so an UPDATE doesn't land somewhere unexpected.
-                    let here = match s.cfg.kind {
-                        crate::db::Kind::Postgres if !s.current_schema.is_empty() => {
-                            format!("em {} · {}", s.current_db, s.current_schema)
-                        }
-                        _ if !s.current_db.is_empty() => format!("em {}", s.current_db),
-                        _ => String::new(),
-                    };
-                    // Cut with "…" when there is little room, never drawn over the buttons.
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(&here).size(11.0).monospace().color(t.muted_foreground))
-                            .truncate(),
-                    )
-                    .on_hover_text(format!("{here} · banco e schema dos nomes sem prefixo (troque na sidebar)"));
-                    let keys = if several {
-                        "Ctrl+Enter comando · F5 tudo"
-                    } else {
-                        "Ctrl+Enter / F5"
-                    };
-                    if ui.available_width() > 160.0 {
-                        ui.add(egui::Label::new(egui::RichText::new(keys).size(11.0).color(t.subtle)).truncate());
-                    }
+                    location_and_keys(ui, s, several);
                 });
             });
             ui.add_space(4.0);
@@ -354,14 +268,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         let ranges = find::find_all(text, &query, case);
                         if let Some(r) = ranges.get(current_match.min(ranges.len().saturating_sub(1))) {
                             let (a, b) = (text[..r.start].chars().count(), text[..r.end].chars().count());
-                            let sel = egui::text::CCursorRange::two(
-                                egui::text::CCursor::new(a),
-                                egui::text::CCursor::new(b),
-                            );
-                            out.state.cursor.set_char_range(Some(sel));
-                            out.state.clone().store(ui.ctx(), editor_id);
-                            let rect = out.galley.pos_from_cursor(egui::text::CCursor::new(a));
-                            ui.scroll_to_rect(rect.translate(out.galley_pos.to_vec2()), Some(Align::Center));
+                            select_and_reveal(ui, &mut out, editor_id, a, b);
                         }
                     }
                     // Editing makes the error mark stale.
@@ -370,12 +277,8 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     }
                     // A new error: the cursor goes to it, scrolled into view.
                     if error_jump && let Some((a, _)) = *error_at {
-                        let at = egui::text::CCursor::new(a);
-                        out.state.cursor.set_char_range(Some(egui::text::CCursorRange::one(at)));
-                        out.state.clone().store(ui.ctx(), editor_id);
+                        select_and_reveal(ui, &mut out, editor_id, a, a);
                         ui.memory_mut(|m| m.request_focus(editor_id));
-                        let rect = out.galley.pos_from_cursor(at);
-                        ui.scroll_to_rect(rect.translate(out.galley_pos.to_vec2()), Some(Align::Center));
                     }
                     // Lime bar in the gutter beside the statement Ctrl+Enter would run.
                     if let Some((a, b)) = current {
@@ -502,7 +405,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     {
         ts.changes.pop();
     }
-    changes_bar(ui, tab, s);
+    changes_bar(ui, tab);
     confirm_save(ui.ctx(), tab, s);
     if let Some(plan) = tab.editor().and_then(|ed| ed.plan.as_ref()) {
         if let Some(e) = &tab.error {
@@ -521,6 +424,178 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         return;
     }
     result_area(ui, tab, cx, false);
+}
+
+/// "Explicar": `Some(analyze)` when a plan was asked for.
+fn explain_menu(ui: &mut egui::Ui, busy: bool, compact: bool) -> Option<bool> {
+    let t = theme::tokens();
+    let mut pick = None;
+    let label = theme::tool(
+        icon::TREE_VIEW,
+        "Explicar",
+        compact,
+        t.muted_foreground,
+        t.foreground,
+    );
+    ui.menu_button(label, |ui| {
+        if ui
+            .add_enabled(!busy, egui::Button::new("Plano estimado").shortcut_text("Ctrl+E"))
+            .on_hover_text("EXPLAIN: como o banco pretende executar, sem executar")
+            .clicked()
+        {
+            pick = Some(false);
+            ui.close();
+        }
+        if ui
+            .add_enabled(!busy, egui::Button::new("Plano executado (ANALYZE)"))
+            .on_hover_text("EXPLAIN ANALYZE: executa a consulta e mede cada etapa (só leitura)")
+            .clicked()
+        {
+            pick = Some(true);
+            ui.close();
+        }
+    });
+    pick
+}
+
+/// "Repetir a cada": runs the last query again every `repeat` seconds. Only offered once a
+/// reading query ran (`enabled`), or to switch it off.
+fn repeat_menu(ui: &mut egui::Ui, repeat: &mut Option<u64>, enabled: bool, compact: bool) {
+    let t = theme::tokens();
+    let label: egui::WidgetText = match *repeat {
+        Some(n) => theme::icon_text(icon::ARROWS_CLOCKWISE, &format!("a cada {n} s"), t.lime, t.lime).into(),
+        None if compact => theme::icon(icon::ARROWS_CLOCKWISE)
+            .color(t.muted_foreground)
+            .into(),
+        None => theme::icon_text(
+            icon::ARROWS_CLOCKWISE,
+            "Repetir",
+            t.muted_foreground,
+            t.foreground,
+        )
+        .into(),
+    };
+    ui.add_enabled_ui(enabled || repeat.is_some(), |ui| {
+        ui.menu_button(label, |ui| {
+            ui.label(
+                egui::RichText::new("Roda a última consulta de novo, sozinha")
+                    .size(11.0)
+                    .color(t.subtle),
+            );
+            for (n, label) in [
+                (None, "Desligado"),
+                (Some(2), "2 s"),
+                (Some(5), "5 s"),
+                (Some(10), "10 s"),
+                (Some(30), "30 s"),
+                (Some(60), "1 min"),
+            ] {
+                if ui.selectable_label(*repeat == n, label).clicked() {
+                    *repeat = n;
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_disabled_hover_text("Execute uma consulta de leitura primeiro (SELECT…)");
+    });
+}
+
+/// The folder menu: open, run or save `.sql` files.
+fn file_menu(ui: &mut egui::Ui, read_only: bool, has_file: bool) -> Option<Request> {
+    let t = theme::tokens();
+    let mut pick = None;
+    ui.menu_button(theme::icon(icon::FOLDER_OPEN).color(t.muted_foreground), |ui| {
+        if ui
+            .add(egui::Button::new("Abrir arquivo…").shortcut_text("Ctrl+O"))
+            .clicked()
+        {
+            pick = Some(Request::OpenFile);
+            ui.close();
+        }
+        if !read_only
+            && ui
+                .button("Executar arquivo…")
+                .on_hover_text("Roda um .sql grande comando a comando, sem abrir no editor")
+                .clicked()
+        {
+            pick = Some(Request::RunFile);
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .add(egui::Button::new("Salvar").shortcut_text("Ctrl+S"))
+            .clicked()
+        {
+            pick = Some(Request::SaveFile(false));
+            ui.close();
+        }
+        if ui
+            .add(egui::Button::new("Salvar como…").shortcut_text("Ctrl+Shift+S"))
+            .clicked()
+        {
+            pick = Some(Request::SaveFile(true));
+            ui.close();
+        }
+    })
+    .response
+    .on_hover_text(if has_file {
+        "Arquivo .sql desta aba"
+    } else {
+        "Abrir ou salvar como arquivo .sql"
+    });
+    pick
+}
+
+/// Right end of the toolbar: where unqualified names go (so an UPDATE doesn't land somewhere
+/// unexpected) and the run keys. Laid out right to left.
+fn location_and_keys(ui: &mut egui::Ui, s: &Session, several: bool) {
+    let t = theme::tokens();
+    let here = match s.cfg.kind {
+        crate::db::Kind::Postgres if !s.current_schema.is_empty() => {
+            format!("em {} · {}", s.current_db, s.current_schema)
+        }
+        _ if !s.current_db.is_empty() => format!("em {}", s.current_db),
+        _ => String::new(),
+    };
+    // Cut with "…" when there is little room, never drawn over the buttons.
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(&here)
+                .size(11.0)
+                .monospace()
+                .color(t.muted_foreground),
+        )
+        .truncate(),
+    )
+    .on_hover_text(format!(
+        "{here} · banco e schema dos nomes sem prefixo (troque na sidebar)"
+    ));
+    let keys = if several {
+        "Ctrl+Enter comando · F5 tudo"
+    } else {
+        "Ctrl+Enter / F5"
+    };
+    if ui.available_width() > 160.0 {
+        ui.add(egui::Label::new(egui::RichText::new(keys).size(11.0).color(t.subtle)).truncate());
+    }
+}
+
+/// Selects characters `a..b` in the editor (a cursor when equal) and scrolls them into view.
+fn select_and_reveal(
+    ui: &egui::Ui,
+    out: &mut egui::text_edit::TextEditOutput,
+    id: egui::Id,
+    a: usize,
+    b: usize,
+) {
+    let (start, end) = (egui::text::CCursor::new(a), egui::text::CCursor::new(b));
+    out.state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(start, end)));
+    out.state.clone().store(ui.ctx(), id);
+    let rect = out.galley.pos_from_cursor(start);
+    ui.scroll_to_rect(rect.translate(out.galley_pos.to_vec2()), Some(Align::Center));
 }
 
 /// `sql::statement_ranges` of the editor text, kept while the text stays the same.
@@ -745,8 +820,7 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 }
             });
         });
-    if go {
-        let p = ed.params.take().expect("open prompt");
+    if go && let Some(p) = ed.params.take() {
         let values = &ed.param_values;
         let sql = sql::bind_params(s.cfg.kind, &p.sql, |n| values.get(n).cloned().unwrap_or_default());
         run_now(tab, s, sql, p.mode);

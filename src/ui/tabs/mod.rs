@@ -13,7 +13,7 @@ use super::grid::{self, GridOpts, grid};
 use super::import_form::{self, ImportAction};
 use super::structure::{self, InsertAction, StructAction};
 use super::{chart, complete, find, icon, palette, plan_view, syntax, theme};
-use crate::app::{self, App, Effect, FavPrompt, GridEvent, RunMode, Session, Tab, TabKind};
+use crate::app::{self, App, Dialog, Effect, FavPrompt, GridEvent, RunMode, Session, Tab, TabKind};
 use crate::db::{ActivityView, QueryResult};
 use crate::export::{self, Format};
 use crate::favorites::{self, Favorite};
@@ -53,6 +53,45 @@ pub(super) struct Cx<'a> {
     saved: &'a [crate::db::ConnConfig],
     /// Something only the app can do (open another tab), carried out after drawing.
     request: Option<Request>,
+}
+
+fn diagram_view(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
+    let s = cx.s;
+    let busy = tab.busy();
+    let TabKind::Diagram(d) = &mut tab.kind else {
+        return;
+    };
+    match diagram::diagram_tab(ui, tab.id, d, busy, s) {
+        Some(DiagramAction::OpenTable(table)) => cx.request = Some(Request::Data(d.schema.clone(), table)),
+        Some(DiagramAction::Schema(schema)) => cx.request = Some(Request::Diagram(schema)),
+        None => {}
+    }
+}
+
+fn design_view(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
+    let s = cx.s;
+    let busy = tab.busy();
+    if let Some(e) = &tab.error {
+        error_banner(ui, e);
+    }
+    let TabKind::Design(d) = &mut tab.kind else {
+        return;
+    };
+    match design::design_tab(ui, tab.id, d, busy) {
+        Some(DesignAction::Run(sql)) => {
+            if s.cfg.read_only {
+                tab.error = Some("Conexão somente leitura: não é possível alterar a estrutura.".into());
+            } else if sql::script_risk(&sql).dangers.is_empty() {
+                app::run_sql(tab, s, sql);
+            } else {
+                // ALTER / DROP: same confirmation as in the editor.
+                tab.confirm_run = Some(sql);
+            }
+        }
+        Some(DesignAction::OpenSql(sql)) => cx.request = Some(Request::Sql(sql)),
+        None => {}
+    }
+    confirm_run(ui.ctx(), tab, s);
 }
 
 /// From the tab strip's context menu.
@@ -291,49 +330,8 @@ impl App {
             TabKind::Script(_) => script_tab(ui, tab, &mut cx),
             TabKind::Dump(_) => dump_tab(ui, tab, &mut cx),
             TabKind::Compare(_) => compare_tab(ui, tab, &mut cx),
-            TabKind::Diagram(_) => {
-                let busy = tab.busy();
-                let schemas: Vec<String> = {
-                    let mut v: Vec<String> = s.tables.iter().map(|t| t.schema.clone()).collect();
-                    v.dedup();
-                    v
-                };
-                let TabKind::Diagram(d) = &mut tab.kind else {
-                    unreachable!()
-                };
-                match diagram::diagram_tab(ui, tab.id, d, busy, &schemas, s) {
-                    Some(DiagramAction::OpenTable(table)) => {
-                        cx.request = Some(Request::Data(d.schema.clone(), table))
-                    }
-                    Some(DiagramAction::Schema(schema)) => cx.request = Some(Request::Diagram(schema)),
-                    None => {}
-                }
-            }
-            TabKind::Design(_) => {
-                let busy = tab.busy();
-                if let Some(e) = &tab.error {
-                    error_banner(ui, e);
-                }
-                let TabKind::Design(d) = &mut tab.kind else {
-                    unreachable!()
-                };
-                match design::design_tab(ui, tab.id, d, busy) {
-                    Some(DesignAction::Run(sql)) => {
-                        if s.cfg.read_only {
-                            tab.error =
-                                Some("Conexão somente leitura: não é possível alterar a estrutura.".into());
-                        } else if sql::script_risk(&sql).dangers.is_empty() {
-                            app::run_sql(tab, s, sql);
-                        } else {
-                            // ALTER / DROP: same confirmation as in the editor.
-                            tab.confirm_run = Some(sql);
-                        }
-                    }
-                    Some(DesignAction::OpenSql(sql)) => cx.request = Some(Request::Sql(sql)),
-                    None => {}
-                }
-                confirm_run(ui.ctx(), tab, s);
-            }
+            TabKind::Diagram(_) => diagram_view(ui, tab, &mut cx),
+            TabKind::Design(_) => design_view(ui, tab, &mut cx),
             TabKind::Structure(st) => {
                 if let Some(e) = &tab.error {
                     error_banner(ui, e);
@@ -358,11 +356,11 @@ impl App {
             }
             Some(Request::Sql(text)) => self.open_sql(text),
             Some(Request::SaveFavorite(sql)) => {
-                self.fav_prompt = Some(FavPrompt {
+                self.dialog = Some(Dialog::Favorite(FavPrompt {
                     name: String::new(),
                     sql,
                     shared: false,
-                });
+                }));
             }
             Some(Request::DeleteFavorite(id)) => self.delete_favorite(&id),
             Some(Request::Diagram(schema)) => self.open_diagram(Some(&schema)),

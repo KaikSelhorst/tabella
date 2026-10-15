@@ -21,7 +21,6 @@ pub fn diagram_tab(
     tab_id: u64,
     d: &mut DiagramState,
     busy: bool,
-    schemas: &[String],
     s: &Session,
 ) -> Option<DiagramAction> {
     let t = theme::tokens();
@@ -38,11 +37,14 @@ pub fn diagram_tab(
                 egui::ComboBox::from_id_salt(("diagram_schema", tab_id))
                     .selected_text(RichText::new(&d.schema).monospace())
                     .show_ui(ui, |ui| {
+                        // Tables come sorted by schema, so `dedup` leaves each once.
+                        let mut schemas: Vec<&str> = s.tables.iter().map(|t| t.schema.as_str()).collect();
+                        schemas.dedup();
                         for sc in schemas {
-                            if ui.selectable_label(*sc == d.schema, RichText::new(sc).monospace()).clicked()
-                                && *sc != d.schema
+                            if ui.selectable_label(sc == d.schema, RichText::new(sc).monospace()).clicked()
+                                && sc != d.schema
                             {
-                                action = Some(DiagramAction::Schema(sc.clone()));
+                                action = Some(DiagramAction::Schema(sc.to_string()));
                             }
                         }
                     });

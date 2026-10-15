@@ -17,6 +17,8 @@ use chacha20poly1305::aead::{Aead, Generate, Key, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use serde::{Deserialize, Serialize};
 
+use crate::store::{self, Loaded, StoreError};
+
 const SERVICE: &str = "dblite";
 /// Encrypted with the vault key to tell a wrong master password from a corrupted file.
 const CHECK: &[u8] = b"dblite-vault-ok";
@@ -65,10 +67,19 @@ impl SecretStore {
         }
     }
 
-    pub fn delete(&mut self, name: &str) {
+    /// Removing a name that isn't stored is not an error.
+    pub fn delete(&mut self, name: &str) -> Result<(), SecretError> {
         match self {
-            SecretStore::Os => os::delete(name),
+            SecretStore::Os => os::delete(name).then_some(()).ok_or(SecretError::Unavailable),
             SecretStore::Vault(v) => v.delete(name),
+        }
+    }
+
+    /// Why the vault file could not be read at startup, once.
+    pub fn take_warning(&mut self) -> Option<String> {
+        match self {
+            SecretStore::Vault(v) => v.warning.take(),
+            SecretStore::Os => None,
         }
     }
 
@@ -137,22 +148,27 @@ pub struct Vault {
     path: Option<PathBuf>,
     file: Option<VaultFile>,
     cipher: Option<ChaCha20Poly1305>,
+    warning: Option<String>,
 }
 
 fn vault_path() -> Option<PathBuf> {
-    crate::config::dir().map(|d| d.join("vault.json"))
+    store::path("vault.json").ok()
 }
 
 impl Vault {
     fn load(path: Option<PathBuf>) -> Self {
-        let file = path
-            .as_ref()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str(&s).ok());
+        let Loaded { value: file, warning } = match &path {
+            Some(p) => store::load_at(p),
+            None => Loaded {
+                value: None,
+                warning: None,
+            },
+        };
         Vault {
             path,
             file,
             cipher: None,
+            warning,
         }
     }
 
@@ -208,7 +224,7 @@ impl Vault {
                 entries: BTreeMap::new(),
             });
             self.cipher = Some(cipher);
-            return self.save();
+            return self.save().map_err(|e| e.to_string());
         }
         let file = self.file.as_ref().ok_or("cofre ainda não foi criado")?;
         match open(&cipher, &file.check) {
@@ -248,20 +264,23 @@ impl Vault {
         self.save().map_err(|_| SecretError::Unavailable)
     }
 
-    fn delete(&mut self, name: &str) {
-        if let Some(f) = &mut self.file
-            && f.entries.remove(name).is_some()
-        {
-            let _ = self.save();
+    fn delete(&mut self, name: &str) -> Result<(), SecretError> {
+        let removed = self
+            .file
+            .as_mut()
+            .is_some_and(|f| f.entries.remove(name).is_some());
+        if removed {
+            self.save().map_err(|_| SecretError::Unavailable)
+        } else {
+            Ok(())
         }
     }
 
-    fn save(&self) -> Result<(), String> {
+    fn save(&self) -> Result<(), StoreError> {
         let (Some(path), Some(file)) = (&self.path, &self.file) else {
             return Ok(());
         };
-        let json = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
-        crate::config::write_private(path, &json).map_err(|e| e.to_string())
+        store::save_at(path, file)
     }
 }
 
@@ -310,10 +329,9 @@ mod os {
         entry(name)?.get_password().ok()
     }
 
-    pub fn delete(name: &str) {
-        if let Some(e) = entry(name) {
-            let _ = e.delete_credential();
-        }
+    /// True when the credential is gone (or never existed).
+    pub fn delete(name: &str) -> bool {
+        entry(name).is_some_and(|e| matches!(e.delete_credential(), Ok(()) | Err(keyring::Error::NoEntry)))
     }
 }
 
@@ -328,7 +346,9 @@ mod os {
     pub fn get(_: &str) -> Option<String> {
         None
     }
-    pub fn delete(_: &str) {}
+    pub fn delete(_: &str) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -366,7 +386,7 @@ mod tests {
         );
         again.unlock("senha-mestra-boa").unwrap();
         assert_eq!(again.get("dev").as_deref(), Some("s3cr3t ção"));
-        again.delete("dev");
+        again.delete("dev").unwrap();
         assert!(!again.has("dev"));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

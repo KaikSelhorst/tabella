@@ -1,11 +1,12 @@
 //! SQL editor history, kept per connection in `history.json` next to the saved connections.
 
-use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::sync::mpsc::{Sender, channel};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+
+use crate::store::{self, Loaded, StoreError};
 
 /// Oldest entries are dropped past this.
 const MAX_ENTRIES: usize = 3_000;
@@ -20,15 +21,13 @@ pub struct Entry {
     pub ms: u64,
 }
 
-fn path() -> Option<PathBuf> {
-    crate::config::dir().map(|d| d.join("history.json"))
-}
+const FILE: &str = "history.json";
 
-pub fn load() -> Vec<Entry> {
-    path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+/// The last background write's failure, until the UI picks it up with `take_write_error`.
+static WRITE_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn load() -> Loaded<Vec<Entry>> {
+    store::load(FILE)
 }
 
 /// Writes happen on one background thread so running a query never waits on the disk. Only the
@@ -42,20 +41,29 @@ fn save(list: &[Entry]) {
                 while let Ok(newer) = rx.try_recv() {
                     latest = newer;
                 }
-                write(&latest);
+                let error = write(&latest).err().map(|e| e.to_string());
+                if let Ok(mut slot) = WRITE_ERROR.lock() {
+                    *slot = error;
+                }
             }
         });
         tx
     });
+    // The receiver lives as long as the process: sending can't fail.
     let _ = tx.send(list.to_vec());
 }
 
-/// Queries can contain data, so the file is private like the connections file.
-fn write(list: &[Entry]) {
-    let Some(path) = path() else { return };
-    if let Ok(json) = serde_json::to_string(list) {
-        let _ = crate::config::write_private(&path, &json);
-    }
+/// Queries can contain data, so the file is private like the connections file. Compact JSON:
+/// this one gets long.
+fn write(list: &[Entry]) -> Result<(), StoreError> {
+    let json = serde_json::to_string(list)?;
+    store::write_private(&store::path(FILE)?, &json)?;
+    Ok(())
+}
+
+/// Why the history could not be saved, once per failure.
+pub fn take_write_error() -> Option<String> {
+    WRITE_ERROR.lock().ok()?.take()
 }
 
 pub fn now() -> u64 {

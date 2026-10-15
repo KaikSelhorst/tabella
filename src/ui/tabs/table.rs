@@ -258,7 +258,7 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         app::reload(tab, s);
     }
     export_banner(ui, tab);
-    changes_bar(ui, tab, s);
+    changes_bar(ui, tab);
     result_area(ui, tab, cx, true);
     confirm_save(ui.ctx(), tab, s);
     insert_form(ui.ctx(), tab, s);
@@ -310,7 +310,7 @@ pub(super) fn insert_form(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
 }
 
 /// "N alterações pendentes · Desfazer · Descartar · Salvar" while there are unsaved edits.
-pub(super) fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab, s: &Session) {
+pub(super) fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab) {
     let Some(ts) = app::editable_mut(&mut tab.kind) else {
         return;
     };
@@ -356,7 +356,6 @@ pub(super) fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab, s: &Session) {
                 });
             });
         });
-    let _ = s;
     if undo {
         app::undo_change(tab);
     } else if discard {

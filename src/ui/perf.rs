@@ -213,16 +213,16 @@ fn frame_times() {
     harness.state_mut().filter = "tabela_1".into();
     report("sidebar: 3000 tabelas filtradas", harness.time(30));
     harness.state_mut().filter.clear();
-    harness.state_mut().palette = Some(Palette {
+    harness.state_mut().dialog = Some(crate::app::Dialog::Palette(Palette {
         query: "col".into(),
         selected: 0,
         started: false,
-    });
+    }));
     report(
         "Ctrl+P: 3000 tabelas + 40 mil colunas, buscando",
         harness.time(30),
     );
-    harness.state_mut().palette = None;
+    harness.state_mut().dialog = None;
 }
 
 /// Contact sheets of the screenshots, for reviewing many screens at once:

@@ -3,6 +3,7 @@
 //! alone.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use crate::db::{Conn, Kind, TableStructure};
 use crate::error::DbResult;
@@ -373,7 +374,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
                     def += " NOT NULL";
                 }
                 if let Some(d) = &ca.default {
-                    def += &format!(" DEFAULT {}", retarget(kind, d, sa, sb));
+                    let _ = write!(def, " DEFAULT {}", retarget(kind, d, sa, sb));
                 }
                 items.push(item(format!("coluna {name} nova"), alter(def), false));
             }

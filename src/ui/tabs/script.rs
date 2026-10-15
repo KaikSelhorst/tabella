@@ -1,6 +1,7 @@
 //! "Executar arquivo .sql": a file run statement by statement, with progress.
 
 use super::*;
+use std::fmt::Write as _;
 
 /// A `.sql` file run statement by statement: progress while it goes, then where it stopped.
 pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
@@ -97,11 +98,11 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             took.as_secs_f32()
                         );
                         if p.copied > 0 {
-                            text.push_str(&format!(" · {} via COPY", plural(p.copied, "linha", "linhas")));
+                            let _ = write!(text, " · {} via COPY", plural(p.copied, "linha", "linhas"));
                         }
                         if p.skipped > 0 {
                             let skipped = plural(p.skipped, "comando do psql pulado", "comandos do psql pulados");
-                            text.push_str(&format!(" · {skipped}"));
+                            let _ = write!(text, " · {skipped}");
                         }
                         ui.label(egui::RichText::new(text).size(12.0).color(t.muted_foreground));
                     });

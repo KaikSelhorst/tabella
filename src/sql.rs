@@ -1,6 +1,7 @@
 //! Builders for the statements the UI generates (table browsing and row edits).
 
 use crate::db::Kind;
+use std::fmt::Write as _;
 
 /// Rows per page in table tabs.
 pub fn page_size() -> usize {
@@ -27,7 +28,7 @@ pub fn select_range(kind: Kind, q: &PageQuery, limit: usize, offset: usize) -> S
     let mut sql = format!("SELECT * FROM {}", kind.qualified(q.schema, q.table));
     if !q.filter.trim().is_empty() {
         // Parenthesized so the filter stays one condition (see `check_filter`).
-        sql += &format!(" WHERE ({})", q.filter);
+        let _ = write!(sql, " WHERE ({})", q.filter);
     }
     // Without a stable order Postgres returns an updated row at the end of the table, so after
     // an edit the row would jump away and a neighbor would show up in its place.
@@ -45,7 +46,7 @@ pub fn select_range(kind: Kind, q: &PageQuery, limit: usize, offset: usize) -> S
         }
     }
     if !keys.is_empty() {
-        sql += &format!(" ORDER BY {}", keys.join(", "));
+        let _ = write!(sql, " ORDER BY {}", keys.join(", "));
     }
     sql + &format!(" LIMIT {limit} OFFSET {offset}")
 }
@@ -107,7 +108,7 @@ pub fn insert_values(kind: Kind, schema: &str, table: &str, values: &[(String, O
 pub fn count(kind: Kind, schema: &str, table: &str, filter: &str) -> String {
     let mut sql = format!("SELECT COUNT(*) FROM {}", kind.qualified(schema, table));
     if !filter.trim().is_empty() {
-        sql += &format!(" WHERE ({filter})");
+        let _ = write!(sql, " WHERE ({filter})");
     }
     sql
 }
@@ -699,16 +700,17 @@ pub fn table_action(kind: Kind, schema: &str, table: &str, action: TableAction, 
             let mut s = format!("CREATE TABLE {new} (LIKE {t} INCLUDING ALL);");
             if data {
                 // Identity columns refuse given values unless told otherwise.
-                s.push_str(&format!(
+                let _ = write!(
+                    s,
                     "\nINSERT INTO {new} OVERRIDING SYSTEM VALUE SELECT * FROM {t};"
-                ));
+                );
             }
             s
         }
         (TableAction::Duplicate(data), Kind::MySql) => {
             let mut s = format!("CREATE TABLE {new} LIKE {t};");
             if data {
-                s.push_str(&format!("\nINSERT INTO {new} SELECT * FROM {t};"));
+                let _ = write!(s, "\nINSERT INTO {new} SELECT * FROM {t};");
             }
             s
         }

@@ -1,6 +1,7 @@
 //! "Exportar .sql": options, progress, and the file it wrote.
 
 use super::*;
+use std::fmt::Write as _;
 
 pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
@@ -27,7 +28,7 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     if !st.objects_of.is_empty() {
                         detail.push_str(" · views, funções, procedures e triggers");
                     }
-                    detail.push_str(&format!(" · de {}", s.cfg.name));
+                    let _ = write!(detail, " · de {}", s.cfg.name);
                     ui.label(egui::RichText::new(detail).size(12.0).color(t.muted_foreground));
                     ui.add_space(8.0);
                     ui.add_enabled_ui(!st.running, |ui| {

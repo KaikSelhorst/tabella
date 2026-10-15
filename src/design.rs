@@ -2,6 +2,7 @@
 //! that turns the original into the edited version.
 
 use crate::db::{Kind, TableStructure};
+use std::fmt::Write as _;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColDef {
@@ -230,7 +231,7 @@ impl Design {
             s.push_str(" NOT NULL");
         }
         if !c.default.trim().is_empty() {
-            s.push_str(&format!(" DEFAULT {}", c.default.trim()));
+            let _ = write!(s, " DEFAULT {}", c.default.trim());
         }
         s
     }

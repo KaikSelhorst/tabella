@@ -23,7 +23,7 @@ mod welcome;
 
 use eframe::egui;
 
-use crate::app::App;
+use crate::app::{App, Dialog};
 
 pub use egui_phosphor::regular as icon;
 
@@ -65,7 +65,10 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        crate::session::save(&self.snapshot());
+        // Nowhere left to show it: the window is closing.
+        if let Err(e) = crate::session::save(&self.snapshot()) {
+            eprintln!("dblite: não foi possível salvar a sessão: {e}");
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -183,9 +186,11 @@ impl App {
     /// name typed in full before the (red) button works.
     fn table_action_ui(&mut self, ctx: &egui::Context) {
         use crate::sql::TableAction;
-        let Some(p) = &mut self.table_action else { return };
+        let Some(Dialog::TableAction(p)) = &mut self.dialog else {
+            return;
+        };
         let Some(s) = &self.session else {
-            self.table_action = None;
+            self.dialog = None;
             return;
         };
         let t = theme::tokens();
@@ -274,17 +279,19 @@ impl App {
                 });
             });
         if go {
-            if let Some(p) = self.table_action.take() {
+            if let Some(Dialog::TableAction(p)) = self.dialog.take() {
                 self.run_table_action(p);
             }
         } else if cancel || modal.should_close() {
-            self.table_action = None;
+            self.dialog = None;
         }
     }
 
     /// Where there's no native file dialog: type the path.
     fn path_prompt_ui(&mut self, ctx: &egui::Context) {
-        let Some(p) = &mut self.path_prompt else { return };
+        let Some(Dialog::Path(p)) = &mut self.dialog else {
+            return;
+        };
         let t = theme::tokens();
         let (mut ok, mut cancel) = (false, false);
         let saving = p.save_tab.is_some();
@@ -328,8 +335,10 @@ impl App {
                     }
                 });
             });
-        if ok && !p.path.trim().is_empty() {
-            let p = self.path_prompt.take().expect("open prompt");
+        if ok
+            && !p.path.trim().is_empty()
+            && let Some(Dialog::Path(p)) = self.dialog.take()
+        {
             let path = std::path::PathBuf::from(p.path.trim());
             match p
                 .save_tab
@@ -340,7 +349,7 @@ impl App {
                 None => self.open_file(path),
             }
         } else if cancel || modal.should_close() {
-            self.path_prompt = None;
+            self.dialog = None;
         }
     }
 
@@ -409,7 +418,10 @@ impl App {
     fn shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
-            self.help = !self.help;
+            self.dialog = match self.dialog {
+                Some(Dialog::Help) => None,
+                _ => Some(Dialog::Help),
+            };
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F))
             && self.session.as_ref().is_some_and(|s| s.ready)
@@ -455,10 +467,9 @@ impl App {
             )
         });
         if palette {
-            self.palette = if self.palette.is_some() {
-                None
-            } else {
-                Some(Default::default())
+            self.dialog = match self.dialog {
+                Some(Dialog::Palette(_)) => None,
+                _ => Some(Dialog::Palette(Default::default())),
             };
         }
         let ready = self.session.as_ref().is_some_and(|s| s.ready);
@@ -751,10 +762,10 @@ pub(crate) mod screenshots {
             harness.state_mut().active = 0;
 
             // Keyboard shortcuts (F1).
-            harness.state_mut().help = true;
+            harness.state_mut().dialog = Some(crate::app::Dialog::Help);
             harness.run();
             harness.render().unwrap().save(format!("{dir}/help.png")).unwrap();
-            harness.state_mut().help = false;
+            harness.state_mut().dialog = None;
 
             // "Duplicar linha": the insert form filled from row 3.
             crate::app::open_duplicate_form(&mut harness.state_mut().tabs[0], 2);
@@ -1569,17 +1580,17 @@ pub(crate) mod screenshots {
                 .unwrap()
                 .save(format!("{dir}/light-sql.png"))
                 .unwrap();
-            harness.state_mut().palette = Some(crate::app::Palette {
+            harness.state_mut().dialog = Some(crate::app::Dialog::Palette(crate::app::Palette {
                 query: "zoom".into(),
                 ..Default::default()
-            });
+            }));
             harness.run();
             harness
                 .render()
                 .unwrap()
                 .save(format!("{dir}/palette-zoom.png"))
                 .unwrap();
-            harness.state_mut().palette = None;
+            harness.state_mut().dialog = None;
             let dark = crate::settings::Settings {
                 light: false,
                 ..harness.state().settings.clone()
@@ -1641,17 +1652,17 @@ pub(crate) mod screenshots {
             .save(format!("{dir}/complete.png"))
             .unwrap();
 
-        harness.state_mut().palette = Some(crate::app::Palette {
+        harness.state_mut().dialog = Some(crate::app::Dialog::Palette(crate::app::Palette {
             query: "cl".into(),
             ..Default::default()
-        });
+        }));
         harness.run();
         harness
             .render()
             .unwrap()
             .save(format!("{dir}/palette.png"))
             .unwrap();
-        harness.state_mut().palette = None;
+        harness.state_mut().dialog = None;
 
         harness.state_mut().active = 0;
         if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
@@ -1712,18 +1723,18 @@ pub(crate) mod screenshots {
         }
 
         harness.state_mut().active = 1;
-        harness.state_mut().fav_prompt = Some(crate::app::FavPrompt {
+        harness.state_mut().dialog = Some(crate::app::Dialog::Favorite(crate::app::FavPrompt {
             name: "Clientes com mais saldo".into(),
             sql: "SELECT id, nome, saldo\nFROM public.clientes\nWHERE ativo\nORDER BY saldo DESC;".into(),
             shared: false,
-        });
+        }));
         harness.run();
         harness
             .render()
             .unwrap()
             .save(format!("{dir}/favorite.png"))
             .unwrap();
-        harness.state_mut().fav_prompt = None;
+        harness.state_mut().dialog = None;
         harness.state_mut().tabs[1].confirm_run = Some("DELETE FROM clientes; DROP TABLE pedidos".into());
         harness.run();
         harness
@@ -2135,19 +2146,19 @@ pub(crate) mod screenshots {
         harness.run();
 
         // Table action (drop) with its confirmation, then a script file that stopped on an error.
-        harness.state_mut().table_action = Some(crate::app::TableActionPrompt {
+        harness.state_mut().dialog = Some(crate::app::Dialog::TableAction(crate::app::TableActionPrompt {
             schema: "public".into(),
             table: "clientes".into(),
             action: crate::sql::TableAction::Drop,
             input: "clien".into(),
-        });
+        }));
         harness.run();
         harness
             .render()
             .unwrap()
             .save(format!("{dir}/table-action.png"))
             .unwrap();
-        harness.state_mut().table_action = None;
+        harness.state_mut().dialog = None;
         {
             let file = std::env::temp_dir().join("migracao_2026_10.sql");
             std::fs::write(&file, "x".repeat(48_000)).unwrap();

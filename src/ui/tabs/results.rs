@@ -1,6 +1,7 @@
 //! The result grid shared by editor and table tabs, and the dialogs it opens.
 
 use super::*;
+use std::fmt::Write as _;
 
 /// Summary line for the pager: row count, timing and what the user can do with the grid.
 pub(super) fn status_text(tab: &Tab, read_only: bool) -> String {
@@ -983,10 +984,11 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
                 can_apply = kept > 0;
                 let mut note = format!("{kept} de {} marcados", values.len());
                 if !vf.complete {
-                    note.push_str(&format!(
+                    let _ = write!(
+                        note,
                         " · só os {} mais comuns: os outros ficam de fora ao aplicar",
                         sql::DISTINCT_LIMIT
-                    ));
+                    );
                 }
                 ui.label(egui::RichText::new(note).size(11.0).color(t.subtle));
             }

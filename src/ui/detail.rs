@@ -64,72 +64,92 @@ fn parsed_json(ctx: &egui::Context, slot: egui::Id, v: &str) -> Option<Arc<Value
 fn json_tree(ui: &mut egui::Ui, id: egui::Id, key: Option<&str>, path: &str, v: &Value, depth: usize) {
     let t = theme::tokens();
     let key_text = |k: &str| RichText::new(k).monospace().size(12.0).color(t.muted_foreground);
+    let Some(Container {
+        open,
+        close,
+        len: n,
+        children,
+    }) = container(v, path)
+    else {
+        let (text, color) = match v {
+            Value::String(s) => (serde_json::to_string(s).unwrap_or_default(), t.foreground),
+            Value::Number(n) => (n.to_string(), t.number),
+            Value::Bool(b) => (b.to_string(), t.boolean),
+            _ => ("null".to_string(), t.subtle),
+        };
+        let r = ui
+            .horizontal_wrapped(|ui| {
+                // Lines up with folded siblings, whose arrow takes this space.
+                ui.add_space(ui.spacing().indent);
+                if let Some(k) = key {
+                    ui.label(key_text(&format!("{k}:")));
+                }
+                ui.add(egui::Label::new(RichText::new(text).monospace().size(12.0).color(color)).wrap())
+            })
+            .inner;
+        r.context_menu(|ui| copy_menu(ui, path, v));
+        return;
+    };
+    let summary = format!("{open} {n} {close}");
+    let header = match key {
+        Some(k) => format!("{k}  {summary}"),
+        None => summary,
+    };
+    let r = egui::CollapsingHeader::new(RichText::new(header).monospace().size(12.0).color(t.foreground))
+        .id_salt(id)
+        .default_open(depth < 2)
+        .show(ui, |ui| {
+            for (shown, (k, p, c)) in children.enumerate() {
+                if shown == JSON_CHILDREN {
+                    ui.label(
+                        RichText::new(format!("… mais {}", n - shown))
+                            .size(11.0)
+                            .color(t.subtle),
+                    );
+                    break;
+                }
+                json_tree(ui, id.with(&k), Some(&k), &p, c, depth + 1);
+            }
+        });
+    r.header_response.context_menu(|ui| copy_menu(ui, path, v));
+}
+
+/// An object or array as the tree shows it.
+struct Container<'a> {
+    open: &'static str,
+    close: &'static str,
+    len: usize,
+    /// (label, path, value) of each child.
+    children: Box<dyn Iterator<Item = (String, String, &'a Value)> + 'a>,
+}
+
+/// `None` for a leaf (string, number, bool, null).
+fn container<'a>(v: &'a Value, path: &'a str) -> Option<Container<'a>> {
     match v {
-        Value::Object(_) | Value::Array(_) => {
-            let (open, close, n) = match v {
-                Value::Object(m) => ("{", "}", m.len()),
-                Value::Array(a) => ("[", "]", a.len()),
-                _ => unreachable!(),
-            };
-            let summary = format!("{open} {n} {close}");
-            let header = match key {
-                Some(k) => format!("{k}  {summary}"),
-                None => summary,
-            };
-            let r =
-                egui::CollapsingHeader::new(RichText::new(header).monospace().size(12.0).color(t.foreground))
-                    .id_salt(id)
-                    .default_open(depth < 2)
-                    .show(ui, |ui| {
-                        let children: Box<dyn Iterator<Item = (String, String, &Value)>> = match v {
-                            Value::Object(m) => Box::new(m.iter().map(|(k, c)| {
-                                let p = if k.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
-                                    format!("{path}.{k}")
-                                } else {
-                                    format!("{path}[{}]", serde_json::to_string(k).unwrap_or_default())
-                                };
-                                (k.clone(), p, c)
-                            })),
-                            Value::Array(a) => Box::new(
-                                a.iter()
-                                    .enumerate()
-                                    .map(|(i, c)| (i.to_string(), format!("{path}[{i}]"), c)),
-                            ),
-                            _ => unreachable!(),
-                        };
-                        for (shown, (k, p, c)) in children.enumerate() {
-                            if shown == JSON_CHILDREN {
-                                ui.label(
-                                    RichText::new(format!("… mais {}", n - shown))
-                                        .size(11.0)
-                                        .color(t.subtle),
-                                );
-                                break;
-                            }
-                            json_tree(ui, id.with(&k), Some(&k), &p, c, depth + 1);
-                        }
-                    });
-            r.header_response.context_menu(|ui| copy_menu(ui, path, v));
-        }
-        leaf => {
-            let (text, color) = match leaf {
-                Value::String(s) => (serde_json::to_string(s).unwrap_or_default(), t.foreground),
-                Value::Number(n) => (n.to_string(), t.number),
-                Value::Bool(b) => (b.to_string(), t.boolean),
-                _ => ("null".to_string(), t.subtle),
-            };
-            let r = ui
-                .horizontal_wrapped(|ui| {
-                    // Lines up with folded siblings, whose arrow takes this space.
-                    ui.add_space(ui.spacing().indent);
-                    if let Some(k) = key {
-                        ui.label(key_text(&format!("{k}:")));
-                    }
-                    ui.add(egui::Label::new(RichText::new(text).monospace().size(12.0).color(color)).wrap())
-                })
-                .inner;
-            r.context_menu(|ui| copy_menu(ui, path, leaf));
-        }
+        Value::Object(m) => Some(Container {
+            open: "{",
+            close: "}",
+            len: m.len(),
+            children: Box::new(m.iter().map(move |(k, c)| {
+                let p = if k.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
+                    format!("{path}.{k}")
+                } else {
+                    format!("{path}[{}]", serde_json::to_string(k).unwrap_or_default())
+                };
+                (k.clone(), p, c)
+            })),
+        }),
+        Value::Array(a) => Some(Container {
+            open: "[",
+            close: "]",
+            len: a.len(),
+            children: Box::new(
+                a.iter()
+                    .enumerate()
+                    .map(move |(i, c)| (i.to_string(), format!("{path}[{i}]"), c)),
+            ),
+        }),
+        _ => None,
     }
 }
 

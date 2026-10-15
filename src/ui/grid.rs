@@ -6,7 +6,7 @@ use egui_extras::{Column, TableBuilder};
 use super::{icon, theme};
 use crate::app::CopyAs;
 use crate::app::{Edit, GridEvent};
-use crate::db::{ColumnInfo, IncomingFk, QueryResult};
+use crate::db::{ColumnInfo, FkRef, IncomingFk, QueryResult};
 use crate::sql::FilterOp;
 use crate::values::{CellRange, SAMPLE_ROWS, ValueKind, column_info};
 
@@ -271,14 +271,13 @@ pub fn grid(
         kinds,
         changed,
         deleted,
-        can_filter,
         range,
         view,
         pinned,
         found,
         found_current,
-        incoming,
         filtered,
+        ..
     } = *opts;
     let in_range = |ri: usize, ci: usize| range.is_some_and(|r| r.contains(ri, ci));
     // Dragging across cells selects a range: set when a drag starts on a cell, until release.
@@ -423,61 +422,8 @@ pub fn grid(
                         event = Some(GridEvent::Sort(name.clone()));
                     }
                     r.context_menu(|ui| {
-                        if can_filter
-                            && ui
-                                .button("Filtrar valores…")
-                                .on_hover_text("Marque os valores que ficam, como no filtro do Excel")
-                                .clicked()
-                        {
-                            event = Some(GridEvent::FilterValues(ci));
-                            ui.close();
-                        }
-                        if ui.button("Estatísticas da coluna").clicked() {
-                            event = Some(GridEvent::ColumnStats(ci));
-                            ui.close();
-                        }
-                        ui.separator();
-                        let pin = if vi < pinned {
-                            "Desafixar"
-                        } else {
-                            "Fixar à esquerda"
-                        };
-                        if ui
-                            .button(pin)
-                            .on_hover_text("Colunas fixadas ficam visíveis ao rolar para o lado")
-                            .clicked()
-                        {
-                            event = Some(GridEvent::TogglePin(ci));
-                            ui.close();
-                        }
-                        if view.len() > 1 && ui.button("Esconder coluna").clicked() {
-                            event = Some(GridEvent::ToggleColumn(ci));
-                            ui.close();
-                        }
-                        let hidden = res.columns.len() - view.len();
-                        ui.menu_button(
-                            format!("Colunas visíveis ({}/{})", view.len(), res.columns.len()),
-                            |ui| {
-                                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                                    for (i, n) in res.columns.iter().enumerate() {
-                                        let mut on = view.contains(&i);
-                                        // The last visible one can't go: something must stay clickable.
-                                        let can = !on || view.len() > 1;
-                                        if ui.add_enabled(can, egui::Checkbox::new(&mut on, n)).changed() {
-                                            event = Some(GridEvent::ToggleColumn(i));
-                                        }
-                                    }
-                                });
-                            },
-                        );
-                        if hidden > 0 && ui.button(format!("Mostrar todas ({hidden} ocultas)")).clicked() {
-                            event = Some(GridEvent::ShowAllColumns);
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("Copiar nome").clicked() {
-                            ui.ctx().copy_text(name.clone());
-                            ui.close();
+                        if let Some(e) = header_menu(ui, res, opts, vi, ci) {
+                            event = Some(e);
                         }
                     });
                 });
@@ -549,49 +495,31 @@ pub fn grid(
                             return;
                         }
                         let row_deleted = deleted.is_some_and(|d| d.contains(&ri));
-                        if row_deleted {
-                            gap_painter(ui, table_rect).rect_filled(
-                                full_cell(ui),
-                                0.0,
-                                theme::mix(t.destructive, 0.14, t.background),
-                            );
-                        } else if changed.is_some_and(|c| c.contains(&(ri, ci))) {
-                            gap_painter(ui, table_rect).rect_filled(
-                                full_cell(ui),
-                                0.0,
-                                theme::mix(t.warning, 0.18, t.background),
-                            );
-                        }
-                        let is_found = found.is_some_and(|f| f.contains(&(ri, ci)));
-                        if is_found && selected != Some((ri, ci)) {
-                            let strength = if found_current == Some((ri, ci)) {
-                                0.45
-                            } else {
-                                0.22
-                            };
-                            gap_painter(ui, table_rect).rect_filled(
-                                full_cell(ui),
-                                0.0,
-                                theme::mix(t.warning, strength, t.background),
-                            );
-                        }
-                        if selected != Some((ri, ci)) && in_range(ri, ci) {
-                            gap_painter(ui, table_rect).rect_filled(
-                                full_cell(ui),
-                                0.0,
-                                theme::mix(t.selection, 0.6, t.background),
-                            );
-                        }
-                        if selected == Some((ri, ci)) {
+                        let is_selected = selected == Some((ri, ci));
+                        let fill = cell_fill(
+                            t,
+                            CellState {
+                                selected: is_selected,
+                                in_range: in_range(ri, ci),
+                                found: found
+                                    .is_some_and(|f| f.contains(&(ri, ci)))
+                                    .then_some(found_current == Some((ri, ci))),
+                                deleted: row_deleted,
+                                changed: changed.is_some_and(|c| c.contains(&(ri, ci))),
+                            },
+                        );
+                        if let Some(fill) = fill {
                             let rect = full_cell(ui);
                             let painter = gap_painter(ui, table_rect);
-                            painter.rect_filled(rect, 0.0, t.selection);
-                            painter.rect_stroke(
-                                rect.shrink(0.5),
-                                0.0,
-                                egui::Stroke::new(1.0, t.ring),
-                                egui::StrokeKind::Inside,
-                            );
+                            painter.rect_filled(rect, 0.0, fill);
+                            if is_selected {
+                                painter.rect_stroke(
+                                    rect.shrink(0.5),
+                                    0.0,
+                                    egui::Stroke::new(1.0, t.ring),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
                         }
                         let val = &res.rows[ri][ci];
                         // Foreign keys read as links: Ctrl+click opens the referenced row.
@@ -622,17 +550,7 @@ pub fn grid(
                             }
                         };
                         if vi < pinned {
-                            let bg = if selected == Some((ri, ci)) {
-                                t.selection
-                            } else if in_range(ri, ci) {
-                                theme::mix(t.selection, 0.6, t.background)
-                            } else if row_deleted {
-                                theme::mix(t.destructive, 0.14, t.background)
-                            } else if changed.is_some_and(|c| c.contains(&(ri, ci))) {
-                                theme::mix(t.warning, 0.18, t.background)
-                            } else {
-                                t.background
-                            };
+                            let bg = fill.unwrap_or(t.background);
                             let (shown, color) = match val {
                                 None => ("NULL".to_string(), t.subtle),
                                 Some(v) => (
@@ -734,172 +652,8 @@ pub fn grid(
                             event = Some(GridEvent::Select(ri, ci));
                         }
                         r.context_menu(|ui| {
-                            let open = if can_edit {
-                                "Abrir valor para editar…"
-                            } else {
-                                "Abrir valor…"
-                            };
-                            if ui
-                                .add(egui::Button::new(open).shortcut_text("Shift+Enter"))
-                                .on_hover_text("Editor grande: JSON formatado e validado, textos longos")
-                                .clicked()
-                            {
-                                event = Some(GridEvent::OpenValue(ri, ci));
-                                ui.close();
-                            }
-                            ui.separator();
-                            if let Some(f) = fk
-                                && ui
-                                    .button(format!("Abrir {} ({} = este valor)", f.table, f.column))
-                                    .clicked()
-                            {
-                                event = Some(GridEvent::FollowFk(ri, ci));
-                                ui.close();
-                            }
-                            // Other tables' rows that reference this one, by the column they point at.
-                            let pointing: Vec<(usize, &IncomingFk)> = incoming
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, f)| {
-                                    res.columns
-                                        .iter()
-                                        .position(|c| *c == f.target)
-                                        .is_some_and(|i| res.rows[ri][i].is_some())
-                                })
-                                .collect();
-                            if !pointing.is_empty() {
-                                ui.menu_button("Linhas que apontam para esta", |ui| {
-                                    for (i, f) in &pointing {
-                                        let label = format!(
-                                            "{}.{}  ({} = {})",
-                                            f.table, f.column, f.column, f.target
-                                        );
-                                        if ui.button(label).clicked() {
-                                            event = Some(GridEvent::FollowIncoming(ri, *i));
-                                            ui.close();
-                                        }
-                                    }
-                                });
-                                ui.separator();
-                            }
-                            if can_filter {
-                                let (eq, ne) = if val.is_some() {
-                                    ("Filtrar: igual a este valor", "Filtrar: diferente deste valor")
-                                } else {
-                                    ("Filtrar: é NULL", "Filtrar: não é NULL")
-                                };
-                                if ui.button(eq).clicked() {
-                                    event = Some(GridEvent::Filter(ri, ci, FilterOp::Eq));
-                                    ui.close();
-                                }
-                                if ui.button(ne).clicked() {
-                                    event = Some(GridEvent::Filter(ri, ci, FilterOp::Ne));
-                                    ui.close();
-                                }
-                                ui.separator();
-                            }
-                            if let Some(sel) = range.filter(|_| can_edit) {
-                                let cells = (sel.r1 - sel.r0 + 1) * sel.cols.len();
-                                if ui.button(format!("Definir valor nas {cells} células…")).clicked() {
-                                    event = Some(GridEvent::AskFill);
-                                    ui.close();
-                                }
-                                if ui.button("Definir NULL na seleção").clicked() {
-                                    event = Some(GridEvent::FillSelection(None));
-                                    ui.close();
-                                }
-                                if sel.r1 > sel.r0
-                                    && ui
-                                        .add(
-                                            egui::Button::new("Preencher para baixo").shortcut_text("Ctrl+D"),
-                                        )
-                                        .on_hover_text(
-                                            "Cada coluna recebe o valor da primeira linha selecionada",
-                                        )
-                                        .clicked()
-                                {
-                                    event = Some(GridEvent::FillDown);
-                                    ui.close();
-                                }
-                                let rows = sel.r1 - sel.r0 + 1;
-                                if ui
-                                    .add(
-                                        egui::Button::new(format!("Excluir {rows} linha(s)"))
-                                            .shortcut_text("Delete"),
-                                    )
-                                    .clicked()
-                                {
-                                    event = Some(GridEvent::DeleteRows);
-                                    ui.close();
-                                }
-                                ui.separator();
-                            }
-                            if range.is_some() {
-                                if ui
-                                    .button("Copiar seleção")
-                                    .on_hover_text("Ctrl+C · texto separado por tabs, cola no Excel")
-                                    .clicked()
-                                {
-                                    event = Some(GridEvent::CopyCells { headers: false });
-                                    ui.close();
-                                }
-                                if ui.button("Copiar seleção com cabeçalho").clicked() {
-                                    event = Some(GridEvent::CopyCells { headers: true });
-                                    ui.close();
-                                }
-                                ui.separator();
-                            }
-                            let md = if range.is_some() {
-                                "Copiar seleção como Markdown"
-                            } else {
-                                "Copiar resultado como Markdown"
-                            };
-                            if ui
-                                .button(md)
-                                .on_hover_text("Tabela pronta para colar em issue, documentação ou chat")
-                                .clicked()
-                            {
-                                event = Some(GridEvent::CopyMarkdown);
-                                ui.close();
-                            }
-                            if ui.button("Copiar valor").clicked() {
-                                ui.ctx().copy_text(val.clone().unwrap_or_default());
-                                ui.close();
-                            }
-                            if ui.button("Copiar linha como JSON").clicked() {
-                                event = Some(GridEvent::Copy(ri, CopyAs::Json));
-                                ui.close();
-                            }
-                            if ui.button("Copiar linha como INSERT").clicked() {
-                                event = Some(GridEvent::Copy(ri, CopyAs::Insert));
-                                ui.close();
-                            }
-                            if can_edit {
-                                // The insert form belongs to table tabs.
-                                if can_filter
-                                    && ui
-                                        .button("Duplicar linha")
-                                        .on_hover_text(
-                                            "Abre o formulário de inserção preenchido com esta linha",
-                                        )
-                                        .clicked()
-                                {
-                                    event = Some(GridEvent::DuplicateRow(ri));
-                                    ui.close();
-                                }
-                                if ui.button("Definir NULL").clicked() {
-                                    event = Some(GridEvent::Commit(ri, ci, None));
-                                    ui.close();
-                                }
-                                let label = if row_deleted {
-                                    "Restaurar linha"
-                                } else {
-                                    "Excluir linha"
-                                };
-                                if ui.button(label).clicked() {
-                                    event = Some(GridEvent::DeleteRow(ri));
-                                    ui.close();
-                                }
+                            if let Some(e) = cell_menu(ui, res, opts, (ri, ci), fk, row_deleted) {
+                                event = Some(e);
                             }
                         });
                     });
@@ -913,6 +667,285 @@ pub fn grid(
             }
         });
     event
+}
+
+/// A column header's context menu.
+fn header_menu(
+    ui: &mut egui::Ui,
+    res: &QueryResult,
+    opts: &GridOpts,
+    vi: usize,
+    ci: usize,
+) -> Option<GridEvent> {
+    let GridOpts {
+        can_filter,
+        view,
+        pinned,
+        ..
+    } = *opts;
+    let name = &res.columns[ci];
+    let mut event = None;
+    if can_filter
+        && ui
+            .button("Filtrar valores…")
+            .on_hover_text("Marque os valores que ficam, como no filtro do Excel")
+            .clicked()
+    {
+        event = Some(GridEvent::FilterValues(ci));
+        ui.close();
+    }
+    if ui.button("Estatísticas da coluna").clicked() {
+        event = Some(GridEvent::ColumnStats(ci));
+        ui.close();
+    }
+    ui.separator();
+    let pin = if vi < pinned {
+        "Desafixar"
+    } else {
+        "Fixar à esquerda"
+    };
+    if ui
+        .button(pin)
+        .on_hover_text("Colunas fixadas ficam visíveis ao rolar para o lado")
+        .clicked()
+    {
+        event = Some(GridEvent::TogglePin(ci));
+        ui.close();
+    }
+    if view.len() > 1 && ui.button("Esconder coluna").clicked() {
+        event = Some(GridEvent::ToggleColumn(ci));
+        ui.close();
+    }
+    let hidden = res.columns.len() - view.len();
+    ui.menu_button(
+        format!("Colunas visíveis ({}/{})", view.len(), res.columns.len()),
+        |ui| {
+            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                for (i, n) in res.columns.iter().enumerate() {
+                    let mut on = view.contains(&i);
+                    // The last visible one can't go: something must stay clickable.
+                    let can = !on || view.len() > 1;
+                    if ui.add_enabled(can, egui::Checkbox::new(&mut on, n)).changed() {
+                        event = Some(GridEvent::ToggleColumn(i));
+                    }
+                }
+            });
+        },
+    );
+    if hidden > 0 && ui.button(format!("Mostrar todas ({hidden} ocultas)")).clicked() {
+        event = Some(GridEvent::ShowAllColumns);
+        ui.close();
+    }
+    ui.separator();
+    if ui.button("Copiar nome").clicked() {
+        ui.ctx().copy_text(name.clone());
+        ui.close();
+    }
+    event
+}
+
+/// A cell's context menu. `fk` is where its value points, if it is a foreign key.
+fn cell_menu(
+    ui: &mut egui::Ui,
+    res: &QueryResult,
+    opts: &GridOpts,
+    (ri, ci): (usize, usize),
+    fk: Option<&FkRef>,
+    row_deleted: bool,
+) -> Option<GridEvent> {
+    let GridOpts {
+        can_edit,
+        can_filter,
+        range,
+        incoming,
+        ..
+    } = *opts;
+    let val = &res.rows[ri][ci];
+    let mut event = None;
+    let open = if can_edit {
+        "Abrir valor para editar…"
+    } else {
+        "Abrir valor…"
+    };
+    if ui
+        .add(egui::Button::new(open).shortcut_text("Shift+Enter"))
+        .on_hover_text("Editor grande: JSON formatado e validado, textos longos")
+        .clicked()
+    {
+        event = Some(GridEvent::OpenValue(ri, ci));
+        ui.close();
+    }
+    ui.separator();
+    if let Some(f) = fk
+        && ui
+            .button(format!("Abrir {} ({} = este valor)", f.table, f.column))
+            .clicked()
+    {
+        event = Some(GridEvent::FollowFk(ri, ci));
+        ui.close();
+    }
+    // Other tables' rows that reference this one, by the column they point at.
+    let pointing: Vec<(usize, &IncomingFk)> = incoming
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| {
+            res.columns
+                .iter()
+                .position(|c| *c == f.target)
+                .is_some_and(|i| res.rows[ri][i].is_some())
+        })
+        .collect();
+    if !pointing.is_empty() {
+        ui.menu_button("Linhas que apontam para esta", |ui| {
+            for (i, f) in &pointing {
+                let label = format!("{}.{}  ({} = {})", f.table, f.column, f.column, f.target);
+                if ui.button(label).clicked() {
+                    event = Some(GridEvent::FollowIncoming(ri, *i));
+                    ui.close();
+                }
+            }
+        });
+        ui.separator();
+    }
+    if can_filter {
+        let (eq, ne) = if val.is_some() {
+            ("Filtrar: igual a este valor", "Filtrar: diferente deste valor")
+        } else {
+            ("Filtrar: é NULL", "Filtrar: não é NULL")
+        };
+        if ui.button(eq).clicked() {
+            event = Some(GridEvent::Filter(ri, ci, FilterOp::Eq));
+            ui.close();
+        }
+        if ui.button(ne).clicked() {
+            event = Some(GridEvent::Filter(ri, ci, FilterOp::Ne));
+            ui.close();
+        }
+        ui.separator();
+    }
+    if let Some(sel) = range.filter(|_| can_edit) {
+        let cells = (sel.r1 - sel.r0 + 1) * sel.cols.len();
+        if ui.button(format!("Definir valor nas {cells} células…")).clicked() {
+            event = Some(GridEvent::AskFill);
+            ui.close();
+        }
+        if ui.button("Definir NULL na seleção").clicked() {
+            event = Some(GridEvent::FillSelection(None));
+            ui.close();
+        }
+        if sel.r1 > sel.r0
+            && ui
+                .add(egui::Button::new("Preencher para baixo").shortcut_text("Ctrl+D"))
+                .on_hover_text("Cada coluna recebe o valor da primeira linha selecionada")
+                .clicked()
+        {
+            event = Some(GridEvent::FillDown);
+            ui.close();
+        }
+        let rows = sel.r1 - sel.r0 + 1;
+        if ui
+            .add(egui::Button::new(format!("Excluir {rows} linha(s)")).shortcut_text("Delete"))
+            .clicked()
+        {
+            event = Some(GridEvent::DeleteRows);
+            ui.close();
+        }
+        ui.separator();
+    }
+    if range.is_some() {
+        if ui
+            .button("Copiar seleção")
+            .on_hover_text("Ctrl+C · texto separado por tabs, cola no Excel")
+            .clicked()
+        {
+            event = Some(GridEvent::CopyCells { headers: false });
+            ui.close();
+        }
+        if ui.button("Copiar seleção com cabeçalho").clicked() {
+            event = Some(GridEvent::CopyCells { headers: true });
+            ui.close();
+        }
+        ui.separator();
+    }
+    let md = if range.is_some() {
+        "Copiar seleção como Markdown"
+    } else {
+        "Copiar resultado como Markdown"
+    };
+    if ui
+        .button(md)
+        .on_hover_text("Tabela pronta para colar em issue, documentação ou chat")
+        .clicked()
+    {
+        event = Some(GridEvent::CopyMarkdown);
+        ui.close();
+    }
+    if ui.button("Copiar valor").clicked() {
+        ui.ctx().copy_text(val.clone().unwrap_or_default());
+        ui.close();
+    }
+    if ui.button("Copiar linha como JSON").clicked() {
+        event = Some(GridEvent::Copy(ri, CopyAs::Json));
+        ui.close();
+    }
+    if ui.button("Copiar linha como INSERT").clicked() {
+        event = Some(GridEvent::Copy(ri, CopyAs::Insert));
+        ui.close();
+    }
+    if can_edit {
+        // The insert form belongs to table tabs.
+        if can_filter
+            && ui
+                .button("Duplicar linha")
+                .on_hover_text("Abre o formulário de inserção preenchido com esta linha")
+                .clicked()
+        {
+            event = Some(GridEvent::DuplicateRow(ri));
+            ui.close();
+        }
+        if ui.button("Definir NULL").clicked() {
+            event = Some(GridEvent::Commit(ri, ci, None));
+            ui.close();
+        }
+        let label = if row_deleted {
+            "Restaurar linha"
+        } else {
+            "Excluir linha"
+        };
+        if ui.button(label).clicked() {
+            event = Some(GridEvent::DeleteRow(ri));
+            ui.close();
+        }
+    }
+    event
+}
+
+/// What a cell is showing besides its value.
+struct CellState {
+    selected: bool,
+    in_range: bool,
+    /// Matches "buscar no resultado"; `true` for the match it is on.
+    found: Option<bool>,
+    deleted: bool,
+    changed: bool,
+}
+
+/// The cell's background, when not the plain one. The strongest state wins.
+fn cell_fill(t: &theme::Tokens, c: CellState) -> Option<egui::Color32> {
+    let mix = |color, pct| theme::mix(color, pct, t.background);
+    if c.selected {
+        Some(t.selection)
+    } else if c.in_range {
+        Some(mix(t.selection, 0.6))
+    } else if let Some(current) = c.found {
+        Some(mix(t.warning, if current { 0.45 } else { 0.22 }))
+    } else if c.deleted {
+        Some(mix(t.destructive, 0.14))
+    } else if c.changed {
+        Some(mix(t.warning, 0.18))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -1,8 +1,8 @@
 //! Saved ("favorite") queries, kept in `favorites.json` next to the connections.
 
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
+
+use crate::store::{self, Loaded, StoreError};
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Favorite {
@@ -14,22 +14,15 @@ pub struct Favorite {
     pub conn: String,
 }
 
-fn path() -> Option<PathBuf> {
-    crate::config::dir().map(|d| d.join("favorites.json"))
-}
+const FILE: &str = "favorites.json";
 
-pub fn load() -> Vec<Favorite> {
-    path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+pub fn load() -> Loaded<Vec<Favorite>> {
+    store::load(FILE)
 }
 
 /// Queries can contain data, so the file is private like the connections file.
-pub fn save(list: &[Favorite]) -> Result<(), String> {
-    let path = path().ok_or("diretório de configuração não encontrado")?;
-    let json = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
-    crate::config::write_private(&path, &json).map_err(|e| e.to_string())
+pub fn save(list: &[Favorite]) -> Result<(), StoreError> {
+    store::save(FILE, list)
 }
 
 /// Favorites to show for a connection: its own first, then the shared ones, each by name.

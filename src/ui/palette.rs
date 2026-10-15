@@ -3,7 +3,7 @@
 use eframe::egui::{self, Key, TextEdit};
 
 use super::{icon, theme};
-use crate::app::{App, ConnForm, Palette};
+use crate::app::{App, ConnForm, Dialog, Palette};
 use crate::db::{ConnConfig, Kind};
 use crate::favorites;
 use crate::history;
@@ -286,13 +286,15 @@ impl App {
 
     pub fn palette_ui(&mut self, ctx: &egui::Context) {
         let cache_id = egui::Id::new("palette_results");
-        if let Some(p) = &mut self.palette
+        if let Some(Dialog::Palette(p)) = &mut self.dialog
             && !p.started
         {
             p.started = true;
             ctx.data_mut(|d| d.remove::<(String, Vec<Item>)>(cache_id));
         }
-        let Some(p) = &self.palette else { return };
+        let Some(Dialog::Palette(p)) = &self.dialog else {
+            return;
+        };
         // Searching every table each frame adds up on large schemas: only redo it when the query
         // changes (the palette is modal, so nothing else changes underneath it meanwhile).
         let cached = ctx
@@ -335,7 +337,9 @@ impl App {
 
         let t = theme::tokens();
         let mut run: Option<Cmd> = None;
-        let Some(p) = &mut self.palette else { return };
+        let Some(Dialog::Palette(p)) = &mut self.dialog else {
+            return;
+        };
         p.selected = p.selected.min(matches.len().saturating_sub(1));
         let frame = theme::modal_frame(8);
         let id = egui::Id::new("palette");
@@ -429,11 +433,11 @@ impl App {
             );
         });
         if modal.should_close() {
-            self.palette = None;
+            self.dialog = None;
         }
 
         if let Some(cmd) = run {
-            self.palette = None;
+            self.dialog = None;
             match cmd {
                 Cmd::OpenTable(schema, table) => self.open_table(&schema, &table),
                 Cmd::Connect(id) => self.connect_saved(&id),
@@ -460,7 +464,7 @@ impl App {
                 Cmd::Diagram => self.open_diagram(None),
                 Cmd::Search => self.open_search(),
                 Cmd::NewTable => self.open_new_table(None),
-                Cmd::Help => self.help = true,
+                Cmd::Help => self.dialog = Some(Dialog::Help),
                 Cmd::Disconnect => {
                     self.disconnect();
                 }
@@ -469,7 +473,7 @@ impl App {
     }
 
     pub fn open_palette(&mut self) {
-        self.palette = Some(Palette::default());
+        self.dialog = Some(Dialog::Palette(Palette::default()));
     }
 }
 

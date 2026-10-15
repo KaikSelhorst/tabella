@@ -2,6 +2,7 @@
 //! values. Drives how cells are drawn and edited, and how rows are exported.
 
 use crate::db::{ColumnInfo, QueryResult};
+use std::fmt::Write as _;
 
 /// Rows looked at to guess a column's kind when the schema type is unknown (free SQL results).
 pub const SAMPLE_ROWS: usize = 60;
@@ -157,7 +158,7 @@ pub fn to_markdown(res: &QueryResult, range: &CellRange, kinds: &[ValueKind]) ->
     let cell = |v: &str| v.replace('|', "\\|").replace(['\r', '\n'], " ");
     let mut out = String::new();
     let header: Vec<String> = range.cols.iter().map(|&c| cell(&res.columns[c])).collect();
-    out.push_str(&format!("| {} |\n", header.join(" | ")));
+    let _ = writeln!(out, "| {} |", header.join(" | "));
     let align: Vec<&str> = range
         .cols
         .iter()
@@ -169,14 +170,14 @@ pub fn to_markdown(res: &QueryResult, range: &CellRange, kinds: &[ValueKind]) ->
             }
         })
         .collect();
-    out.push_str(&format!("| {} |\n", align.join(" | ")));
+    let _ = writeln!(out, "| {} |", align.join(" | "));
     for row in &res.rows[range.r0..=range.r1] {
         let cells: Vec<String> = range
             .cols
             .iter()
             .map(|&c| row[c].as_deref().map(cell).unwrap_or_default())
             .collect();
-        out.push_str(&format!("| {} |\n", cells.join(" | ")));
+        let _ = writeln!(out, "| {} |", cells.join(" | "));
     }
     out
 }

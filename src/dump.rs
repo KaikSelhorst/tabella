@@ -79,16 +79,13 @@ fn write_dump(
         w: BufWriter::with_capacity(1 << 20, file),
         bytes: 0,
     };
-    let mut p = DumpProgress {
-        total: spec.tables.len(),
-        ..Default::default()
-    };
-    let check = |p: &DumpProgress| {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(DbError::Other("cancelado".into()));
-        }
-        report(*p);
-        Ok(())
+    let mut prog = Progress {
+        p: DumpProgress {
+            total: spec.tables.len(),
+            ..Default::default()
+        },
+        cancel,
+        report,
     };
 
     out.line(&format!(
@@ -193,14 +190,14 @@ fn write_dump(
 
     if spec.data {
         for ((schema, table), st) in spec.tables.iter().zip(&structures) {
-            check(&p)?;
+            prog.check()?;
             out.line("")?;
-            p.rows += table_rows(conn, k, schema, table, st, &mut out, cancel, &mut p, report)?;
-            p.tables += 1;
-            p.bytes = out.bytes;
+            prog.p.rows += table_rows(conn, schema, table, st, &mut out, &mut prog)?;
+            prog.p.tables += 1;
+            prog.p.bytes = out.bytes;
         }
     } else {
-        p.tables = p.total;
+        prog.p.tables = prog.p.total;
     }
 
     if spec.structure {
@@ -246,7 +243,7 @@ fn write_dump(
         ];
         for kind in order {
             for o in objects.iter().filter(|o| o.kind == kind) {
-                check(&p)?;
+                prog.check()?;
                 out.line("")?;
                 object_ddl(conn, k, o, spec.drop, &mut out)?;
             }
@@ -259,9 +256,9 @@ fn write_dump(
     out.w
         .flush()
         .map_err(|e| DbError::Other(format!("erro ao gravar o arquivo: {e}")))?;
-    p.bytes = out.bytes;
-    report(p);
-    Ok(p)
+    prog.p.bytes = out.bytes;
+    report(prog.p);
+    Ok(prog.p)
 }
 
 /// Postgres sequences that belong to a column (serial, identity), as `(schema, name)`.
@@ -286,19 +283,40 @@ fn table_name(k: Kind, schema: &str, table: &str) -> String {
     }
 }
 
+/// Where the dump is, how to report it, and whether to stop.
+struct Progress<'a, R: Fn(DumpProgress)> {
+    p: DumpProgress,
+    cancel: &'a AtomicBool,
+    report: &'a R,
+}
+
+impl<R: Fn(DumpProgress)> Progress<'_, R> {
+    /// Stops with an error once the user cancelled.
+    fn stop_if_cancelled(&self) -> DbResult<()> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(DbError::Other("cancelado".into()));
+        }
+        Ok(())
+    }
+
+    /// Between steps: honours a cancel, otherwise reports.
+    fn check(&self) -> DbResult<()> {
+        self.stop_if_cancelled()?;
+        (self.report)(self.p);
+        Ok(())
+    }
+}
+
 /// The rows of one table as INSERTs; returns how many.
-#[allow(clippy::too_many_arguments)]
 fn table_rows(
     conn: &mut Conn,
-    k: Kind,
     schema: &str,
     table: &str,
     st: &TableStructure,
     out: &mut Out,
-    cancel: &AtomicBool,
-    p: &mut DumpProgress,
-    report: &impl Fn(DumpProgress),
+    prog: &mut Progress<'_, impl Fn(DumpProgress)>,
 ) -> DbResult<u64> {
+    let k = conn.kind();
     let cols: Vec<_> = st
         .columns
         .iter()
@@ -361,9 +379,7 @@ fn table_rows(
     let mut written = 0u64;
     let mut offset = 0usize;
     loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(DbError::Other("cancelado".into()));
-        }
+        prog.stop_if_cancelled()?;
         let page = match (&after, keyset) {
             (Some(last), true) => format!("WHERE ({pk_list}) > ({last}) ORDER BY {order} LIMIT {CHUNK}"),
             (None, true) => format!("ORDER BY {order} LIMIT {CHUNK}"),
@@ -395,10 +411,10 @@ fn table_rows(
         }
         written += chunk.rows.len() as u64;
         offset += chunk.rows.len();
-        p.bytes = out.bytes;
-        report(DumpProgress {
-            rows: p.rows + written,
-            ..*p
+        prog.p.bytes = out.bytes;
+        (prog.report)(DumpProgress {
+            rows: prog.p.rows + written,
+            ..prog.p
         });
         if chunk.rows.len() < CHUNK {
             return Ok(written);

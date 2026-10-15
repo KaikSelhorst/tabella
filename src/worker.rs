@@ -191,7 +191,7 @@ pub struct TxState {
     pub manual: bool,
     pub open: bool,
     /// Writing statements run since the transaction opened.
-    pub writes: u32,
+    pub writes: u64,
     /// A statement failed inside it (Postgres then refuses anything but ROLLBACK).
     pub failed: bool,
 }
@@ -640,7 +640,9 @@ fn run_user_sql(conn: &mut Conn, tx: &mut TxState, pg: bool, sql: &str) -> DbRes
         _ if tx.open => {
             if res.is_ok() {
                 if writes {
-                    tx.writes += sql::statement_ranges(sql, false).len() as u32;
+                    tx.writes = tx
+                        .writes
+                        .saturating_add(sql::statement_ranges(sql, false).len() as u64);
                 }
             } else if pg {
                 tx.failed = true;
@@ -664,6 +666,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
     let (reply_tx, reply_rx) = channel::<Reply>();
     thread::spawn(move || {
         let send = |r: Reply| {
+            // Only fails once the app dropped its end: nobody is left to tell.
             let _ = reply_tx.send(r);
             ctx.request_repaint();
         };
@@ -688,280 +691,326 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
         send(Reply::AllFks(conn.all_fks()));
         send(Reply::Objects(conn.objects()));
         send(Reply::Location(conn.location()));
-        let mut tx = TxState {
-            manual: cfg.manual_commit,
-            ..Default::default()
+        let mut w = Worker {
+            conn,
+            tx: TxState {
+                manual: cfg.manual_commit,
+                ..Default::default()
+            },
+            pg: cfg.kind == crate::db::Kind::Postgres,
+            cfg: &cfg,
+            send: &send,
         };
         while let Ok(job) = job_rx.recv() {
-            let before = tx;
-            let pg = cfg.kind == crate::db::Kind::Postgres;
-            // In manual mode, the first write opens the transaction.
-            let open_for_write = |conn: &mut Conn, tx: &mut TxState| -> DbResult<()> {
-                if tx.manual && !tx.open {
-                    conn.begin()?;
-                    tx.open = true;
-                }
-                Ok(())
-            };
-            // Bookkeeping after a user statement ran inside the transaction.
-            let note = |tx: &mut TxState, ok: bool, writes: u32| {
-                if tx.open {
-                    if ok {
-                        tx.writes += writes;
-                    } else if pg {
-                        tx.failed = true;
-                    }
-                }
-            };
-            let reply = match job {
-                Job::Query { tab, sql } => Reply::Rows {
-                    tab,
-                    res: Box::new(run_user_sql(&mut conn, &mut tx, pg, &sql)),
-                    notice: None,
-                },
-                Job::Preview { tab, sql } => Reply::Preview {
-                    tab,
-                    res: conn.preview(&sql, tx.open),
-                },
-                Job::Compare {
-                    tab,
-                    source_schema,
-                    target,
-                    target_schema,
-                } => Reply::Compared {
-                    tab,
-                    res: compare_with(&mut conn, &source_schema, target.as_deref(), &target_schema),
-                },
-                Job::Dump { tab, spec, cancel } => {
-                    let last = std::cell::Cell::new(std::time::Instant::now());
-                    let res = crate::dump::dump(&mut conn, &spec, &cancel, |progress| {
-                        // A few times a second is plenty for a progress bar.
-                        if last.get().elapsed() >= std::time::Duration::from_millis(150) {
-                            last.set(std::time::Instant::now());
-                            send(Reply::DumpProgress { tab, progress });
-                        }
-                    });
-                    let cancelled = cancel.load(Ordering::Relaxed);
-                    match res {
-                        Ok(progress) => Reply::DumpDone {
-                            tab,
-                            progress,
-                            res: Ok(spec.path),
-                        },
-                        Err(e) => Reply::DumpDone {
-                            tab,
-                            progress: Default::default(),
-                            res: Err(if cancelled {
-                                "cancelado".into()
-                            } else {
-                                e.to_string()
-                            }),
-                        },
-                    }
-                }
-                Job::FkOptions { tab, sql, search } => Reply::FkOptions {
-                    tab,
-                    search,
-                    res: capped_read(&mut conn, pg, tx.open, &sql),
-                },
-                Job::Distinct { tab, sql } => Reply::Distinct {
-                    tab,
-                    res: conn.query(&sql),
-                },
-                Job::ColumnStats { tab, summary, top } => Reply::ColumnStats {
-                    tab,
-                    res: conn.query(&summary).and_then(|a| Ok((a, conn.query(&top)?))),
-                },
-                Job::SetManual(on) => {
-                    tx.manual = on;
-                    send_tx(&send, before, tx);
-                    continue;
-                }
-                Job::EndTx { commit } => {
-                    let res = if commit && tx.failed {
-                        let _ = conn.query("ROLLBACK");
-                        Err(DbError::Other(
-                            "um comando da transação falhou, então ela foi desfeita: nada foi confirmado"
-                                .into(),
-                        ))
-                    } else {
-                        conn.query(if commit { "COMMIT" } else { "ROLLBACK" }).map(|_| ())
-                    };
-                    tx = TxState {
-                        manual: tx.manual,
-                        ..Default::default()
-                    };
-                    Reply::TxEnded { commit, res }
-                }
-                Job::Exec {
-                    tab,
-                    stmt,
-                    refresh,
-                    expect_one,
-                } => {
-                    let mut notice = None;
-                    let ran = open_for_write(&mut conn, &mut tx).and_then(|()| conn.execute(&stmt));
-                    note(&mut tx, ran.is_ok(), 1);
-                    let res = ran.and_then(|done| {
-                        if expect_one && done.affected == Some(0) {
-                            notice = Some(
-                                "Nenhuma linha foi alterada: ela mudou ou foi excluída em outra sessão. \
-                                 A página foi recarregada."
-                                    .to_string(),
-                            );
-                        }
-                        conn.query(&refresh)
-                    });
-                    Reply::Rows {
-                        tab,
-                        res: Box::new(res),
-                        notice,
-                    }
-                }
-                Job::Columns { tab, schema, table } => Reply::Columns {
-                    tab,
-                    res: conn.columns_with_fks(&schema, &table),
-                    incoming: conn.incoming_fks(&schema, &table).unwrap_or_default(),
-                },
-                Job::Count { tab, sql } => Reply::Count {
-                    tab,
-                    res: conn.count(&sql),
-                },
-                Job::Tables => {
-                    let tables = conn.tables();
-                    send(Reply::AllColumns(conn.all_columns()));
-                    send(Reply::AllFks(conn.all_fks()));
-                    send(Reply::Objects(conn.objects()));
-                    Reply::Tables(tables)
-                }
-                Job::Batch { tab, stmts, refresh } => {
-                    let res =
-                        open_for_write(&mut conn, &mut tx).and_then(|()| conn.run_batch(&stmts, tx.open));
-                    // A failed batch is rolled back to its savepoint: the transaction stays usable.
-                    if res.is_ok() {
-                        note(&mut tx, true, stmts.len() as u32);
-                    }
-                    Reply::Saved {
-                        tab,
-                        res: Box::new(res.and_then(|()| conn.query(&refresh))),
-                    }
-                }
-                Job::Activity { tab, view } => Reply::Rows {
-                    tab,
-                    res: Box::new(conn.activity_view(view)),
-                    notice: None,
-                },
-                Job::SearchValue {
-                    tab,
-                    term,
-                    exact,
-                    targets,
-                    cancel,
-                } => {
-                    for t in &targets {
-                        if cancel.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        let (hit, error) =
-                            match crate::search::search_table(&mut conn, cfg.kind, t, &term, exact) {
-                                Ok(h) => (h, None),
-                                Err(e) => (None, Some(format!("{}.{}: {e}", t.schema, t.table))),
-                            };
-                        send(Reply::SearchProgress { tab, hit, error });
-                    }
-                    Reply::SearchDone {
-                        tab,
-                        cancelled: cancel.load(Ordering::Relaxed),
-                    }
-                }
-                Job::Source { tab, object } => Reply::Source {
-                    tab,
-                    res: conn.object_source(&object),
-                },
-                Job::RunScript {
-                    tab,
-                    path,
-                    transaction,
-                    cancel,
-                } => {
-                    let (progress, error) =
-                        run_script(&mut conn, &mut tx, pg, &path, transaction, &cancel, |p| {
-                            send(Reply::ScriptProgress { tab, progress: p })
-                        });
-                    // Scripts usually create or change tables.
-                    send(Reply::Tables(conn.tables()));
-                    send(Reply::AllColumns(conn.all_columns()));
-                    send(Reply::Objects(conn.objects()));
-                    Reply::ScriptDone { tab, progress, error }
-                }
-                Job::Admin { sql, done } => {
-                    let res = run_user_sql(&mut conn, &mut tx, pg, &sql).map(|_| ());
-                    // The sidebar shows the change (a new, renamed or dropped table).
-                    if res.is_ok() {
-                        send(Reply::Tables(conn.tables()));
-                        send(Reply::AllColumns(conn.all_columns()));
-                    }
-                    Reply::Admin { done, res }
-                }
-                Job::UseSchema(name) => {
-                    Reply::Location(conn.use_schema(&name).and_then(|()| conn.location()))
-                }
-                Job::Fks { tab } => Reply::Fks {
-                    tab,
-                    res: conn.all_fks(),
-                },
-                Job::ServerInfo { tab } => Reply::ServerInfo {
-                    tab,
-                    res: conn.server_info(),
-                },
-                Job::ResetQueryStats { tab } => {
-                    let notice = conn.reset_query_stats().err().map(|e| e.to_string());
-                    Reply::Rows {
-                        tab,
-                        res: Box::new(conn.activity_view(ActivityView::Slow)),
-                        notice,
-                    }
-                }
-                Job::Kill {
-                    tab,
-                    id,
-                    terminate,
-                    view,
-                } => {
-                    // A refused kill still refreshes the list; the reason comes as the notice.
-                    let notice = conn.kill(id, terminate).err().map(|e| e.to_string());
-                    Reply::Rows {
-                        tab,
-                        res: Box::new(conn.activity_view(view)),
-                        notice,
-                    }
-                }
-                Job::Import { tab, spec } => {
-                    let res = open_for_write(&mut conn, &mut tx)
-                        .and_then(|()| crate::import::run(&mut conn, &spec, tx.open));
-                    if let Ok(n) = &res {
-                        note(&mut tx, true, *n as u32);
-                    }
-                    Reply::Imported { tab, res }
-                }
-                Job::Explain { tab, sql, analyze } => Reply::Plan {
-                    tab,
-                    res: conn.explain(&sql, analyze),
-                },
-                Job::Structure { tab, schema, table } => Reply::Structure {
-                    tab,
-                    res: conn.structure(&schema, &table),
-                },
-                Job::Export { tab, spec } => Reply::Exported {
-                    tab,
-                    res: export(&mut conn, spec),
-                },
-            };
-            send(reply);
-            send_tx(&send, before, tx);
+            let before = w.tx;
+            if let Some(reply) = w.handle(job) {
+                send(reply);
+            }
+            send_tx(&send, before, w.tx);
         }
     });
     (job_tx, reply_rx)
+}
+
+/// The connection's thread: runs jobs one at a time and keeps the transaction's bookkeeping.
+struct Worker<'a, S: Fn(Reply)> {
+    conn: Conn,
+    tx: TxState,
+    pg: bool,
+    cfg: &'a ConnConfig,
+    /// For replies sent before the job's own (progress, refreshed lists).
+    send: &'a S,
+}
+
+impl<S: Fn(Reply)> Worker<'_, S> {
+    /// Runs one job; `None` when it has no reply of its own.
+    fn handle(&mut self, job: Job) -> Option<Reply> {
+        let conn = &mut self.conn;
+        let send = self.send;
+        Some(match job {
+            Job::Query { tab, sql } => Reply::Rows {
+                tab,
+                res: Box::new(run_user_sql(conn, &mut self.tx, self.pg, &sql)),
+                notice: None,
+            },
+            Job::Preview { tab, sql } => Reply::Preview {
+                tab,
+                res: conn.preview(&sql, self.tx.open),
+            },
+            Job::Compare {
+                tab,
+                source_schema,
+                target,
+                target_schema,
+            } => Reply::Compared {
+                tab,
+                res: compare_with(conn, &source_schema, target.as_deref(), &target_schema),
+            },
+            Job::Dump { tab, spec, cancel } => self.dump(tab, &spec, &cancel),
+            Job::FkOptions { tab, sql, search } => Reply::FkOptions {
+                tab,
+                search,
+                res: capped_read(conn, self.pg, self.tx.open, &sql),
+            },
+            Job::Distinct { tab, sql } => Reply::Distinct {
+                tab,
+                res: conn.query(&sql),
+            },
+            Job::ColumnStats { tab, summary, top } => Reply::ColumnStats {
+                tab,
+                res: conn.query(&summary).and_then(|a| Ok((a, conn.query(&top)?))),
+            },
+            Job::SetManual(on) => {
+                self.tx.manual = on;
+                return None;
+            }
+            Job::EndTx { commit } => self.end_tx(commit),
+            Job::Exec {
+                tab,
+                stmt,
+                refresh,
+                expect_one,
+            } => self.exec(tab, &stmt, &refresh, expect_one),
+            Job::Columns { tab, schema, table } => Reply::Columns {
+                tab,
+                res: conn.columns_with_fks(&schema, &table),
+                incoming: conn.incoming_fks(&schema, &table).unwrap_or_default(),
+            },
+            Job::Count { tab, sql } => Reply::Count {
+                tab,
+                res: conn.count(&sql),
+            },
+            Job::Tables => {
+                let tables = conn.tables();
+                send(Reply::AllColumns(conn.all_columns()));
+                send(Reply::AllFks(conn.all_fks()));
+                send(Reply::Objects(conn.objects()));
+                Reply::Tables(tables)
+            }
+            Job::Batch { tab, stmts, refresh } => {
+                let res = self
+                    .open_for_write()
+                    .and_then(|()| self.conn.run_batch(&stmts, self.tx.open));
+                // A failed batch is rolled back to its savepoint: the transaction stays usable.
+                if res.is_ok() {
+                    self.note(true, stmts.len() as u64);
+                }
+                Reply::Saved {
+                    tab,
+                    res: Box::new(res.and_then(|()| self.conn.query(&refresh))),
+                }
+            }
+            Job::Activity { tab, view } => Reply::Rows {
+                tab,
+                res: Box::new(conn.activity_view(view)),
+                notice: None,
+            },
+            Job::SearchValue {
+                tab,
+                term,
+                exact,
+                targets,
+                cancel,
+            } => self.search(tab, &term, exact, &targets, &cancel),
+            Job::Source { tab, object } => Reply::Source {
+                tab,
+                res: conn.object_source(&object),
+            },
+            Job::RunScript {
+                tab,
+                path,
+                transaction,
+                cancel,
+            } => {
+                let (progress, error) =
+                    run_script(conn, &mut self.tx, self.pg, &path, transaction, &cancel, |p| {
+                        send(Reply::ScriptProgress { tab, progress: p })
+                    });
+                // Scripts usually create or change tables.
+                send(Reply::Tables(conn.tables()));
+                send(Reply::AllColumns(conn.all_columns()));
+                send(Reply::Objects(conn.objects()));
+                Reply::ScriptDone { tab, progress, error }
+            }
+            Job::Admin { sql, done } => {
+                let res = run_user_sql(conn, &mut self.tx, self.pg, &sql).map(|_| ());
+                // The sidebar shows the change (a new, renamed or dropped table).
+                if res.is_ok() {
+                    send(Reply::Tables(conn.tables()));
+                    send(Reply::AllColumns(conn.all_columns()));
+                }
+                Reply::Admin { done, res }
+            }
+            Job::UseSchema(name) => Reply::Location(conn.use_schema(&name).and_then(|()| conn.location())),
+            Job::Fks { tab } => Reply::Fks {
+                tab,
+                res: conn.all_fks(),
+            },
+            Job::ServerInfo { tab } => Reply::ServerInfo {
+                tab,
+                res: conn.server_info(),
+            },
+            Job::ResetQueryStats { tab } => {
+                let notice = conn.reset_query_stats().err().map(|e| e.to_string());
+                Reply::Rows {
+                    tab,
+                    res: Box::new(conn.activity_view(ActivityView::Slow)),
+                    notice,
+                }
+            }
+            Job::Kill {
+                tab,
+                id,
+                terminate,
+                view,
+            } => {
+                // A refused kill still refreshes the list; the reason comes as the notice.
+                let notice = conn.kill(id, terminate).err().map(|e| e.to_string());
+                Reply::Rows {
+                    tab,
+                    res: Box::new(conn.activity_view(view)),
+                    notice,
+                }
+            }
+            Job::Import { tab, spec } => {
+                let res = self
+                    .open_for_write()
+                    .and_then(|()| crate::import::run(&mut self.conn, &spec, self.tx.open));
+                if let Ok(n) = &res {
+                    self.note(true, *n);
+                }
+                Reply::Imported { tab, res }
+            }
+            Job::Explain { tab, sql, analyze } => Reply::Plan {
+                tab,
+                res: conn.explain(&sql, analyze),
+            },
+            Job::Structure { tab, schema, table } => Reply::Structure {
+                tab,
+                res: conn.structure(&schema, &table),
+            },
+            Job::Export { tab, spec } => Reply::Exported {
+                tab,
+                res: export(conn, spec),
+            },
+        })
+    }
+
+    /// In manual mode, the first write opens the transaction.
+    fn open_for_write(&mut self) -> DbResult<()> {
+        if self.tx.manual && !self.tx.open {
+            self.conn.begin()?;
+            self.tx.open = true;
+        }
+        Ok(())
+    }
+
+    /// Bookkeeping after a user statement ran inside the transaction.
+    fn note(&mut self, ok: bool, writes: u64) {
+        if self.tx.open {
+            if ok {
+                self.tx.writes = self.tx.writes.saturating_add(writes);
+            } else if self.pg {
+                self.tx.failed = true;
+            }
+        }
+    }
+
+    fn end_tx(&mut self, commit: bool) -> Reply {
+        let res = if commit && self.tx.failed {
+            // Postgres refuses COMMIT after a failed statement anyway; say why nothing was kept.
+            let rolled_back = self.conn.query("ROLLBACK");
+            Err(DbError::Other(match rolled_back {
+                Ok(_) => "um comando da transação falhou, então ela foi desfeita: nada foi confirmado".into(),
+                Err(e) => format!("um comando da transação falhou e o ROLLBACK também: {e}"),
+            }))
+        } else {
+            self.conn
+                .query(if commit { "COMMIT" } else { "ROLLBACK" })
+                .map(|_| ())
+        };
+        self.tx = TxState {
+            manual: self.tx.manual,
+            ..Default::default()
+        };
+        Reply::TxEnded { commit, res }
+    }
+
+    /// One edit from the grid, then the page again.
+    fn exec(&mut self, tab: u64, stmt: &Stmt, refresh: &str, expect_one: bool) -> Reply {
+        let mut notice = None;
+        let ran = self.open_for_write().and_then(|()| self.conn.execute(stmt));
+        self.note(ran.is_ok(), 1);
+        let res = ran.and_then(|done| {
+            if expect_one && done.affected == Some(0) {
+                notice = Some(
+                    "Nenhuma linha foi alterada: ela mudou ou foi excluída em outra sessão. \
+                     A página foi recarregada."
+                        .to_string(),
+                );
+            }
+            self.conn.query(refresh)
+        });
+        Reply::Rows {
+            tab,
+            res: Box::new(res),
+            notice,
+        }
+    }
+
+    fn dump(&mut self, tab: u64, spec: &crate::dump::DumpSpec, cancel: &AtomicBool) -> Reply {
+        let send = self.send;
+        let last = std::cell::Cell::new(std::time::Instant::now());
+        let res = crate::dump::dump(&mut self.conn, spec, cancel, |progress| {
+            // A few times a second is plenty for a progress bar.
+            if last.get().elapsed() >= std::time::Duration::from_millis(150) {
+                last.set(std::time::Instant::now());
+                send(Reply::DumpProgress { tab, progress });
+            }
+        });
+        match res {
+            Ok(progress) => Reply::DumpDone {
+                tab,
+                progress,
+                res: Ok(spec.path.clone()),
+            },
+            Err(e) => Reply::DumpDone {
+                tab,
+                progress: Default::default(),
+                res: Err(if cancel.load(Ordering::Relaxed) {
+                    "cancelado".into()
+                } else {
+                    e.to_string()
+                }),
+            },
+        }
+    }
+
+    /// Looks for a value table by table, reporting each as it finishes.
+    fn search(
+        &mut self,
+        tab: u64,
+        term: &str,
+        exact: bool,
+        targets: &[crate::search::SearchTarget],
+        cancel: &AtomicBool,
+    ) -> Reply {
+        for t in targets {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let (hit, error) =
+                match crate::search::search_table(&mut self.conn, self.cfg.kind, t, term, exact) {
+                    Ok(h) => (h, None),
+                    Err(e) => (None, Some(format!("{}.{}: {e}", t.schema, t.table))),
+                };
+            (self.send)(Reply::SearchProgress { tab, hit, error });
+        }
+        Reply::SearchDone {
+            tab,
+            cancelled: cancel.load(Ordering::Relaxed),
+        }
+    }
 }
 
 fn export(conn: &mut Conn, spec: ExportSpec) -> DbResult<(PathBuf, u64)> {

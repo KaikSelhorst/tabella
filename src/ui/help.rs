@@ -4,7 +4,7 @@ use eframe::egui::{self, Align, Layout, RichText};
 
 use super::complete::SNIPPETS;
 use super::{icon, theme};
-use crate::app::App;
+use crate::app::{App, Dialog};
 
 /// Width of the key column, the same in every group so the descriptions line up.
 const KEY_COL: f32 = 250.0;
@@ -108,7 +108,7 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
 
 impl App {
     pub fn help_ui(&mut self, ctx: &egui::Context) {
-        if !self.help {
+        if !matches!(self.dialog, Some(Dialog::Help)) {
             return;
         }
         let t = theme::tokens();
@@ -158,7 +158,7 @@ impl App {
                 });
             });
         if close || modal.should_close() {
-            self.help = false;
+            self.dialog = None;
         }
     }
 }

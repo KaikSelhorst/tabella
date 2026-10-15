@@ -2,6 +2,7 @@
 //! so the expensive step stands out without reading numbers.
 
 use eframe::egui::{self, Align, Layout, RichText};
+use std::fmt::Write as _;
 
 use super::{icon, palette, theme};
 use crate::plan::{Node, Plan};
@@ -291,19 +292,19 @@ fn plan_text(plan: &Plan) -> String {
     plan.root.walk(0, &mut |n, depth| {
         let mut line = format!("{}-> {}", "   ".repeat(depth), n.label);
         if let Some(c) = n.cost {
-            line.push_str(&format!("  (custo={c:.1}"));
+            let _ = write!(line, "  (custo={c:.1}");
             if let Some(r) = n.est_rows {
-                line.push_str(&format!(" linhas={r}"));
+                let _ = write!(line, " linhas={r}");
             }
             line.push(')');
         }
         if let (Some(ms), Some(r)) = (n.actual_ms, n.actual_rows) {
-            line.push_str(&format!(" (real {} linhas={r})", ms_text(ms)));
+            let _ = write!(line, " (real {} linhas={r})", ms_text(ms));
         }
         out.push_str(&line);
         out.push('\n');
         for d in &n.details {
-            out.push_str(&format!("{}     {d}\n", "   ".repeat(depth)));
+            let _ = writeln!(out, "{}     {d}", "   ".repeat(depth));
         }
     });
     out
