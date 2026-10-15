@@ -82,6 +82,13 @@ pub struct Session {
 }
 
 impl Session {
+    /// Whether the sidebar lists this as a view (no rows to insert, no table DDL).
+    pub fn is_view(&self, schema: &str, table: &str) -> bool {
+        self.tables
+            .iter()
+            .any(|t| t.is_view && t.schema == schema && t.name == table)
+    }
+
     pub fn send(&self, job: Job) {
         // Only fails when the worker is gone; `poll` reports that.
         let _ = self.tx.send(job);

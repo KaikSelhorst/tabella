@@ -39,6 +39,9 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let TabKind::Table(ts) = &mut tab.kind else {
         return;
     };
+    // A view has rows to read, not to insert into (most refuse it): no "Registro" or import.
+    let is_view = s.is_view(&ts.schema, &ts.table);
+    let mut view_source = false;
 
     let t = theme::tokens();
     let bar = egui::Frame::new()
@@ -159,14 +162,31 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let start = ui.cursor().right();
-                    add_record = ui
-                        .add_enabled(
-                            !s.cfg.read_only,
-                            theme::primary_button(Some(icon::PLUS), if compact { "" } else { "Registro" }),
-                        )
-                        .on_hover_text("Novo registro")
-                        .on_disabled_hover_text("Conexão somente leitura")
-                        .clicked();
+                    if is_view {
+                        let code = theme::tool(
+                            icon::CODE,
+                            "Código da view",
+                            compact,
+                            t.muted_foreground,
+                            t.foreground,
+                        );
+                        view_source = ui
+                            .button(code)
+                            .on_hover_text("A definição da view, no editor")
+                            .clicked();
+                    } else {
+                        add_record = ui
+                            .add_enabled(
+                                !s.cfg.read_only,
+                                theme::primary_button(
+                                    Some(icon::PLUS),
+                                    if compact { "" } else { "Registro" },
+                                ),
+                            )
+                            .on_hover_text("Novo registro")
+                            .on_disabled_hover_text("Conexão somente leitura")
+                            .clicked();
+                    }
                     if ui
                         .button(theme::icon(icon::ARROWS_CLOCKWISE))
                         .on_hover_text("Recarregar (F5)")
@@ -176,14 +196,15 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     }
                     detail_toggle(ui, cx.show_detail);
                     export = export_menu(ui, true, can_export, compact);
-                    import_csv = ui
-                        .add_enabled(
-                            !s.cfg.read_only,
-                            egui::Button::new(theme::icon(icon::UPLOAD_SIMPLE).color(t.muted_foreground)),
-                        )
-                        .on_hover_text("Importar CSV ou Excel (ou arraste o arquivo para a janela)")
-                        .on_disabled_hover_text("Conexão somente leitura")
-                        .clicked();
+                    import_csv = !is_view
+                        && ui
+                            .add_enabled(
+                                !s.cfg.read_only,
+                                egui::Button::new(theme::icon(icon::UPLOAD_SIMPLE).color(t.muted_foreground)),
+                            )
+                            .on_hover_text("Importar CSV ou Excel (ou arraste o arquivo para a janela)")
+                            .on_disabled_hover_text("Conexão somente leitura")
+                            .clicked();
                     let structure = theme::tool(
                         icon::TREE_STRUCTURE,
                         "Estrutura",
@@ -224,7 +245,11 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             })
             .map(|p| p.display().to_string())
     });
-    if (import_csv || dropped.is_some()) && !s.cfg.read_only {
+    if view_source && let TabKind::Table(ts) = &tab.kind {
+        cx.request = Some(Request::ViewSource(ts.schema.clone(), ts.table.clone()));
+    }
+    let is_view = matches!(&tab.kind, TabKind::Table(ts) if s.is_view(&ts.schema, &ts.table));
+    if (import_csv || dropped.is_some()) && !s.cfg.read_only && !is_view {
         app::open_import(tab, dropped);
     }
     if add_record {

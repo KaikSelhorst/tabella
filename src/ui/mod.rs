@@ -1914,6 +1914,35 @@ pub(crate) mod screenshots {
             let app = harness.state_mut();
             app.tabs.pop();
             app.active = 0;
+            // Its Estrutura: no designer, no CREATE TABLE "DDL"; the view's code instead.
+            app.open_structure("public", "vendas_mensais");
+            if let Some(crate::app::Tab {
+                kind: TabKind::Structure(st),
+                ..
+            }) = app.tabs.last_mut()
+            {
+                let col = |name: &str, ty: &str| crate::db::StructColumn {
+                    name: name.into(),
+                    data_type: ty.into(),
+                    nullable: true,
+                    default: None,
+                    pk: false,
+                };
+                st.data = Some(crate::db::TableStructure {
+                    columns: vec![col("mes", "date"), col("pedidos", "bigint"), col("total", "numeric")],
+                    ddl: "CREATE TABLE \"public\".\"vendas_mensais\" (…);".into(),
+                    ..Default::default()
+                });
+            }
+            harness.run_steps(3);
+            harness
+                .render()
+                .unwrap()
+                .save(format!("{dir}/view-structure.png"))
+                .unwrap();
+            let app = harness.state_mut();
+            app.tabs.pop();
+            app.active = 0;
         }
 
         // Many tabs: the strip scrolls and keeps the active one in view.

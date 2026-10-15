@@ -73,6 +73,8 @@ pub(super) enum Request {
     DeleteFavorite(String),
     /// The ER diagram of a schema.
     Diagram(String),
+    /// A view's definition in an editor.
+    ViewSource(String, String),
     /// Save the active editor tab to its file (`true`: ask where).
     SaveFile(bool),
     OpenFile,
@@ -335,8 +337,12 @@ impl App {
                 if let Some(e) = &tab.error {
                     error_banner(ui, e);
                 }
-                cx.request = match structure::structure_tab(ui, st, tab.busy()) {
+                let view = s.is_view(&st.schema, &st.table);
+                cx.request = match structure::structure_tab(ui, st, tab.busy(), view) {
                     Some(StructAction::OpenSql(ddl)) => Some(Request::Sql(ddl)),
+                    Some(StructAction::ViewSource) => {
+                        Some(Request::ViewSource(st.schema.clone(), st.table.clone()))
+                    }
                     Some(StructAction::Edit) => Some(Request::Design(st.schema.clone(), st.table.clone())),
                     Some(StructAction::OpenData) => Some(Request::Data(st.schema.clone(), st.table.clone())),
                     None => None,
@@ -359,6 +365,20 @@ impl App {
             }
             Some(Request::DeleteFavorite(id)) => self.delete_favorite(&id),
             Some(Request::Diagram(schema)) => self.open_diagram(Some(&schema)),
+            Some(Request::ViewSource(schema, name)) => {
+                let view = self.session.as_ref().and_then(|s| {
+                    s.objects
+                        .iter()
+                        .find(|o| o.kind == crate::db::ObjKind::View && o.schema == schema && o.name == name)
+                        .cloned()
+                });
+                match view {
+                    Some(o) => self.open_object(o),
+                    None => {
+                        self.notice = app::Notice::error(format!("Não encontrei a definição da view {name}"))
+                    }
+                }
+            }
             Some(Request::SaveFile(ask)) => self.save_file(self.active, ask),
             Some(Request::OpenFile) => self.open_file_dialog(),
             Some(Request::RunFile) => self.pick_script(),

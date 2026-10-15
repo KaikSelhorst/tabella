@@ -9,11 +9,14 @@ use crate::values::ValueKind;
 pub enum StructAction {
     OpenSql(String),
     OpenData,
+    /// A view: its definition in an editor.
+    ViewSource,
     /// "Editar estrutura": open the table designer.
     Edit,
 }
 
-pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool) -> Option<StructAction> {
+/// `is_view`: no designer and no table DDL (it would be a CREATE TABLE): the view's code.
+pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: bool) -> Option<StructAction> {
     let t = theme::tokens();
     let mut action = None;
     egui::Frame::new()
@@ -46,7 +49,15 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool) -> Option<
                     {
                         action = Some(StructAction::OpenData);
                     }
+                    if is_view {
+                        let code =
+                            theme::icon_text(icon::CODE, "Código da view", t.muted_foreground, t.foreground);
+                        if ui.button(code).clicked() {
+                            action = Some(StructAction::ViewSource);
+                        }
+                    }
                     if st.data.is_some()
+                        && !is_view
                         && ui
                             .button(theme::icon_text(
                                 icon::PENCIL_SIMPLE,
@@ -58,7 +69,7 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool) -> Option<
                     {
                         action = Some(StructAction::Edit);
                     }
-                    if let Some(d) = &st.data {
+                    if let Some(d) = st.data.as_ref().filter(|_| !is_view) {
                         let open = theme::icon_text(
                             icon::CODE,
                             "Abrir DDL no editor",
@@ -129,6 +140,11 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool) -> Option<
                     section(ui, &format!("Chaves estrangeiras  {}", d.foreign_keys.len()));
                     named_list(ui, &d.foreign_keys, "Nenhuma chave estrangeira");
 
+                    // A view's "DDL" would be a CREATE TABLE made from its columns: misleading.
+                    if is_view {
+                        ui.add_space(12.0);
+                        return;
+                    }
                     section(ui, "DDL");
                     egui::Frame::new()
                         .fill(t.sidebar)
