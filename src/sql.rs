@@ -50,6 +50,37 @@ pub fn select_range(kind: Kind, q: &PageQuery, limit: usize, offset: usize) -> S
     sql + &format!(" LIMIT {limit} OFFSET {offset}")
 }
 
+/// The next `limit` rows after `after` (the last primary key read), in key order. Costs the
+/// same on any chunk, where OFFSET reads and throws away every row before it.
+pub fn select_after(kind: Kind, q: &PageQuery, limit: usize, after: Option<&[Option<String>]>) -> String {
+    let keys =
+        q.pk.iter()
+            .map(|p| kind.quote_ident(p))
+            .collect::<Vec<_>>()
+            .join(", ");
+    let mut conds = Vec::new();
+    if !q.filter.trim().is_empty() {
+        conds.push(format!("({})", q.filter));
+    }
+    if let Some(last) = after {
+        let vals = last
+            .iter()
+            .map(|v| v.as_deref().map_or("NULL".to_string(), |v| kind.quote_str(v)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        conds.push(format!("({keys}) > ({vals})"));
+    }
+    let wh = if conds.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conds.join(" AND "))
+    };
+    format!(
+        "SELECT * FROM {}{wh} ORDER BY {keys} LIMIT {limit}",
+        kind.qualified(q.schema, q.table)
+    )
+}
+
 /// `INSERT` with only the columns the user filled in; the rest get their defaults.
 pub fn insert_values(kind: Kind, schema: &str, table: &str, values: &[(String, Option<String>)]) -> Stmt {
     if values.is_empty() {
@@ -337,8 +368,13 @@ pub fn statement_ranges(script: &str, blank_lines: bool) -> Vec<(usize, usize)> 
 
 /// The statement the cursor (a char index) is in or right after; the next one when the cursor
 /// is before the first.
+#[cfg(test)]
 pub fn statement_at(script: &str, cursor: usize) -> Option<(usize, usize)> {
-    let ranges = statement_ranges(script, true);
+    statement_in(&statement_ranges(script, true), cursor)
+}
+
+/// `statement_at` with the ranges already split (the editor keeps them between frames).
+pub fn statement_in(ranges: &[(usize, usize)], cursor: usize) -> Option<(usize, usize)> {
     ranges
         .iter()
         .rev()

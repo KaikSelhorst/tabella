@@ -903,11 +903,24 @@ fn export(conn: &mut Conn, spec: ExportSpec) -> DbResult<(PathBuf, u64)> {
                 pk: &pk,
                 page: 0,
             };
-            // Ordered by the primary key, so chunks neither skip nor repeat rows.
+            // Ordered by the primary key, so chunks neither skip nor repeat rows. In key order,
+            // each chunk starts after the last key read; ordered by another column (which may
+            // hold NULLs), by OFFSET.
+            let by_key = !pk.is_empty() && q.order.is_none_or(|(c, asc)| asc && pk.len() == 1 && c == pk[0]);
             let mut writer: Option<Writer> = None;
             let mut offset = 0;
+            let mut after: Option<Vec<Option<String>>> = None;
             loop {
-                let chunk = conn.query(&select_range(kind, &q, EXPORT_CHUNK, offset))?;
+                let sql = if by_key {
+                    crate::sql::select_after(kind, &q, EXPORT_CHUNK, after.as_deref())
+                } else {
+                    select_range(kind, &q, EXPORT_CHUNK, offset)
+                };
+                let chunk = conn.query(&sql)?;
+                if by_key && let Some(last) = chunk.rows.last() {
+                    let at = |p: &String| chunk.columns.iter().position(|c| c == p);
+                    after = Some(pk.iter().map(|p| at(p).and_then(|i| last[i].clone())).collect());
+                }
                 let w = match &mut writer {
                     Some(w) => w,
                     None => writer.insert(
@@ -1266,6 +1279,53 @@ mod tests {
     #[ignore]
     fn script_file_mysql() {
         script_file(Kind::MySql, 53306, "test");
+    }
+
+    /// A real table, by hand: `DBLITE_EXPORT_CHECK=host:port:user:password:database:schema.table`
+    /// (Postgres). Exports it whole as CSV and reports the time.
+    #[test]
+    #[ignore]
+    fn export_real_table() {
+        let Ok(spec) = std::env::var("DBLITE_EXPORT_CHECK") else {
+            return;
+        };
+        let [host, port, user, password, database, qualified] = spec.split(':').collect::<Vec<_>>()[..]
+        else {
+            panic!("host:port:user:password:database:schema.table")
+        };
+        let (schema, table) = qualified.split_once('.').unwrap();
+        let cfg = ConnConfig {
+            host: host.into(),
+            port: port.parse().unwrap(),
+            user: user.into(),
+            password: password.into(),
+            database: database.into(),
+            ..ConnConfig::new(Kind::Postgres)
+        };
+        let mut c = Conn::connect(&cfg, None).expect("connect");
+        let cols = c.columns(schema, table).unwrap();
+        let pk = cols.iter().filter(|c| c.pk).map(|c| c.name.clone()).collect();
+        let path = std::env::temp_dir().join("dblite-export-real.csv");
+        let started = std::time::Instant::now();
+        let (_, rows) = export(
+            &mut c,
+            ExportSpec {
+                format: Format::Csv,
+                path: path.clone(),
+                table_name: Kind::Postgres.qualified(schema, table),
+                cols,
+                source: ExportSource::Table {
+                    schema: schema.into(),
+                    table: table.into(),
+                    filter: String::new(),
+                    order: None,
+                    pk,
+                },
+            },
+        )
+        .unwrap();
+        eprintln!("{rows} linhas em {:?}", started.elapsed());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

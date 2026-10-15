@@ -134,6 +134,8 @@ pub struct TableState {
     pub import: Option<ImportForm>,
     /// "Filtrar valores" of a column, while open.
     pub value_filter: Option<ValueFilter>,
+    /// The last `overlay`, and what it was built from: the grid asks for it every frame.
+    overlay_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Overlay>)>>,
     /// Conditions "Filtrar valores" put in `filter`, so applying it again replaces them.
     pub value_conds: Vec<ValueCond>,
 }
@@ -176,7 +178,7 @@ pub struct ImportForm {
 
 /// A pending grid change. Rows are identified by their primary key values, so changes survive
 /// the page being reloaded (e.g. after inserting a row).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub enum Change {
     Set {
         key: Vec<Option<String>>,
@@ -229,6 +231,7 @@ impl TableState {
             import: None,
             value_filter: None,
             value_conds: Vec::new(),
+            overlay_cache: Default::default(),
         }
     }
 
@@ -256,18 +259,57 @@ impl TableState {
     }
 
     /// The current page with pending changes applied, for display. `None` when nothing is pending.
-    pub fn overlay(&self, res: &QueryResult) -> Option<Overlay> {
+    /// Built again only when the changes or the result differ from last time.
+    pub fn overlay(&self, res: &QueryResult) -> Option<std::rc::Rc<Overlay>> {
+        use std::hash::{Hash, Hasher};
         if self.changes.is_empty() {
             return None;
         }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.changes.hash(&mut h);
+        // The result itself: a new one has its own rows (and timing).
+        (
+            res.rows.as_ptr() as usize,
+            res.rows.len(),
+            res.columns.len(),
+            res.elapsed,
+        )
+            .hash(&mut h);
+        let fingerprint = h.finish();
+        if let Some((f, o)) = &*self.overlay_cache.borrow()
+            && *f == fingerprint
+        {
+            return Some(o.clone());
+        }
+        let o = std::rc::Rc::new(self.build_overlay(res));
+        *self.overlay_cache.borrow_mut() = Some((fingerprint, o.clone()));
+        Some(o)
+    }
+
+    fn build_overlay(&self, res: &QueryResult) -> Overlay {
         let mut out = Overlay {
             result: res.clone(),
             changed: HashSet::new(),
             deleted: HashSet::new(),
         };
+        // Changes by row key, and where the key columns are: one pass over the rows.
+        let mut by_key: std::collections::HashMap<&[Option<String>], Vec<&Change>> = Default::default();
+        for c in &self.changes {
+            by_key.entry(c.key()).or_default().push(c);
+        }
+        let key_at: Vec<Option<usize>> = self
+            .pk_names()
+            .iter()
+            .map(|p| res.columns.iter().position(|c| c == p))
+            .collect();
+        let mut key: Vec<Option<String>> = Vec::with_capacity(key_at.len());
         for row in 0..res.rows.len() {
-            let key = self.row_key(res, row);
-            for c in self.changes.iter().filter(|c| c.key() == key.as_slice()) {
+            key.clear();
+            key.extend(key_at.iter().map(|i| i.and_then(|i| res.rows[row][i].clone())));
+            let Some(changes) = by_key.get(key.as_slice()) else {
+                continue;
+            };
+            for c in changes {
                 match c {
                     Change::Delete { .. } => {
                         out.deleted.insert(row);
@@ -281,7 +323,7 @@ impl TableState {
                 }
             }
         }
-        Some(out)
+        out
     }
 
     /// One statement per pending change, in the order they were made.
@@ -3686,6 +3728,51 @@ mod poll_tests {
         assert_eq!(app.tabs[2].title, "Relatório (cópia)");
         app.close_others(2, false);
         assert_eq!(app.tabs.len(), 1);
+    }
+
+    /// The cached overlay follows every change to the edits and to the result.
+    #[test]
+    fn overlay_cache_never_shows_stale_edits() {
+        let mut ts = TableState::new("public", "t", None);
+        ts.cols = vec![ColumnInfo {
+            name: "id".into(),
+            data_type: "integer".into(),
+            pk: true,
+            nullable: false,
+            has_default: false,
+            references: None,
+        }];
+        let res = QueryResult {
+            columns: vec!["id".into(), "nome".into()],
+            rows: vec![
+                vec![Some("1".into()), Some("a".into())],
+                vec![Some("2".into()), Some("b".into())],
+            ],
+            ..Default::default()
+        };
+        let set = |row: &str, v: &str| Change::Set {
+            key: vec![Some(row.into())],
+            col: "nome".into(),
+            value: Some(v.into()),
+            before: None,
+        };
+        assert!(ts.overlay(&res).is_none());
+        ts.changes.push(set("1", "x"));
+        assert_eq!(ts.overlay(&res).unwrap().result.rows[0][1].as_deref(), Some("x"));
+        // Same number of changes, different value.
+        ts.changes[0] = set("1", "y");
+        assert_eq!(ts.overlay(&res).unwrap().result.rows[0][1].as_deref(), Some("y"));
+        ts.changes.push(Change::Delete {
+            key: vec![Some("2".into())],
+        });
+        assert!(ts.overlay(&res).unwrap().deleted.contains(&1));
+        // A new result (same shape) is overlaid again.
+        let mut other = res.clone();
+        other.rows[0][1] = Some("z".into());
+        other.elapsed = std::time::Duration::from_millis(9);
+        let o = ts.overlay(&other).unwrap();
+        assert_eq!(o.result.rows[0][1].as_deref(), Some("y"));
+        assert!(o.changed.contains(&(0, 1)));
     }
 
     #[test]

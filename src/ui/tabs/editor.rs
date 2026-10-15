@@ -42,9 +42,11 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             let chars = |(a, b): (usize, usize)| text.chars().skip(a).take(b - a).collect::<String>();
             let selection = selected_range.map(chars);
             // With several statements, Ctrl+Enter runs the one under the cursor and F5 runs all.
-            let several = sql::statement_ranges(text, true).len() > 1;
+            // Splitting a long script takes a while: done again only when the text changes.
+            let ranges = statement_ranges_cached(ui.ctx(), tab.id, text);
+            let several = ranges.len() > 1;
             let current = if several && selection.is_none() {
-                cursor.and_then(|c| sql::statement_at(text, usize::from(c.primary.index)))
+                cursor.and_then(|c| sql::statement_in(&ranges, usize::from(c.primary.index)))
             } else {
                 None
             };
@@ -280,7 +282,26 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         let byte = |c: usize| text.char_indices().nth(c).map_or(text.len(), |(i, _)| i);
                         (b <= text.chars().count()).then(|| byte(a)..byte(b))
                     });
+                    let galley_cache = egui::Id::new(("editor_galley", tab.id));
                     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                        // Highlighting and laying out a long script costs more than a frame:
+                        // the result is kept until anything it depends on changes.
+                        let key = egui::Id::new((
+                            buf.as_str(),
+                            wrap.to_bits(),
+                            &query,
+                            case,
+                            current_match,
+                            error_bytes.clone(),
+                            theme::is_light(),
+                            ui.ctx().pixels_per_point().to_bits(),
+                        ));
+                        if let Some((k, g)) =
+                            ui.data(|d| d.get_temp::<(egui::Id, std::sync::Arc<egui::Galley>)>(galley_cache))
+                            && k == key
+                        {
+                            return g;
+                        }
                         let mut job = syntax::highlight(buf.as_str(), egui::FontId::monospace(13.0));
                         if let Some(r) = error_bytes.clone() {
                             syntax::mark_error(&mut job, r);
@@ -290,7 +311,9 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             find::mark(&mut job, &ranges, current_match);
                         }
                         job.wrap.max_width = wrap;
-                        ui.fonts_mut(|f| f.layout_job(job))
+                        let g = ui.fonts_mut(|f| f.layout_job(job));
+                        ui.data_mut(|d| d.insert_temp(galley_cache, (key, g.clone())));
+                        g
                     };
                     let mut out = TextEdit::multiline(text)
                         .id(editor_id)
@@ -474,6 +497,20 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         return;
     }
     result_area(ui, tab, cx, false);
+}
+
+/// `sql::statement_ranges` of the editor text, kept while the text stays the same.
+fn statement_ranges_cached(ctx: &egui::Context, tab: u64, text: &str) -> Vec<(usize, usize)> {
+    let cache = egui::Id::new(("statement_ranges", tab));
+    let key = egui::Id::new(text);
+    if let Some((k, r)) = ctx.data(|d| d.get_temp::<(egui::Id, Vec<(usize, usize)>)>(cache))
+        && k == key
+    {
+        return r;
+    }
+    let r = sql::statement_ranges(text, true);
+    ctx.data_mut(|d| d.insert_temp(cache, (key, r.clone())));
+    r
 }
 
 /// The sidebar's table for a name typed in the editor (`clientes`, `public.clientes`,

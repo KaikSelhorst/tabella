@@ -9,6 +9,8 @@ mod grid;
 mod help;
 mod import_form;
 mod palette;
+#[cfg(test)]
+mod perf;
 mod plan_view;
 mod prefs;
 mod sidebar;
@@ -63,6 +65,13 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.draw(ui);
+    }
+}
+
+impl App {
+    /// One frame of the whole window.
+    pub fn draw(&mut self, ui: &mut egui::Ui) {
         self.tick_fps();
         self.clear_finished_notice();
         self.window = ui
@@ -467,7 +476,7 @@ impl App {
 /// Renders the main screens to PNGs with fake data, for checking the look without a database.
 /// Run with `DBLITE_SHOTS=<dir> cargo test screenshots -- --ignored` (needs a Vulkan driver, e.g. lavapipe).
 #[cfg(test)]
-mod screenshots {
+pub(crate) mod screenshots {
     use std::time::Duration;
 
     use eframe::egui;

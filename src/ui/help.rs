@@ -34,8 +34,12 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Roda um dump/migração grande comando a comando, com progresso",
             ),
             (
-                "Ctrl+P → Exportar banco / Comparar estrutura",
-                "Dump .sql; diferenças com outro schema ou banco e o SQL para igualar",
+                "Ctrl+P → Exportar banco",
+                "Estrutura e dados como .sql, com progresso",
+            ),
+            (
+                "Ctrl+P → Comparar estrutura",
+                "Diferenças com outro schema ou banco e o SQL que iguala",
             ),
             ("Ctrl+Tab / Ctrl+Shift+Tab", "Próxima / aba anterior"),
             ("F1", "Esta tela"),
