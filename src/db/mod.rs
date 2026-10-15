@@ -138,12 +138,12 @@ impl Tag {
 
     pub fn label(self) -> &'static str {
         match self {
-            Tag::Red => "Vermelho",
-            Tag::Orange => "Laranja",
-            Tag::Yellow => "Amarelo",
-            Tag::Green => "Verde",
-            Tag::Blue => "Azul",
-            Tag::Violet => "Violeta",
+            Tag::Red => "Red",
+            Tag::Orange => "Orange",
+            Tag::Yellow => "Yellow",
+            Tag::Green => "Green",
+            Tag::Blue => "Blue",
+            Tag::Violet => "Violet",
         }
     }
 }
@@ -286,7 +286,7 @@ pub enum ObjKind {
 impl ObjKind {
     pub fn plural(self) -> &'static str {
         match self {
-            ObjKind::Function => "Funções",
+            ObjKind::Function => "Functions",
             ObjKind::Procedure => "Procedures",
             ObjKind::Trigger => "Triggers",
             ObjKind::View => "Views",
@@ -463,7 +463,7 @@ impl Canceller {
     }
 }
 
-/// What the "Estrutura" tab shows.
+/// What the "Structure" tab shows.
 #[derive(Clone, Debug, Default)]
 pub struct TableStructure {
     pub columns: Vec<StructColumn>,
@@ -473,7 +473,7 @@ pub struct TableStructure {
     pub foreign_keys: Vec<(String, String)>,
     /// `CREATE TABLE ...` (plus separate indexes on Postgres), ready to copy.
     pub ddl: String,
-    /// For "Exportar .sql": `ddl` without the foreign keys, which come as `ALTER TABLE`s to run
+    /// For "Export .sql": `ddl` without the foreign keys, which come as `ALTER TABLE`s to run
     /// once every table has its data.
     pub ddl_without_fks: String,
     pub fk_statements: Vec<String>,
@@ -617,7 +617,7 @@ impl Conn {
         let r = self.query(sql)?;
         let [n] = cells(r.rows.into_iter().next().unwrap_or_default())?;
         n.parse()
-            .map_err(|_| DbError::Other(format!("contagem inválida: {n}")))
+            .map_err(|_| DbError::Other(format!("invalid count: {n}")))
     }
 
     /// Runs row edits as one transaction. Every statement must touch exactly one row; if one
@@ -629,11 +629,11 @@ impl Conn {
                     Ok(r) if r.affected == Some(1) => {}
                     Ok(_) => {
                         return Err(DbError::Other(format!(
-                            "A alteração {} não encontrou a linha (ela mudou ou foi excluída em outra sessão). Nada foi salvo.",
+                            "Change {} didn't find its row (it changed or was deleted in another session). Nothing was saved.",
                             i + 1
                         )));
                     }
-                    Err(e) => return Err(DbError::Other(format!("Alteração {}: {e}. Nada foi salvo.", i + 1))),
+                    Err(e) => return Err(DbError::Other(format!("Change {}: {e}. Nothing was saved.", i + 1))),
                 }
             }
             Ok(())
@@ -687,7 +687,7 @@ impl Conn {
         }
         if self.kind() == Kind::MySql {
             return Err(DbError::Other(
-                "prévia indisponível para UPDATE/DELETE com JOIN ou várias tabelas no MySQL".into(),
+                "preview unavailable for UPDATE/DELETE with JOIN or multiple tables in MySQL".into(),
             ));
         }
         let (begin, rollback) = if nested {
@@ -723,7 +723,7 @@ impl Conn {
                 Ok(w.finish()?)
             }
             Conn::My(_) | Conn::Lite(_) => {
-                Err(DbError::Other("COPY … FROM stdin só existe no Postgres".into()))
+                Err(DbError::Other("COPY … FROM stdin only exists in Postgres".into()))
             }
         }
     }
@@ -745,7 +745,7 @@ fn cells<const N: usize>(row: Vec<Option<String>>) -> DbResult<[String; N]> {
         .map(Option::unwrap_or_default)
         .collect::<Vec<_>>()
         .try_into()
-        .map_err(|_| DbError::Other(format!("esperava {N} colunas, recebi {len}")))
+        .map_err(|_| DbError::Other(format!("expected {N} columns, got {len}")))
 }
 
 fn pg_query(c: &mut postgres::Client, sql: &str, limit: usize) -> DbResult<QueryResult> {
@@ -897,7 +897,7 @@ mod tests {
             cols.iter()
                 .any(|c| c.table == "dbl_t" && c.column == "name" && !c.data_type.is_empty())
         );
-        // "Buscar valor": finds the row by part of a value, in the right column, and the filter
+        // "Search value": finds the row by part of a value, in the right column, and the filter
         // it offers opens exactly there.
         {
             use crate::search::{search_table, targets};
@@ -958,7 +958,7 @@ mod tests {
         let risky = match kind {
             Kind::Postgres => "SET standard_conforming_strings = off",
             Kind::MySql => "SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')",
-            Kind::Sqlite => unreachable!("teste de servidor"),
+            Kind::Sqlite => unreachable!("server test"),
         };
         c.query(risky).unwrap();
         let nasty = [r"a\", r"x\'; DROP TABLE dbl_t; --", "it's", r"\n\0", "ção 🚀"];
@@ -1016,7 +1016,7 @@ mod tests {
         let sleep = match kind {
             Kind::Postgres => "SELECT pg_sleep(20)",
             Kind::MySql => "SELECT SLEEP(20)",
-            Kind::Sqlite => unreachable!("teste de servidor"),
+            Kind::Sqlite => unreachable!("server test"),
         };
         let _ = c.query(sleep); // Postgres: error "canceling statement"; MySQL: returns 1
         stopper.join().unwrap();
@@ -1100,10 +1100,10 @@ mod tests {
 
         // Errors carry the server's message, not just "db error".
         let err = c
-            .query("SELECT * FROM tabela_que_nao_existe")
+            .query("SELECT * FROM table_that_does_not_exist")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("tabela_que_nao_existe"), "{kind:?}: {err}");
+        assert!(err.contains("table_that_does_not_exist"), "{kind:?}: {err}");
 
         // Plans come back as a tree, estimated or measured.
         let p = c.explain("SELECT * FROM dbl_t WHERE id > 0;", false).unwrap();
@@ -1139,13 +1139,13 @@ mod tests {
             let _ = other.query(match kind {
                 Kind::Postgres => "SELECT pg_sleep(20)",
                 Kind::MySql => "SELECT SLEEP(20)",
-                Kind::Sqlite => unreachable!("teste de servidor"),
+                Kind::Sqlite => unreachable!("server test"),
             });
             started.elapsed()
         });
         std::thread::sleep(std::time::Duration::from_millis(700));
         let act = c.activity().unwrap();
-        let q = act.columns.iter().position(|c| c == "consulta").unwrap();
+        let q = act.columns.iter().position(|c| c == "query").unwrap();
         let sleeper = act
             .rows
             .iter()
@@ -1192,7 +1192,7 @@ mod tests {
         }
         let slow = c.activity_view(ActivityView::Slow).unwrap();
         assert!(
-            slow.columns.contains(&"consulta".to_string()) && !slow.rows.is_empty(),
+            slow.columns.contains(&"query".to_string()) && !slow.rows.is_empty(),
             "{kind:?}"
         );
         c.reset_query_stats().unwrap();
@@ -1223,7 +1223,7 @@ mod tests {
                     )
                     .unwrap();
                 }
-                Kind::Sqlite => unreachable!("teste de servidor"),
+                Kind::Sqlite => unreachable!("server test"),
             }
             let objs = c.objects().unwrap();
             let find = |name: &str| {
@@ -1236,7 +1236,7 @@ mod tests {
             assert_eq!(find("dbl_v").kind, ObjKind::View);
             let src = c.object_source(find("dbl_f")).unwrap();
             assert!(src.contains("dbl_f") && src.contains("a + 1"), "{kind:?}: {src}");
-            // "Executar…": the call built from the listed arguments, with the value filled in.
+            // "Run…": the call built from the listed arguments, with the value filled in.
             {
                 let f = find("dbl_f");
                 let args = crate::sql::parse_args(&f.args);
@@ -1357,12 +1357,12 @@ mod tests {
                     c.use_schema(db).unwrap();
                     c.query("DROP DATABASE dbl_outro").unwrap();
                 }
-                Kind::Sqlite => unreachable!("teste de servidor"),
+                Kind::Sqlite => unreachable!("server test"),
             }
         }
 
         // Server overview: every fact present, and the test table among the biggest.
-        let info = c.server_info().unwrap();
+        let info = c.server_info().unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(info.facts.len(), 5, "{kind:?}: {:?}", info.facts);
         assert!(
             info.facts[0]
@@ -1376,7 +1376,7 @@ mod tests {
         assert!(!info.largest.rows.is_empty(), "{kind:?}");
         // dbl_child's index backs its foreign key; it is listed, and says so.
         let ix = &info.indexes;
-        assert!(ix.columns.contains(&"usos".to_string()), "{kind:?}: {ix:?}");
+        assert!(ix.columns.contains(&"scans".to_string()), "{kind:?}: {ix:?}");
 
         // A per-connection timeout stops long statements on the server.
         let timed = ConnConfig {
@@ -1388,7 +1388,7 @@ mod tests {
         let _ = tc.query(match kind {
             Kind::Postgres => "SELECT pg_sleep(5)",
             Kind::MySql => "SELECT SLEEP(5)",
-            Kind::Sqlite => unreachable!("teste de servidor"),
+            Kind::Sqlite => unreachable!("server test"),
         });
         assert!(
             started.elapsed() < std::time::Duration::from_secs(3),
@@ -1418,9 +1418,9 @@ mod tests {
             ["lote-1", "lote-2"]
         );
         let err = c
-            .run_batch(&[set("1", "nao-salvo"), set("999", "x")], false)
+            .run_batch(&[set("1", "not-saved"), set("999", "x")], false)
             .unwrap_err();
-        assert!(err.to_string().contains("Nada foi salvo"), "{err}");
+        assert!(err.to_string().contains("Nothing was saved"), "{err}");
         let r = c.query("SELECT name FROM dbl_t WHERE id = 1").unwrap();
         assert_eq!(
             r.rows[0][0].as_deref(),
@@ -1563,7 +1563,7 @@ mod tests {
             assert_eq!(r.rows[0][0], None, "{kind:?}: empty cell is NULL");
             std::fs::write(&path, "codigo;nome\n12;doze\n10;repetido\n").unwrap();
             let err = run(&mut c, &spec, false).unwrap_err().to_string();
-            assert!(err.contains("Nada foi importado"), "{kind:?}: {err}");
+            assert!(err.contains("Nothing was imported"), "{kind:?}: {err}");
             let r = c.query("SELECT count(*) FROM dbl_t WHERE id = 12").unwrap();
             assert_eq!(r.rows[0][0].as_deref(), Some("0"), "{kind:?}: rolled back");
             spec.mapping = vec![None, None];
@@ -1600,7 +1600,7 @@ mod tests {
             assert_eq!(r.rows[1], vec![None, None], "{kind:?}");
             let _ = std::fs::remove_file(path);
         }
-        // "Filtrar valores": the list and the condition it builds run as they are.
+        // "Filter values": the list and the condition it builds run as they are.
         {
             let schema = if kind == Kind::MySql { db } else { "public" };
             let expr = kind.quote_ident("name");

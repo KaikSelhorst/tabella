@@ -23,7 +23,7 @@ fn pg_message(e: &postgres::Error) -> String {
             let _ = write!(out, " — {d}");
         }
         if let Some(h) = db.hint() {
-            let _ = write!(out, " (dica: {h})");
+            let _ = write!(out, " (hint: {h})");
         }
         return out;
     }
@@ -40,7 +40,7 @@ fn with_cert_hint(msg: String) -> String {
     let lower = msg.to_ascii_lowercase();
     if lower.contains("certificate") || lower.contains("unknownissuer") {
         format!(
-            "{msg} (o certificado do servidor não foi reconhecido; se ele usa uma CA própria, marque “Aceitar certificado inválido”)"
+            "{msg} (the server's certificate wasn't recognized; if it uses its own CA, check “Accept invalid certificate”)"
         )
     } else {
         msg

@@ -45,9 +45,9 @@ impl SecretStore {
     /// Short label for the UI.
     pub fn describe(&self) -> &'static str {
         match self {
-            SecretStore::Os if cfg!(windows) => "Gerenciador de Credenciais do Windows",
-            SecretStore::Os => "chaveiro do sistema",
-            SecretStore::Vault(_) => "cofre com senha mestra",
+            SecretStore::Os if cfg!(windows) => "Windows Credential Manager",
+            SecretStore::Os => "system keyring",
+            SecretStore::Vault(_) => "master-password vault",
         }
     }
 
@@ -190,7 +190,7 @@ impl Vault {
         let mut key = [0u8; 32];
         Argon2::default()
             .hash_password_into(master.as_bytes(), salt, &mut key)
-            .map_err(|e| format!("falha ao derivar a chave: {e}"))?;
+            .map_err(|e| format!("failed to derive the key: {e}"))?;
         Ok(ChaCha20Poly1305::new(&Key::<ChaCha20Poly1305>::from(key)))
     }
 
@@ -199,13 +199,13 @@ impl Vault {
     pub fn kdf_job(&self, master: &str, create: bool) -> Result<KdfJob, String> {
         let salt = if create {
             if master.chars().count() < 8 {
-                return Err("Use pelo menos 8 caracteres".into());
+                return Err("Use at least 8 characters".into());
             }
             // A random 32-byte value; the key type is just a convenient generator.
             Key::<ChaCha20Poly1305>::generate().to_vec()
         } else {
-            let file = self.file.as_ref().ok_or("cofre ainda não foi criado")?;
-            B64.decode(&file.salt).map_err(|_| "cofre corrompido")?
+            let file = self.file.as_ref().ok_or("the vault hasn't been created yet")?;
+            B64.decode(&file.salt).map_err(|_| "corrupted vault")?
         };
         Ok(KdfJob {
             master: master.to_string(),
@@ -226,13 +226,13 @@ impl Vault {
             self.cipher = Some(cipher);
             return self.save().map_err(|e| e.to_string());
         }
-        let file = self.file.as_ref().ok_or("cofre ainda não foi criado")?;
+        let file = self.file.as_ref().ok_or("the vault hasn't been created yet")?;
         match open(&cipher, &file.check) {
             Some(v) if v == CHECK => {
                 self.cipher = Some(cipher);
                 Ok(())
             }
-            _ => Err("Senha mestra incorreta".into()),
+            _ => Err("Wrong master password".into()),
         }
     }
 
@@ -286,7 +286,7 @@ impl Vault {
 
 fn seal(cipher: &ChaCha20Poly1305, plain: &[u8]) -> Result<Sealed, String> {
     let nonce = Nonce::generate();
-    let data = cipher.encrypt(&nonce, plain).map_err(|_| "falha ao cifrar")?;
+    let data = cipher.encrypt(&nonce, plain).map_err(|_| "encryption failed")?;
     Ok(Sealed {
         nonce: B64.encode(nonce),
         data: B64.encode(data),
@@ -368,7 +368,7 @@ mod tests {
         assert!(!v.exists());
         assert_eq!(v.set("dev", "x"), Err(SecretError::Locked));
         assert!(v.create("curta").is_err());
-        v.create("senha-mestra-boa").unwrap();
+        v.create("good-master-password").unwrap();
         v.set("dev", "s3cr3t ção").unwrap();
         assert_eq!(v.get("dev").as_deref(), Some("s3cr3t ção"));
 
@@ -382,9 +382,9 @@ mod tests {
         assert_eq!(again.get("dev"), None);
         assert_eq!(
             again.unlock("errada-errada"),
-            Err("Senha mestra incorreta".into())
+            Err("Wrong master password".into())
         );
-        again.unlock("senha-mestra-boa").unwrap();
+        again.unlock("good-master-password").unwrap();
         assert_eq!(again.get("dev").as_deref(), Some("s3cr3t ção"));
         again.delete("dev").unwrap();
         assert!(!again.has("dev"));
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn tampering_is_detected() {
         let (mut v, path) = temp_vault();
-        v.create("senha-mestra-boa").unwrap();
+        v.create("good-master-password").unwrap();
         v.set("dev", "abc").unwrap();
         let file = v.file.as_mut().unwrap();
         let sealed = file.entries.get_mut("dev").unwrap();

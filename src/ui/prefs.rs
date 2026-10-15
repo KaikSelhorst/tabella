@@ -18,7 +18,7 @@ impl App {
             ctx.set_zoom_factor(s.zoom);
         }
         if let Err(e) = settings::save(&s) {
-            self.notice = crate::app::Notice::error(format!("Erro ao salvar preferências: {e}"));
+            self.notice = crate::app::Notice::error(format!("Error saving preferences: {e}"));
         }
         self.settings = s;
     }

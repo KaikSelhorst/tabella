@@ -75,14 +75,14 @@ pub fn format_count(n: i64) -> String {
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
         if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push('.');
+            out.push(',');
         }
         out.push(c);
     }
     out
 }
 
-/// Bytes as "48 kB", "120 MB", "1,2 GB".
+/// Bytes as "48 kB", "120 MB", "1.2 GB".
 pub fn format_bytes(b: i64) -> String {
     let b = b as f64;
     let (v, unit) = if b < 1024.0 * 1024.0 {
@@ -93,20 +93,20 @@ pub fn format_bytes(b: i64) -> String {
         (b / 1024.0 / 1024.0 / 1024.0, "GB")
     };
     if v < 10.0 {
-        format!("{v:.1} {unit}").replace('.', ",")
+        format!("{v:.1} {unit}")
     } else {
         format!("{v:.0} {unit}")
     }
 }
 
-/// Short form for tight spots: 950, 1,2 mil, 3,4 mi.
+/// Short form for tight spots: 950, 1.2k, 3.4M.
 pub fn compact_count(n: i64) -> String {
     if n < 1_000 {
         n.to_string()
     } else if n < 1_000_000 {
-        format!("{:.1} mil", n as f64 / 1e3).replace('.', ",")
+        format!("{:.1}k", n as f64 / 1e3)
     } else {
-        format!("{:.1} mi", n as f64 / 1e6).replace('.', ",")
+        format!("{:.1}M", n as f64 / 1e6)
     }
 }
 
@@ -117,7 +117,7 @@ impl App {
             for t in &s.tables {
                 let rows = t
                     .estimate
-                    .map(|n| format!(" · ~{} linhas", format_count(n)))
+                    .map(|n| format!(" · ~{} rows", format_count(n)))
                     .unwrap_or_default();
                 items.push(Item {
                     icon: if t.is_view { icon::EYE } else { icon::TABLE },
@@ -128,7 +128,7 @@ impl App {
             }
             items.push(Item {
                 icon: icon::CODE,
-                label: "Novo editor SQL".into(),
+                label: "New SQL editor".into(),
                 detail: "Ctrl+T".into(),
                 cmd: Cmd::NewSql,
             });
@@ -136,7 +136,7 @@ impl App {
                 items.push(Item {
                     icon: icon::STAR,
                     label: f.name.clone(),
-                    detail: "favorito".into(),
+                    detail: "favorite".into(),
                     cmd: Cmd::OpenSql(f.sql.clone()),
                 });
             }
@@ -168,7 +168,7 @@ impl App {
         for c in &self.saved {
             items.push(Item {
                 icon: icon::DATABASE,
-                label: format!("Conectar: {}", c.name),
+                label: format!("Connect: {}", c.name),
                 detail: match c.kind {
                     crate::db::Kind::Sqlite => format!("SQLite · {}", c.database),
                     _ => format!("{} · {}:{}", c.kind.label(), c.host, c.port),
@@ -177,20 +177,20 @@ impl App {
             });
         }
         let (theme_icon, theme_label) = if self.settings.light {
-            (icon::MOON, "Tema escuro")
+            (icon::MOON, "Dark theme")
         } else {
-            (icon::SUN, "Tema claro")
+            (icon::SUN, "Light theme")
         };
         items.push(Item {
             icon: theme_icon,
             label: theme_label.into(),
-            detail: "trocar o tema".into(),
+            detail: "switch the theme".into(),
             cmd: Cmd::Theme,
         });
-        let zoom = format!("agora {:.0}%", self.settings.zoom * 100.0);
+        let zoom = format!("now {:.0}%", self.settings.zoom * 100.0);
         for (steps, glyph, label, keys) in [
-            (1, icon::MAGNIFYING_GLASS_PLUS, "Aumentar zoom", "Ctrl +"),
-            (-1, icon::MAGNIFYING_GLASS_MINUS, "Diminuir zoom", "Ctrl −"),
+            (1, icon::MAGNIFYING_GLASS_PLUS, "Zoom in", "Ctrl +"),
+            (-1, icon::MAGNIFYING_GLASS_MINUS, "Zoom out", "Ctrl −"),
             (0, icon::MAGNIFYING_GLASS, "Zoom 100%", "Ctrl 0"),
         ] {
             items.push(Item {
@@ -203,80 +203,80 @@ impl App {
         items.push(Item {
             icon: icon::GAUGE,
             label: if self.show_fps {
-                "Esconder contador de FPS"
+                "Hide FPS counter"
             } else {
-                "Mostrar contador de FPS"
+                "Show FPS counter"
             }
             .into(),
-            detail: "diagnóstico: clique no contador para redesenhar na taxa do monitor".into(),
+            detail: "diagnostics: click the counter to repaint at the monitor's rate".into(),
             cmd: Cmd::Fps,
         });
         items.push(Item {
             icon: icon::KEYBOARD,
-            label: "Atalhos de teclado".into(),
+            label: "Keyboard shortcuts".into(),
             detail: "F1".into(),
             cmd: Cmd::Help,
         });
         items.push(Item {
             icon: icon::PLUS,
-            label: "Nova conexão".into(),
+            label: "New connection".into(),
             detail: String::new(),
             cmd: Cmd::NewConnection,
         });
         if self.session.is_some() {
             items.push(Item {
                 icon: icon::CLOCK_COUNTER_CLOCKWISE,
-                label: "Histórico de consultas".into(),
+                label: "Query history".into(),
                 detail: "Ctrl+Shift+H".into(),
                 cmd: Cmd::History,
             });
             items.push(Item {
                 icon: icon::GRAPH,
-                label: "Diagrama ER".into(),
-                detail: "tabelas e chaves estrangeiras (clique direito no schema para outro)".into(),
+                label: "ER diagram".into(),
+                detail: "tables and foreign keys (right-click a schema for another one)".into(),
                 cmd: Cmd::Diagram,
             });
             items.push(Item {
                 icon: icon::MAGNIFYING_GLASS,
-                label: "Buscar valor em todas as tabelas".into(),
+                label: "Search value in all tables".into(),
                 detail: "Ctrl+Shift+F".into(),
                 cmd: Cmd::Search,
             });
             if !self.session.as_ref().is_some_and(|s| s.cfg.read_only) {
                 items.push(Item {
                     icon: icon::PLAY,
-                    label: "Executar arquivo .sql…".into(),
-                    detail: "dump ou migração grande, comando a comando, sem abrir no editor".into(),
+                    label: "Run .sql file…".into(),
+                    detail: "dump or large migration, statement by statement, without opening it in the editor".into(),
                     cmd: Cmd::RunFile,
                 });
                 items.push(Item {
                     icon: icon::PLUS,
-                    label: "Nova tabela".into(),
-                    detail: "colunas, chave primária e índices por formulário".into(),
+                    label: "New table".into(),
+                    detail: "columns, primary key and indexes through a form".into(),
                     cmd: Cmd::NewTable,
                 });
             }
             items.push(Item {
                 icon: icon::GIT_DIFF,
-                label: "Comparar estrutura…".into(),
-                detail: "com outro schema ou banco (dev × produção): diferenças e o SQL para igualar".into(),
+                label: "Compare structure…".into(),
+                detail: "with another schema or database (dev × production): differences and the SQL to match them".into(),
                 cmd: Cmd::Compare,
             });
             items.push(Item {
                 icon: icon::DOWNLOAD_SIMPLE,
-                label: "Exportar banco como .sql…".into(),
-                detail: "estrutura e dados de todas as tabelas, views, funções e triggers".into(),
+                label: "Export database as .sql…".into(),
+                detail: "structure and data of every table, views, functions and triggers".into(),
                 cmd: Cmd::Dump,
             });
             items.push(Item {
                 icon: icon::PULSE,
-                label: "Atividade no servidor".into(),
-                detail: "sessões e consultas em andamento".into(),
+                label: "Server activity".into(),
+                detail: "sessions and running queries".into(),
                 cmd: Cmd::Activity,
             });
             items.push(Item {
                 icon: icon::PLUGS,
-                label: "Desconectar".into(),
+                label: "Disconnect".into(),
                 detail: String::new(),
                 cmd: Cmd::Disconnect,
             });
@@ -308,7 +308,7 @@ impl App {
                     .into_iter()
                     .filter_map(|it| fuzzy_score(&p.query, &it.label).map(|s| (s, it)))
                     .collect();
-                // Columns ("onde está a coluna cpf?") from two letters on, below tables and actions
+                // Columns ("where is the ssn column?") from two letters on, below tables and actions
                 // that match as well.
                 if p.query.trim().chars().count() >= 2
                     && let Some(s) = self.session.as_ref().filter(|s| s.ready)
@@ -321,7 +321,7 @@ impl App {
                             Item {
                                 icon: icon::COLUMNS,
                                 label,
-                                detail: format!("coluna · {} · {}", c.data_type, c.schema),
+                                detail: format!("column · {} · {}", c.data_type, c.schema),
                                 cmd: Cmd::OpenTable(c.schema.clone(), c.table.clone()),
                             },
                         ))
@@ -351,7 +351,7 @@ impl App {
                 ui.label(theme::icon(icon::MAGNIFYING_GLASS).color(t.muted_foreground));
                 let r = ui.add(
                     TextEdit::singleline(&mut p.query)
-                        .hint_text("Buscar tabela, conexão ou ação…")
+                        .hint_text("Search table, connection or action…")
                         .frame(egui::Frame::NONE)
                         .desired_width(f32::INFINITY),
                 );
@@ -368,7 +368,7 @@ impl App {
             );
             ui.add_space(4.0);
             if matches.is_empty() {
-                ui.label(egui::RichText::new("Nada encontrado").color(t.subtle));
+                ui.label(egui::RichText::new("Nothing found").color(t.subtle));
             }
             ui.input(|i| {
                 if i.key_pressed(Key::ArrowDown) {
@@ -427,7 +427,7 @@ impl App {
             }
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("↑↓ navegar · Enter abrir · Esc fechar")
+                egui::RichText::new("↑↓ navigate · Enter open · Esc close")
                     .size(11.0)
                     .color(t.subtle),
             );
@@ -491,14 +491,14 @@ mod tests {
 
     #[test]
     fn counts_use_thousand_separators() {
-        assert_eq!(format_count(5312), "5.312");
-        assert_eq!(format_count(1_234_567), "1.234.567");
+        assert_eq!(format_count(5312), "5,312");
+        assert_eq!(format_count(1_234_567), "1,234,567");
         assert_eq!(format_count(42), "42");
         assert_eq!(compact_count(950), "950");
         assert_eq!(format_bytes(49_152), "48 kB");
-        assert_eq!(format_bytes(1_258_291), "1,2 MB");
+        assert_eq!(format_bytes(1_258_291), "1.2 MB");
         assert_eq!(format_bytes(126 * 1024 * 1024), "126 MB");
-        assert_eq!(compact_count(1_250), "1,2 mil");
-        assert_eq!(compact_count(3_400_000), "3,4 mi");
+        assert_eq!(compact_count(1_250), "1.2k");
+        assert_eq!(compact_count(3_400_000), "3.4M");
     }
 }

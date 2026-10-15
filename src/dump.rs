@@ -1,7 +1,7 @@
-//! "Exportar .sql": tables (one, a schema's, the whole database's) as a script that recreates
+//! "Export .sql": tables (one, a schema's, the whole database's) as a script that recreates
 //! them anywhere: the tables without foreign keys, their rows in multi-row INSERTs read in
 //! chunks (never the whole table in memory), then the foreign keys and sequences, then views,
-//! functions, procedures and triggers. It runs with "Executar arquivo .sql", psql or mysql.
+//! functions, procedures and triggers. It runs with "Run .sql file", psql or mysql.
 
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -60,7 +60,7 @@ impl Out {
         self.w
             .write_all(s.as_bytes())
             .and_then(|()| self.w.write_all(b"\n"))
-            .map_err(|e| DbError::Other(format!("erro ao gravar o arquivo: {e}")))?;
+            .map_err(|e| DbError::Other(format!("error writing the file: {e}")))?;
         self.bytes += s.len() as u64 + 1;
         Ok(())
     }
@@ -74,7 +74,7 @@ fn write_dump(
 ) -> DbResult<DumpProgress> {
     let k = conn.kind();
     let file = std::fs::File::create(&spec.path)
-        .map_err(|e| DbError::Other(format!("não foi possível criar {}: {e}", spec.path.display())))?;
+        .map_err(|e| DbError::Other(format!("couldn't create {}: {e}", spec.path.display())))?;
     let mut out = Out {
         w: BufWriter::with_capacity(1 << 20, file),
         bytes: 0,
@@ -89,7 +89,7 @@ fn write_dump(
     };
 
     out.line(&format!(
-        "-- Exportado pelo dblite em {} (UTC)",
+        "-- Exported by dblite on {} (UTC)",
         crate::export::timestamp()
     ))?;
     match k {
@@ -101,14 +101,14 @@ fn write_dump(
         }
         Kind::MySql => {
             // Names aren't tied to a database: it loads into the one in use.
-            out.line("-- Execute no banco de destino (USE nome_do_banco).")?;
+            out.line("-- Run it on the target database (USE database_name).")?;
             out.line("SET NAMES utf8mb4;")?;
             // Tables come in any order; their foreign keys stay in the CREATE.
             out.line("SET FOREIGN_KEY_CHECKS = 0;")?;
         }
         Kind::Sqlite => {
             // Tables come in any order and keep their foreign keys: checked at the end of a
-            // transaction ("Executar arquivo"), or not at all one statement at a time (sqlite3).
+            // transaction ("Run file"), or not at all one statement at a time (sqlite3).
             out.line("PRAGMA foreign_keys = OFF;")?;
             out.line("PRAGMA defer_foreign_keys = ON;")?;
         }
@@ -255,7 +255,7 @@ fn write_dump(
     }
     out.w
         .flush()
-        .map_err(|e| DbError::Other(format!("erro ao gravar o arquivo: {e}")))?;
+        .map_err(|e| DbError::Other(format!("error writing the file: {e}")))?;
     prog.p.bytes = out.bytes;
     report(prog.p);
     Ok(prog.p)
@@ -596,7 +596,7 @@ mod tests {
                 "CREATE TRIGGER dbl_dump.pedido_toca BEFORE INSERT ON dbl_dump.pedido \
                  FOR EACH ROW BEGIN SET NEW.obs = coalesce(NEW.obs, 'auto'); END",
             ],
-            Kind::Sqlite => unreachable!("teste de servidor"),
+            Kind::Sqlite => unreachable!("server test"),
         };
         for sql in setup {
             q(&mut c, sql);
@@ -605,12 +605,12 @@ mod tests {
             let md5 = |col: &str| match kind {
                 Kind::Postgres => format!("md5(string_agg({col}, '|' ORDER BY id))"),
                 Kind::MySql => format!("md5(GROUP_CONCAT({col} ORDER BY id SEPARATOR '|'))"),
-                Kind::Sqlite => unreachable!("teste de servidor"),
+                Kind::Sqlite => unreachable!("server test"),
             };
             let foto = match kind {
                 Kind::Postgres => "coalesce(encode(foto, 'hex'), '-')",
                 Kind::MySql => "coalesce(hex(foto), '-')",
-                Kind::Sqlite => unreachable!("teste de servidor"),
+                Kind::Sqlite => unreachable!("server test"),
             };
             let cliente = md5(&format!("concat(id, nome, {foto}, ativo, nome_maiusculo)"));
             vec![
@@ -669,7 +669,7 @@ mod tests {
                 q(&mut c, "CREATE DATABASE dbl_dump");
                 q(&mut c, "USE dbl_dump");
             }
-            Kind::Sqlite => unreachable!("teste de servidor"),
+            Kind::Sqlite => unreachable!("server test"),
         }
         let mut tx = crate::worker::TxState::default();
         let pg = kind == Kind::Postgres;
@@ -802,7 +802,7 @@ mod tests {
     }
 
     /// SQLite, no server needed: dump the sample file, load it into a new one with
-    /// "Executar arquivo", and find the same rows, blob, view, trigger and numbering.
+    /// "Run file", and find the same rows, blob, view, trigger and numbering.
     #[test]
     fn round_trip_sqlite() {
         let cfg = crate::sqlite::tests::sample_db("dump-src");
@@ -842,7 +842,7 @@ mod tests {
         assert_eq!((p.tables, p.rows), (2, 5));
 
         let target = crate::db::ConnConfig {
-            database: format!("{}-copia.db", cfg.database),
+            database: format!("{}-copy.db", cfg.database),
             ..cfg.clone()
         };
         let _ = std::fs::remove_file(&target.database);

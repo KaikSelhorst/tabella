@@ -64,7 +64,7 @@ mod tests {
             tabs: vec![
                 SavedTab::Sql {
                     text: "select 1".into(),
-                    title: Some("Relatório".into()),
+                    title: Some("Report".into()),
                     file: Some("/tmp/relatorio.sql".into()),
                 },
                 SavedTab::Table {

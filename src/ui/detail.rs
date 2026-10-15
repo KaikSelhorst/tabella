@@ -37,7 +37,7 @@ pub struct DetailRow<'a> {
     pub can_edit: bool,
 }
 
-/// Children shown per object/array before "… mais N".
+/// Children shown per object/array before "… N more".
 const JSON_CHILDREN: usize = 200;
 
 /// The value parsed as JSON when it is an object or array; cached, since this runs every frame.
@@ -102,7 +102,7 @@ fn json_tree(ui: &mut egui::Ui, id: egui::Id, key: Option<&str>, path: &str, v: 
             for (shown, (k, p, c)) in children.enumerate() {
                 if shown == JSON_CHILDREN {
                     ui.label(
-                        RichText::new(format!("… mais {}", n - shown))
+                        RichText::new(format!("… {} more", n - shown))
                             .size(11.0)
                             .color(t.subtle),
                     );
@@ -154,7 +154,7 @@ fn container<'a>(v: &'a Value, path: &'a str) -> Option<Container<'a>> {
 }
 
 fn copy_menu(ui: &mut egui::Ui, path: &str, v: &Value) {
-    if ui.button("Copiar valor").clicked() {
+    if ui.button("Copy value").clicked() {
         let text = match v {
             Value::String(s) => s.clone(),
             other => serde_json::to_string_pretty(other).unwrap_or_default(),
@@ -162,7 +162,7 @@ fn copy_menu(ui: &mut egui::Ui, path: &str, v: &Value) {
         ui.ctx().copy_text(text);
         ui.close();
     }
-    if ui.button(format!("Copiar caminho  {path}")).clicked() {
+    if ui.button(format!("Copy path  {path}")).clicked() {
         ui.ctx().copy_text(path.to_string());
         ui.close();
     }
@@ -183,7 +183,7 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
     let info = column_info(res, cols);
 
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("Linha {row_number}")).color(t.foreground));
+        ui.label(RichText::new(format!("Row {row_number}")).color(t.foreground));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let button = |ui: &mut egui::Ui, glyph: &str, tip: &str| {
@@ -191,13 +191,13 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                     .on_hover_text(tip)
                     .clicked()
             };
-            if button(ui, icon::X, "Fechar painel") {
+            if button(ui, icon::X, "Close panel") {
                 action = Some(DetailAction::Close);
             }
-            if button(ui, icon::CODE, "Copiar como INSERT") {
+            if button(ui, icon::CODE, "Copy as INSERT") {
                 action = Some(DetailAction::Copy(CopyAs::Insert));
             }
-            if button(ui, icon::BRACKETS_CURLY, "Copiar como JSON") {
+            if button(ui, icon::BRACKETS_CURLY, "Copy as JSON") {
                 action = Some(DetailAction::Copy(CopyAs::Json));
             }
         });
@@ -231,7 +231,7 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                             .frame(false);
                             if ui
                                 .add(pick)
-                                .on_hover_text(format!("Escolher em {}", fk.table))
+                                .on_hover_text(format!("Pick from {}", fk.table))
                                 .clicked()
                             {
                                 action = Some(DetailAction::PickFk(ci));
@@ -248,7 +248,7 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                         if kinds[ci] == ValueKind::Text
                             && ui
                                 .add(open)
-                                .on_hover_text("Abrir no editor grande (Shift+Enter na grade)")
+                                .on_hover_text("Open in the large editor (Shift+Enter in the grid)")
                                 .clicked()
                         {
                             action = Some(DetailAction::Open(ci));
@@ -264,9 +264,9 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                         }
                         if json.is_some() {
                             let (glyph, tip) = if as_text {
-                                (icon::TREE_VIEW, "Ver como árvore")
+                                (icon::TREE_VIEW, "View as tree")
                             } else {
-                                (icon::TEXT_T, "Ver como texto (para editar)")
+                                (icon::TEXT_T, "View as text (to edit)")
                             };
                             let b =
                                 egui::Button::new(theme::icon(glyph).size(11.0).color(t.muted_foreground))
@@ -371,7 +371,7 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
             ui.add_space(8.0);
             if can_edit {
                 ui.label(
-                    RichText::new("Edite e saia do campo para salvar")
+                    RichText::new("Edit and leave the field to save")
                         .size(11.0)
                         .color(t.subtle),
                 );

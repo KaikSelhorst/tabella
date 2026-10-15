@@ -27,11 +27,11 @@ fn main() {
     }
     let mut res = winresource::WindowsResource::new();
     res.set("ProductName", "dblite")
-        .set("FileDescription", "dblite - cliente leve de PostgreSQL e MySQL")
+        .set("FileDescription", "dblite - lightweight PostgreSQL and MySQL client")
         .set("InternalName", "dblite")
         .set("OriginalFilename", "dblite.exe")
         .set_icon("assets/icon.ico")
         .set_manifest(MANIFEST);
     res.compile()
-        .expect("recursos do Windows (windres do MinGW instalado?)");
+        .expect("Windows resources (is MinGW's windres installed?)");
 }

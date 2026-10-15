@@ -1,9 +1,9 @@
-//! "Buscar valor em todas as tabelas".
+//! "Search value in all tables".
 
 use super::*;
 use std::fmt::Write as _;
 
-/// "Buscar valor em todas as tabelas": the term, options, progress and where it was found.
+/// "Search value in all tables": the term, options, progress and where it was found.
 pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
     let t = theme::tokens();
@@ -18,7 +18,7 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::MAGNIFYING_GLASS).size(15.0).color(t.muted_foreground));
-                ui.label(egui::RichText::new("Buscar valor em todas as tabelas").size(15.0).color(t.foreground));
+                ui.label(egui::RichText::new("Search value in all tables").size(15.0).color(t.foreground));
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -26,7 +26,7 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 let r = ui.add_enabled(
                     !st.running,
                     TextEdit::singleline(&mut st.term)
-                        .hint_text("e-mail, CPF, código, id…  (Enter busca)")
+                        .hint_text("e-mail, SSN, code, id…  (Enter searches)")
                         .font(egui::FontId::monospace(13.0))
                         .margin(egui::Margin::symmetric(8, 6))
                         .desired_width(360.0),
@@ -38,27 +38,27 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     start = true;
                 }
                 if st.running {
-                    if ui.add(theme::outline_button("Cancelar")).clicked() {
+                    if ui.add(theme::outline_button("Cancel")).clicked() {
                         cancel = true;
                     }
                 } else if ui
-                    .add_enabled(!st.term.trim().is_empty(), theme::primary_button(Some(icon::MAGNIFYING_GLASS), "Buscar"))
+                    .add_enabled(!st.term.trim().is_empty(), theme::primary_button(Some(icon::MAGNIFYING_GLASS), "Search"))
                     .clicked()
                 {
                     start = true;
                 }
-                ui.add_enabled(!st.running, egui::Checkbox::new(&mut st.exact, "valor exato"))
-                    .on_hover_text("Desmarcado: procura o texto dentro dos valores (qualquer caixa)");
+                ui.add_enabled(!st.running, egui::Checkbox::new(&mut st.exact, "exact value"))
+                    .on_hover_text("Unchecked: looks for the text inside values (any case)");
                 ui.add_enabled(
                     !st.running,
-                    egui::Checkbox::new(&mut st.include_big, "incluir tabelas grandes"),
+                    egui::Checkbox::new(&mut st.include_big, "include large tables"),
                 )
-                .on_hover_text("Tabelas com mais de 1 milhão de linhas: cada uma é lida inteira e leva segundos");
+                .on_hover_text("Tables with over 1 million rows: each one is read in full and takes seconds");
             });
             ui.label(
                 egui::RichText::new(
-                    "Lê as tabelas uma a uma (só colunas onde o valor caberia). Enquanto isso, as outras abas \
-                     desta conexão esperam.",
+                    "Reads the tables one by one (only columns where the value would fit). Meanwhile, the other tabs \
+                     of this connection wait.",
                 )
                 .size(11.0)
                 .color(t.subtle),
@@ -69,16 +69,16 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     let frac = if st.total == 0 { 0.0 } else { st.done as f32 / st.total as f32 };
                     ui.add(egui::ProgressBar::new(frac).desired_width(240.0).desired_height(6.0).fill(t.lime));
                     let mut text = format!(
-                        "{} de {} tabelas · encontrado em {}",
+                        "{} of {} tables · found in {}",
                         st.done,
                         st.total,
                         st.hits.len()
                     );
                     if st.skipped > 0 {
-                        let _ = write!(text, " · {} grandes puladas", st.skipped);
+                        let _ = write!(text, " · {} large ones skipped", st.skipped);
                     }
                     if !st.errors.is_empty() {
-                        let _ = write!(text, " · {} com erro", st.errors.len());
+                        let _ = write!(text, " · {} with errors", st.errors.len());
                     }
                     let r = ui.label(egui::RichText::new(text).size(12.0).color(t.muted_foreground));
                     if !st.errors.is_empty() {
@@ -97,7 +97,7 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 .show(ui, |ui| {
                     if st.hits.is_empty() {
                         if !st.running && st.total > 0 {
-                            ui.label(egui::RichText::new("Nada encontrado").color(t.subtle));
+                            ui.label(egui::RichText::new("Nothing found").color(t.subtle));
                         }
                         return;
                     }
@@ -105,7 +105,7 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         .num_columns(4)
                         .spacing([16.0, 6.0])
                         .show(ui, |ui| {
-                            for h in ["tabela", "colunas", "linhas", ""] {
+                            for h in ["table", "columns", "rows", ""] {
                                 ui.label(egui::RichText::new(h).size(11.0).color(t.subtle));
                             }
                             ui.end_row();
@@ -129,7 +129,7 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                                 if ui
                                     .button(theme::icon_text(
                                         icon::TABLE,
-                                        "Abrir",
+                                        "Open",
                                         t.muted_foreground,
                                         t.foreground,
                                     ))

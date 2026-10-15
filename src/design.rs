@@ -1,4 +1,4 @@
-//! "Nova tabela" / "Editar estrutura": the table as a list of columns and indexes, and the DDL
+//! "New table" / "Edit structure": the table as a list of columns and indexes, and the DDL
 //! that turns the original into the edited version.
 
 use crate::db::{Kind, TableStructure};
@@ -177,28 +177,28 @@ impl Design {
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
         if self.table.trim().is_empty() {
-            out.push("Dê um nome à tabela".to_string());
+            out.push("Give the table a name".to_string());
         }
         let live: Vec<&ColDef> = self.columns.iter().filter(|c| !c.dropped).collect();
         if live.is_empty() {
-            out.push("A tabela precisa de pelo menos uma coluna".to_string());
+            out.push("The table needs at least one column".to_string());
         }
         for (i, c) in live.iter().enumerate() {
             if c.name.trim().is_empty() {
-                out.push(format!("Coluna {} sem nome", i + 1));
+                out.push(format!("Column {} has no name", i + 1));
             } else if live[..i]
                 .iter()
                 .any(|o| o.name.trim().eq_ignore_ascii_case(c.name.trim()))
             {
-                out.push(format!("Coluna \"{}\" repetida", c.name.trim()));
+                out.push(format!("Column \"{}\" is repeated", c.name.trim()));
             }
             if c.data_type.trim().is_empty() {
-                out.push(format!("Coluna \"{}\" sem tipo", c.name.trim()));
+                out.push(format!("Column \"{}\" has no type", c.name.trim()));
             }
         }
         for ix in self.indexes.iter().filter(|i| !i.existing && !i.dropped) {
             if ix.columns.trim().is_empty() {
-                out.push("Índice novo sem colunas".to_string());
+                out.push("New index has no columns".to_string());
             }
         }
         out
@@ -314,8 +314,8 @@ impl Design {
                         Kind::Sqlite => {
                             if type_changed || null_changed || default_changed {
                                 out.push(format!(
-                                    "-- SQLite não altera tipo, NULL ou padrão de uma coluna existente ({}): \
-                                     crie uma tabela nova e copie os dados",
+                                    "-- SQLite can't change the type, NULL or default of an existing column ({}): \
+                                     create a new table and copy the data",
                                     c.name.trim()
                                 ));
                             }
@@ -480,8 +480,8 @@ mod tests {
             ..ColDef::new()
         });
         let p = d.problems();
-        assert!(p.iter().any(|m| m.contains("nome à tabela")));
-        assert!(p.iter().any(|m| m.contains("repetida")));
-        assert!(p.iter().any(|m| m.contains("sem tipo")));
+        assert!(p.iter().any(|m| m.contains("table a name")));
+        assert!(p.iter().any(|m| m.contains("repeated")));
+        assert!(p.iter().any(|m| m.contains("has no type")));
     }
 }

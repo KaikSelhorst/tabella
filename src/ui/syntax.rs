@@ -338,6 +338,6 @@ mod tests {
             .collect();
         assert_eq!(covered, text);
         // Unterminated strings (while typing) don't panic either.
-        let _ = highlight_json("{\"a\": \"sem fim \\", FontId::monospace(12.0));
+        let _ = highlight_json("{\"a\": \"no end \\", FontId::monospace(12.0));
     }
 }

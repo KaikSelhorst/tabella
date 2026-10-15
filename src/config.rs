@@ -158,7 +158,7 @@ mod tests {
         assert!(!std::fs::read_to_string(&file).unwrap().contains("hunter2"));
 
         // With the vault created, the password goes there, still not into the file.
-        store.vault_mut().unwrap().create("senha-mestra-boa").unwrap();
+        store.vault_mut().unwrap().create("good-master-password").unwrap();
         assert_eq!(save_to(&[c.clone()], &mut store).unwrap(), Saved::default());
         assert!(!std::fs::read_to_string(&file).unwrap().contains("hunter2"));
         assert!(
@@ -173,7 +173,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         fill_passwords(&mut list, &again);
         assert_eq!(list[0].password, "");
-        again.vault_mut().unwrap().unlock("senha-mestra-boa").unwrap();
+        again.vault_mut().unwrap().unlock("good-master-password").unwrap();
         fill_passwords(&mut list, &again);
         assert_eq!(list[0].password, "hunter2-secret");
         assert_eq!(list[0].id, c.id);

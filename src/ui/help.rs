@@ -11,97 +11,97 @@ const KEY_COL: f32 = 250.0;
 
 const GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
-        "Geral",
+        "General",
         &[
             (
                 "Ctrl+P",
-                "Paleta: tabelas, colunas (\"tabela.coluna\"), conexões, consultas, ações",
+                "Palette: tables, columns (\"table.column\"), connections, queries, actions",
             ),
-            ("Ctrl+Shift+F", "Buscar um valor em todas as tabelas"),
-            ("Ctrl+Shift+H", "Histórico completo de consultas"),
-            ("Ctrl+T", "Nova aba SQL"),
+            ("Ctrl+Shift+F", "Search a value in all tables"),
+            ("Ctrl+Shift+H", "Full query history"),
+            ("Ctrl+T", "New SQL tab"),
             (
                 "Ctrl+W",
-                "Fechar aba (clique direito na aba: renomear, duplicar, fechar outras)",
+                "Close tab (right-click the tab: rename, duplicate, close others)",
             ),
-            ("Ctrl+Shift+T", "Reabrir a última aba fechada"),
+            ("Ctrl+Shift+T", "Reopen the last closed tab"),
             (
                 "Ctrl+O",
-                "Abrir arquivo .sql (ou arraste o arquivo para a janela)",
+                "Open .sql file (or drag the file onto the window)",
             ),
             (
-                "Ctrl+P → Executar arquivo .sql",
-                "Roda um dump/migração grande comando a comando, com progresso",
+                "Ctrl+P → Run .sql file",
+                "Runs a large dump/migration statement by statement, with progress",
             ),
             (
-                "Ctrl+P → Exportar banco",
-                "Estrutura e dados como .sql, com progresso",
+                "Ctrl+P → Export database",
+                "Structure and data as .sql, with progress",
             ),
             (
-                "Ctrl+P → Comparar estrutura",
-                "Diferenças com outro schema ou banco e o SQL que iguala",
+                "Ctrl+P → Compare structure",
+                "Diff against another schema or database, with the SQL to match",
             ),
-            ("Ctrl+Tab / Ctrl+Shift+Tab", "Próxima / aba anterior"),
-            ("F1", "Esta tela"),
+            ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
+            ("F1", "This screen"),
             (
                 "Ctrl + / Ctrl − / Ctrl 0",
-                "Zoom da interface (no Ctrl+P também, junto com o tema)",
+                "Interface zoom (also in Ctrl+P, along with the theme)",
             ),
         ],
     ),
     (
         "Editor SQL",
         &[
-            ("Ctrl+Enter", "Executar o comando sob o cursor (ou a seleção)"),
-            ("F5", "Executar tudo"),
-            ("Ctrl+E", "Plano de execução (EXPLAIN)"),
+            ("Ctrl+Enter", "Run the statement under the cursor (or the selection)"),
+            ("F5", "Run all"),
+            ("Ctrl+E", "Execution plan (EXPLAIN)"),
             (
                 "Ctrl+S / Ctrl+Shift+S",
-                "Salvar o arquivo .sql / salvar como (com edições no resultado, Ctrl+S salva elas)",
+                "Save the .sql file / save as (with edits in the result, Ctrl+S saves those)",
             ),
-            ("Shift+Alt+F", "Formatar SQL"),
-            ("Ctrl+F / Ctrl+H", "Buscar / substituir"),
-            ("Tab / Enter", "Aceitar sugestão do autocomplete"),
-            (":nome", "Parâmetro: o valor é pedido antes de executar"),
+            ("Shift+Alt+F", "Format SQL"),
+            ("Ctrl+F / Ctrl+H", "Find / replace"),
+            ("Tab / Enter", "Accept autocomplete suggestion"),
+            (":name", "Parameter: the value is asked for before running"),
             (
-                "Ctrl+clique numa tabela",
-                "Abre a tabela (passar o mouse mostra as colunas)",
+                "Ctrl+click a table",
+                "Opens the table (hovering shows the columns)",
             ),
         ],
     ),
     (
-        "Grade",
+        "Grid",
         &[
-            ("Setas / Tab", "Mover a célula selecionada"),
-            ("Shift+setas, Shift+clique, arrastar", "Selecionar várias células"),
-            ("Ctrl+A", "Selecionar tudo"),
-            ("Ctrl+C", "Copiar (texto com tabs, cola no Excel)"),
-            ("Ctrl+V", "Colar do Excel como alterações pendentes"),
+            ("Arrows / Tab", "Move the selected cell"),
+            ("Shift+arrows, Shift+click, drag", "Select several cells"),
+            ("Ctrl+A", "Select all"),
+            ("Ctrl+C", "Copy (tab-separated text, pastes into Excel)"),
+            ("Ctrl+V", "Paste from Excel as pending changes"),
             (
                 "Ctrl+D",
-                "Preencher para baixo (cada coluna recebe o valor da primeira linha selecionada)",
+                "Fill down (each column gets the value of the first selected row)",
             ),
-            ("Delete", "Marcar as linhas selecionadas para exclusão"),
-            ("Enter / F2 / duplo clique", "Editar a célula"),
+            ("Delete", "Mark the selected rows for deletion"),
+            ("Enter / F2 / double-click", "Edit the cell"),
             (
                 "Shift+Enter",
-                "Abrir o valor no editor grande (JSON formatado, textos longos)",
+                "Open the value in the large editor (formatted JSON, long texts)",
             ),
-            ("Ctrl+clique", "Abrir a linha de uma chave estrangeira"),
-            ("Ctrl+F", "Buscar no resultado (tabelas: busca no banco)"),
+            ("Ctrl+click", "Open a foreign key's row"),
+            ("Ctrl+F", "Find in result (tables: searches the database)"),
             (
-                "Clique direito no cabeçalho",
-                "Filtrar valores (como no Excel), estatísticas, fixar, esconder colunas",
+                "Right-click the header",
+                "Filter values (like Excel), statistics, pin, hide columns",
             ),
         ],
     ),
     (
-        "Tabela",
+        "Table",
         &[
-            ("Ctrl+S", "Salvar alterações pendentes"),
-            ("Ctrl+Z", "Desfazer a última alteração pendente"),
-            ("F5", "Recarregar"),
-            ("Enter no WHERE", "Aplicar o filtro"),
+            ("Ctrl+S", "Save pending changes"),
+            ("Ctrl+Z", "Undo the last pending change"),
+            ("F5", "Reload"),
+            ("Enter in WHERE", "Apply the filter"),
         ],
     ),
 ];
@@ -119,7 +119,7 @@ impl App {
                 ui.set_width(640.0);
                 ui.horizontal(|ui| {
                     ui.label(theme::icon(icon::KEYBOARD).size(16.0).color(t.lime));
-                    ui.label(RichText::new("Atalhos").size(15.0).color(t.foreground));
+                    ui.label(RichText::new("Shortcuts").size(15.0).color(t.foreground));
                 });
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
@@ -137,7 +137,7 @@ impl App {
                                 }
                             });
                     }
-                    section(ui, "Snippets (digite e aceite no autocomplete)");
+                    section(ui, "Snippets (type and accept in autocomplete)");
                     egui::Grid::new("help_snippets")
                         .num_columns(2)
                         .min_col_width(KEY_COL)
@@ -152,7 +152,7 @@ impl App {
                 });
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(theme::outline_button("Fechar")).clicked() {
+                    if ui.add(theme::outline_button("Close")).clicked() {
                         close = true;
                     }
                 });

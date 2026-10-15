@@ -17,7 +17,7 @@ impl App {
     /// Applies every reply that arrived since the last frame.
     pub fn poll(&mut self) {
         if let Some(e) = crate::history::take_write_error() {
-            self.notice = Notice::error(format!("Erro ao salvar o histórico: {e}"));
+            self.notice = Notice::error(format!("Error saving history: {e}"));
         }
         let mut restore = None;
         let mut designed: Vec<(u64, String, String)> = Vec::new();
@@ -31,7 +31,7 @@ impl App {
                 Err(TryRecvError::Disconnected) => {
                     // The worker thread ended unexpectedly (or failed to connect, reported above).
                     if s.ready {
-                        self.notice = Notice::error("A conexão foi encerrada inesperadamente.");
+                        self.notice = Notice::error("The connection was closed unexpectedly.");
                     }
                     self.session = None;
                     for t in &mut self.tabs {
@@ -79,9 +79,9 @@ impl App {
                     self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 self.notice = match res {
-                    Ok(()) if commit => Notice::info("Transação confirmada"),
-                    Ok(()) => Notice::info("Transação desfeita"),
-                    Err(e) => Notice::error(format!("Transação: {e}")),
+                    Ok(()) if commit => Notice::info("Transaction committed"),
+                    Ok(()) => Notice::info("Transaction rolled back"),
+                    Err(e) => Notice::error(format!("Transaction: {e}")),
                 };
                 // What's on screen may include undone changes: reload table pages.
                 for t in &mut self.tabs {
@@ -101,10 +101,10 @@ impl App {
                 s.ready = true;
                 s.tables = c.tables;
                 s.canceller = Some(c.canceller);
-                self.notice = Notice::info(format!("Conectado a {}", s.cfg.name));
+                self.notice = Notice::info(format!("Connected to {}", s.cfg.name));
             }
             Reply::Connected(Err(e)) => {
-                self.notice = Notice::error(format!("Falha ao conectar: {e}"));
+                self.notice = Notice::error(format!("Failed to connect: {e}"));
                 self.session = None;
                 return false;
             }
@@ -120,7 +120,7 @@ impl App {
             Reply::Objects(Ok(o)) => s.objects = o,
             Reply::Admin { done, res } => match res {
                 Ok(()) => self.notice = Notice::info(done),
-                Err(e) => self.notice = Notice::error(format!("Não foi possível: {e}")),
+                Err(e) => self.notice = Notice::error(format!("Couldn't do it: {e}")),
             },
             Reply::Location(Ok((dbs, db, schema))) => {
                 // A switch (not the first report at connect) focuses the new one.
@@ -135,7 +135,7 @@ impl App {
                 s.current_db = db;
                 s.current_schema = schema;
             }
-            Reply::Location(Err(e)) => self.notice = Notice::error(format!("Não foi possível trocar: {e}")),
+            Reply::Location(Err(e)) => self.notice = Notice::error(format!("Couldn't switch: {e}")),
             // The sidebar just shows tables then.
             Reply::Objects(Err(_)) => {}
             // Without them the editor just doesn't suggest joins.
@@ -164,7 +164,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
             if let TabKind::Search(st) = &mut t.kind {
                 st.running = false;
                 if cancelled {
-                    *cx.notice = Notice::info("Busca cancelada");
+                    *cx.notice = Notice::info("Search cancelled");
                 }
             }
         }
@@ -288,7 +288,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
         Reply::Imported { res, .. } => {
             match res {
                 Ok(n) => {
-                    *cx.notice = Notice::info(format!("{n} linha(s) importada(s)"));
+                    *cx.notice = Notice::info(format!("{n} row(s) imported"));
                     if let TabKind::Table(ts) = &mut t.kind {
                         ts.import = None;
                     }
@@ -299,7 +299,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                     }
                 }
                 // The dialog stays open to fix the mapping and retry.
-                Err(e) => t.error = Some(format!("Importação falhou: {e}")),
+                Err(e) => t.error = Some(format!("Import failed: {e}")),
             }
         }
         Reply::Plan { res, .. } => match res {
@@ -317,7 +317,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
         },
         Reply::Exported { res, .. } => match res {
             Ok(done) => t.exported = Some(done),
-            Err(e) => t.error = Some(format!("Exportação falhou: {e}")),
+            Err(e) => t.error = Some(format!("Export failed: {e}")),
         },
         Reply::Columns { res, incoming, .. } => {
             match (res, &mut t.kind) {
@@ -419,7 +419,7 @@ fn on_rows(
         Err(e) => {
             let mut message = e.to_string();
             if let Some(sp) = &spot {
-                let _ = write!(message, " (linha {}, coluna {})", sp.line, sp.column);
+                let _ = write!(message, " (line {}, column {})", sp.line, sp.column);
             }
             if let Some(ed) = t.editor_mut() {
                 ed.error_jump = spot.is_some();

@@ -14,7 +14,7 @@ pub enum ItemKind {
     Keyword,
     /// Expands into a template; see `SNIPPETS`.
     Snippet,
-    /// `tabela t ON t.id = x.tabela_id`, from a foreign key.
+    /// `table t ON t.id = x.table_id`, from a foreign key.
     Join,
 }
 
@@ -26,15 +26,15 @@ const CURSOR: char = '¦';
 pub const SNIPPETS: &[(&str, &str, &str)] = &[
     ("sel", "SELECT … LIMIT 100", "SELECT *\nFROM ¦\nLIMIT 100;"),
     ("selw", "SELECT … WHERE …", "SELECT *\nFROM ¦\nWHERE \nLIMIT 100;"),
-    ("cnt", "contar linhas", "SELECT count(*)\nFROM ¦;"),
+    ("cnt", "count rows", "SELECT count(*)\nFROM ¦;"),
     (
         "grp",
-        "agrupar e contar",
+        "group and count",
         "SELECT ¦, count(*)\nFROM \nGROUP BY 1\nORDER BY 2 DESC;",
     ),
     (
         "dup",
-        "valores repetidos",
+        "duplicate values",
         "SELECT ¦, count(*)\nFROM \nGROUP BY 1\nHAVING count(*) > 1\nORDER BY 2 DESC;",
     ),
     ("join", "JOIN … ON", "JOIN ¦ ON  = "),
@@ -200,7 +200,7 @@ fn join_items(text: &str, prefix: &str, fks: &[FkEdge]) -> Vec<Item> {
                 out.push(Item {
                     text,
                     kind: ItemKind::Join,
-                    detail: "pela chave estrangeira".into(),
+                    detail: "via the foreign key".into(),
                 });
             }
         }
@@ -491,7 +491,7 @@ pub fn popup(
                     }
                     ui.add_space(2.0);
                     ui.label(
-                        egui::RichText::new("Tab/Enter aceita · Esc fecha")
+                        egui::RichText::new("Tab/Enter accepts · Esc closes")
                             .size(10.0)
                             .color(t.subtle),
                     );

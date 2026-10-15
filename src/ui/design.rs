@@ -1,4 +1,4 @@
-//! "Nova tabela" / "Editar estrutura": columns and indexes as a form, with the DDL it produces
+//! "New table" / "Edit structure": columns and indexes as a form, with the DDL it produces
 //! shown live underneath.
 
 use eframe::egui::{self, RichText, TextEdit};
@@ -27,23 +27,23 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
                 ui.label(theme::icon(icon::TABLE).size(15.0).color(t.muted_foreground));
                 if d.existing {
                     ui.label(
-                        RichText::new(format!("Editar {}.{}", d.schema, d.table))
+                        RichText::new(format!("Edit {}.{}", d.schema, d.table))
                             .size(15.0)
                             .color(t.foreground),
                     );
                 } else {
-                    ui.label(RichText::new("Nova tabela").size(15.0).color(t.foreground));
+                    ui.label(RichText::new("New table").size(15.0).color(t.foreground));
                     ui.add_space(8.0);
                     ui.add(
                         TextEdit::singleline(&mut d.schema)
-                            .hint_text(if d.kind == Kind::MySql { "banco" } else { "schema" })
+                            .hint_text(if d.kind == Kind::MySql { "database" } else { "schema" })
                             .font(egui::FontId::monospace(12.5))
                             .desired_width(120.0),
                     );
                     ui.label(RichText::new(".").color(t.subtle));
                     ui.add(
                         TextEdit::singleline(&mut d.table)
-                            .hint_text("nome_da_tabela")
+                            .hint_text("table_name")
                             .font(egui::FontId::monospace(12.5))
                             .desired_width(200.0),
                     );
@@ -61,21 +61,21 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
             egui::Frame::new()
                 .inner_margin(egui::Margin::symmetric(12, 4))
                 .show(ui, |ui| {
-                    section(ui, "Colunas");
+                    section(ui, "Columns");
                     columns(ui, tab_id, d);
                     ui.add_space(4.0);
                     if ui
-                        .button(theme::icon_text(icon::PLUS, "Coluna", t.lime, t.foreground))
+                        .button(theme::icon_text(icon::PLUS, "Column", t.lime, t.foreground))
                         .clicked()
                     {
                         d.columns.push(ColDef::new());
                     }
 
-                    section(ui, "Índices");
+                    section(ui, "Indexes");
                     indexes(ui, tab_id, d);
                     ui.add_space(4.0);
                     if ui
-                        .button(theme::icon_text(icon::PLUS, "Índice", t.lime, t.foreground))
+                        .button(theme::icon_text(icon::PLUS, "Index", t.lime, t.foreground))
                         .clicked()
                     {
                         d.indexes.push(IndexDef {
@@ -96,7 +96,7 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             if script.is_empty() {
-                                ui.label(RichText::new("Nada mudou ainda").color(t.subtle));
+                                ui.label(RichText::new("Nothing changed yet").color(t.subtle));
                             } else {
                                 let job = syntax::highlight(&script, egui::FontId::monospace(12.5));
                                 ui.add(egui::Label::new(job).selectable(true));
@@ -108,7 +108,7 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
                     if d.kind == Kind::MySql && d.existing && d.statements().len() > 1 {
                         ui.label(
                             RichText::new(
-                                "No MySQL cada ALTER é aplicado na hora: se um falhar, os anteriores ficam.",
+                                "In MySQL each ALTER applies immediately: if one fails, the earlier ones stay.",
                             )
                             .size(11.0)
                             .color(t.warning),
@@ -118,9 +118,9 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
                     ui.horizontal(|ui| {
                         let ready = problems.is_empty() && !script.is_empty() && !busy;
                         let label = if d.existing {
-                            "Aplicar alterações"
+                            "Apply changes"
                         } else {
-                            "Criar tabela"
+                            "Create table"
                         };
                         if ui
                             .add_enabled(ready, theme::primary_button(Some(icon::PLAY), label))
@@ -133,12 +133,12 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
                                 !script.is_empty(),
                                 egui::Button::new(theme::icon_text(
                                     icon::CODE,
-                                    "Abrir no editor",
+                                    "Open in editor",
                                     t.muted_foreground,
                                     t.foreground,
                                 )),
                             )
-                            .on_hover_text("Para revisar ou ajustar o SQL antes de executar")
+                            .on_hover_text("To review or tweak the SQL before running it")
                             .clicked()
                         {
                             action = Some(DesignAction::OpenSql(script.clone()));
@@ -166,7 +166,7 @@ fn columns(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
         .num_columns(6)
         .spacing([8.0, 4.0])
         .show(ui, |ui| {
-            for h in ["PK", "Nome", "Tipo", "Nulo", "Padrão", ""] {
+            for h in ["PK", "Name", "Type", "Null", "Default", ""] {
                 ui.label(RichText::new(h).size(11.0).color(t.subtle));
             }
             ui.end_row();
@@ -175,7 +175,7 @@ fn columns(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
                 // The primary key of an existing table isn't changed here (it needs the
                 // constraint's name and usually a migration plan).
                 ui.add_enabled(live && !existing, egui::Checkbox::without_text(&mut c.pk))
-                    .on_disabled_hover_text("A chave primária de uma tabela existente não é alterada aqui");
+                    .on_disabled_hover_text("An existing table's primary key isn't changed here");
                 let mono = egui::FontId::monospace(12.5);
                 // Fixed sizes: inside a grid a text field otherwise shrinks to the column's
                 // starting width and stays there.
@@ -184,7 +184,7 @@ fn columns(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
                         [NAME_W, 22.0],
                         TextEdit::singleline(&mut c.name)
                             .font(mono.clone())
-                            .hint_text("coluna"),
+                            .hint_text("column"),
                     );
                 });
                 ui.horizontal(|ui| {
@@ -194,7 +194,7 @@ fn columns(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
                             [TYPE_W, 22.0],
                             TextEdit::singleline(&mut c.data_type)
                                 .font(mono.clone())
-                                .hint_text("tipo"),
+                                .hint_text("type"),
                         );
                     });
                     ui.add_enabled_ui(live, |ui| {
@@ -214,13 +214,13 @@ fn columns(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
                         [DEFAULT_W, 22.0],
                         TextEdit::singleline(&mut c.default)
                             .font(mono)
-                            .hint_text("sem padrão"),
+                            .hint_text("no default"),
                     );
                 });
                 let (glyph, tip) = if c.dropped {
-                    (icon::ARROW_COUNTER_CLOCKWISE, "Manter a coluna")
+                    (icon::ARROW_COUNTER_CLOCKWISE, "Keep the column")
                 } else {
-                    (icon::TRASH, "Excluir a coluna")
+                    (icon::TRASH, "Delete the column")
                 };
                 let color = if c.dropped { t.lime } else { t.muted_foreground };
                 if ui
@@ -248,7 +248,7 @@ fn columns(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
 fn indexes(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
     let t = theme::tokens();
     if d.indexes.is_empty() {
-        ui.label(RichText::new("Nenhum índice além da chave primária").color(t.subtle));
+        ui.label(RichText::new("No index besides the primary key").color(t.subtle));
         return;
     }
     let mut remove = None;
@@ -280,21 +280,21 @@ fn indexes(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
                     ui.add_sized(
                         [NAME_W, 22.0],
                         TextEdit::singleline(&mut ix.name)
-                            .hint_text("nome (opcional)")
+                            .hint_text("name (optional)")
                             .font(egui::FontId::monospace(12.5)),
                     );
                     ui.add_sized(
                         [260.0, 22.0],
                         TextEdit::singleline(&mut ix.columns)
-                            .hint_text("coluna1, coluna2")
+                            .hint_text("column1, column2")
                             .font(egui::FontId::monospace(12.5)),
                     );
-                    ui.checkbox(&mut ix.unique, "único");
+                    ui.checkbox(&mut ix.unique, "unique");
                 }
                 let (glyph, tip) = if ix.dropped {
-                    (icon::ARROW_COUNTER_CLOCKWISE, "Manter o índice")
+                    (icon::ARROW_COUNTER_CLOCKWISE, "Keep the index")
                 } else {
-                    (icon::TRASH, "Excluir o índice")
+                    (icon::TRASH, "Delete the index")
                 };
                 if ui
                     .add(egui::Button::new(theme::icon(glyph).color(t.muted_foreground)).frame(false))

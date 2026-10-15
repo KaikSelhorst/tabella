@@ -1,4 +1,4 @@
-//! Saved WHERE filters per table ("pedidos pendentes", "clientes de SP"), in `filters.json`.
+//! Saved WHERE filters per table ("pending orders", "customers in NY"), in `filters.json`.
 
 use serde::{Deserialize, Serialize};
 

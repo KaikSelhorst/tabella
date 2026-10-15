@@ -20,7 +20,7 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         .color(t.muted_foreground),
                 );
                 ui.label(
-                    egui::RichText::new("Histórico de consultas")
+                    egui::RichText::new("Query history")
                         .size(15.0)
                         .color(t.foreground),
                 );
@@ -29,14 +29,14 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             ui.horizontal(|ui| {
                 let r = ui.add(
                     TextEdit::singleline(&mut st.query)
-                        .hint_text("Buscar no texto das consultas")
+                        .hint_text("Search the query text")
                         .desired_width(320.0),
                 );
                 if std::mem::take(&mut st.focus) {
                     r.request_focus();
                 }
-                ui.checkbox(&mut st.all_conns, "todas as conexões");
-                ui.checkbox(&mut st.only_errors, "só as que falharam");
+                ui.checkbox(&mut st.all_conns, "all connections");
+                ui.checkbox(&mut st.only_errors, "failed only");
             });
         });
     let needle = st.query.to_lowercase();
@@ -69,7 +69,7 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     let status = if e.ok {
                         format!("{} ms", e.ms)
                     } else {
-                        "falhou".to_string()
+                        "failed".to_string()
                     };
                     ui.label(
                         egui::RichText::new(format!("{} · {when} · {status}", e.conn))
@@ -78,7 +78,7 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add(theme::primary_button(Some(icon::CODE), "Abrir no editor"))
+                            .add(theme::primary_button(Some(icon::CODE), "Open in editor"))
                             .clicked()
                         {
                             cx.request = Some(Request::Sql(e.sql.clone()));
@@ -86,7 +86,7 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         if ui
                             .button(theme::icon_text(
                                 icon::COPY,
-                                "Copiar",
+                                "Copy",
                                 t.muted_foreground,
                                 t.foreground,
                             ))
@@ -97,11 +97,11 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         if ui
                             .button(theme::icon_text(
                                 icon::TRASH,
-                                "Esquecer",
+                                "Forget",
                                 t.muted_foreground,
                                 t.foreground,
                             ))
-                            .on_hover_text("Tira esta consulta do histórico")
+                            .on_hover_text("Removes this query from the history")
                             .clicked()
                         {
                             cx.request = Some(Request::ForgetHistory(e.conn.clone(), e.sql.clone()));
@@ -121,7 +121,7 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     ui.horizontal(|ui| {
         ui.add_space(12.0);
         ui.label(
-            egui::RichText::new(format!("{} consulta(s)", list.len()))
+            egui::RichText::new(format!("{} quer(ies)", list.len()))
                 .size(11.0)
                 .color(t.subtle),
         );

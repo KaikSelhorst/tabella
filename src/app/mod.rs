@@ -122,7 +122,7 @@ pub struct TableState {
     pub schema: String,
     pub table: String,
     pub cols: Vec<ColumnInfo>,
-    /// Foreign keys in other tables that point here ("linhas que apontam para esta").
+    /// Foreign keys in other tables that point here ("rows pointing to this one").
     pub incoming: Vec<IncomingFk>,
     pub page: usize,
     pub filter: String,
@@ -146,18 +146,18 @@ pub struct TableState {
     pub insert: Option<Vec<InsertField>>,
     /// The CSV import dialog, while open.
     pub import: Option<ImportForm>,
-    /// "Filtrar valores" of a column, while open.
+    /// "Filter values" of a column, while open.
     pub value_filter: Option<ValueFilter>,
     /// The last `overlay`, and what it was built from: the grid asks for it every frame.
     overlay_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Overlay>)>>,
-    /// Conditions "Filtrar valores" put in `filter`, so applying it again replaces them.
+    /// Conditions "Filter values" put in `filter`, so applying it again replaces them.
     pub value_conds: Vec<ValueCond>,
 }
 
 /// A column's values and how many rows have each.
 pub type ValueCounts = Vec<(Option<String>, i64)>;
 
-/// "Filtrar valores": a column's values to check and uncheck, like a spreadsheet filter.
+/// "Filter values": a column's values to check and uncheck, like a spreadsheet filter.
 pub struct ValueFilter {
     pub column: String,
     /// The column as compared (see `sql::value_expr`).
@@ -178,7 +178,7 @@ pub struct ValueCond {
     pub unchecked: HashSet<Option<String>>,
 }
 
-/// "Importar CSV" dialog: a file, how to read it, and where each of its columns goes.
+/// "Import CSV" dialog: a file, how to read it, and where each of its columns goes.
 #[derive(Default)]
 pub struct ImportForm {
     pub path: String,
@@ -394,9 +394,9 @@ pub enum TabKind {
     Table(Box<TableState>),
     Structure(Box<StructState>),
     Activity(Box<ActivityState>),
-    /// "Nova tabela" / "Editar estrutura".
+    /// "New table" / "Edit structure".
     Design(Box<Design>),
-    /// "Buscar valor em todas as tabelas".
+    /// "Search value in all tables".
     Search(Box<SearchState>),
     /// ER diagram of a schema.
     Diagram(Box<DiagramState>),
@@ -404,9 +404,9 @@ pub enum TabKind {
     History(Box<HistoryState>),
     /// A `.sql` file run without opening it in an editor.
     Script(Box<ScriptState>),
-    /// "Exportar .sql": tables (and a schema's objects) written as a script.
+    /// "Export .sql": tables (and a schema's objects) written as a script.
     Dump(Box<DumpState>),
-    /// "Comparar estrutura" between two schemas or databases.
+    /// "Compare structure" between two schemas or databases.
     Compare(Box<CompareState>),
 }
 
@@ -422,11 +422,11 @@ pub struct CompareState {
     pub compared: String,
     /// The SQL runs here (same connection and database), or must be run on the target.
     pub same_connection: bool,
-    /// "Salvar .sql": the file written.
+    /// "Save .sql": the file written.
     pub saved: Option<PathBuf>,
 }
 
-/// What "Exportar .sql" covers.
+/// What "Export .sql" covers.
 pub enum DumpScope {
     Table(String, String),
     Schema(String),
@@ -435,7 +435,7 @@ pub enum DumpScope {
 }
 
 pub struct DumpState {
-    /// For the title: "tabela public.clientes", "schema public", "banco loja".
+    /// For the title: "table public.customers", "schema public", "database shop".
     pub what: String,
     pub tables: Vec<(String, String)>,
     pub objects_of: Vec<String>,
@@ -460,7 +460,7 @@ pub struct Editor {
     pub params: Option<ParamPrompt>,
     /// Last value typed for each parameter name.
     pub param_values: std::collections::HashMap<String, String>,
-    /// "Prévia" of an UPDATE/DELETE: rows it would touch.
+    /// "Preview" of an UPDATE/DELETE: rows it would touch.
     pub preview: Option<PreviewState>,
     /// The table a simple single-table SELECT read from, when its rows can be edited in place
     /// (columns and keys arrive with `Reply::Columns`).
@@ -473,7 +473,7 @@ pub struct Editor {
     pub saved_text: String,
     /// Closing was refused once because of unsaved file changes; the next close goes through.
     pub close_armed: bool,
-    /// "Repetir a cada": seconds between automatic re-runs of `last_query`.
+    /// "Repeat every": seconds between automatic re-runs of `last_query`.
     pub repeat: Option<u64>,
     pub last_query: String,
     pub last_run: Option<Instant>,
@@ -578,10 +578,10 @@ pub struct SearchState {
     pub focus: bool,
 }
 
-/// "Atividade" tab: sessions on the server, optionally refreshed every few seconds.
+/// "Activity" tab: sessions on the server, optionally refreshed every few seconds.
 pub struct ActivityState {
     pub view: ActivityView,
-    /// The "Servidor" view's data (`None` until it first arrives).
+    /// The "Server" view's data (`None` until it first arrives).
     pub server: Option<Result<ServerInfo, String>>,
     pub auto_refresh: bool,
     pub last_refresh: Option<Instant>,
@@ -591,7 +591,7 @@ pub struct ActivityState {
     pub kill_error: Option<String>,
 }
 
-/// "Estrutura" tab: columns, indexes, foreign keys and DDL of one table.
+/// "Structure" tab: columns, indexes, foreign keys and DDL of one table.
 pub struct StructState {
     pub schema: String,
     pub table: String,
@@ -649,7 +649,7 @@ pub struct Tab {
     /// in `result`; its slot here is an empty placeholder.
     pub sets: Vec<QueryResult>,
     pub set_shown: usize,
-    /// "Definir valor na seleção": the value being typed.
+    /// "Set value in selection": the value being typed.
     pub fill_prompt: Option<String>,
     pub col_stats: Option<StatsView>,
     /// Columns hidden from the grid, and columns pinned to its left edge (by name, so they
@@ -660,7 +660,7 @@ pub struct Tab {
     pub renamed: bool,
 }
 
-/// "Estatísticas da coluna" dialog.
+/// "Column statistics" dialog.
 pub struct StatsView {
     pub column: String,
     /// What the numbers cover: the whole (filtered) table or just the loaded rows.
@@ -669,7 +669,7 @@ pub struct StatsView {
     pub data: Option<Result<values::ColumnStats, String>>,
 }
 
-/// "Prévia" of an UPDATE/DELETE: what it would touch, before deciding to run it.
+/// "Preview" of an UPDATE/DELETE: what it would touch, before deciding to run it.
 pub struct PreviewState {
     pub sql: String,
     /// `None` while the database is counting.
@@ -886,7 +886,7 @@ pub struct MasterPrompt {
     pub working: Option<Receiver<Result<Derived, String>>>,
 }
 
-/// "Salvar consulta" dialog.
+/// "Save query" dialog.
 pub struct FavPrompt {
     pub name: String,
     pub sql: String,
@@ -912,7 +912,7 @@ pub struct ConnTest {
 pub enum PickFor {
     /// A grid cell (row, column).
     Cell(usize, usize),
-    /// A field of the "Nova linha" form.
+    /// A field of the "New row" form.
     InsertField(usize),
 }
 
@@ -1072,7 +1072,7 @@ pub enum GridEvent {
     ColumnStats(usize),
     /// The cell's value in the big editor (`row`, `col`).
     OpenValue(usize, usize),
-    /// "Filtrar valores" of a column (table tabs).
+    /// "Filter values" of a column (table tabs).
     FilterValues(usize),
     /// Hide a shown column, or show a hidden one.
     ToggleColumn(usize),
@@ -1119,7 +1119,7 @@ pub struct App {
     pub master: Option<MasterPrompt>,
     pub session: Option<Session>,
     pub form: Option<ConnForm>,
-    /// "Testar conexão" in the form: running, or its outcome for the settings it was run with.
+    /// "Test connection" in the form: running, or its outcome for the settings it was run with.
     pub conn_test: Option<ConnTest>,
     pub dialog: Option<Dialog>,
     pub tabs: Vec<Tab>,
@@ -1260,7 +1260,7 @@ impl App {
         self.active = saved.active.min(self.tabs.len().saturating_sub(1));
     }
 
-    /// Opens a tab as it was saved (session restore, "reabrir aba fechada").
+    /// Opens a tab as it was saved (session restore, "reopen closed tab").
     fn restore_tab(&mut self, t: SavedTab) {
         {
             match t {
@@ -1338,7 +1338,7 @@ impl App {
             Ok(written) => {
                 ed.saved_text = ed.text.clone();
                 t.title = crate::files::title(&written);
-                self.notice = Notice::info(format!("Salvo em {}", written.display()));
+                self.notice = Notice::info(format!("Saved to {}", written.display()));
                 ed.file = Some(written);
                 ed.close_armed = false;
             }
@@ -1346,7 +1346,7 @@ impl App {
         }
     }
 
-    /// Ctrl+S on an editor tab: its file, or "salvar como" when it has none yet.
+    /// Ctrl+S on an editor tab: its file, or "save as" when it has none yet.
     pub fn save_file(&mut self, i: usize, ask: bool) {
         let Some(t) = self.tabs.get(i) else { return };
         match (t.editor().and_then(|ed| ed.file.as_ref()), ask) {
@@ -1399,7 +1399,7 @@ impl App {
     pub fn duplicate_tab(&mut self, i: usize) {
         let Some(t) = self.tabs.get(i) else { return };
         let Some(ed) = t.editor() else { return };
-        let (text, title) = (ed.text.clone(), format!("{} (cópia)", t.title));
+        let (text, title) = (ed.text.clone(), format!("{} (copy)", t.title));
         self.open_sql(text);
         if let Some(t) = self.tabs.last_mut() {
             t.title = title;
@@ -1462,7 +1462,7 @@ impl App {
         }
     }
 
-    /// Stores the query from the "Salvar consulta" dialog.
+    /// Stores the query from the "Save query" dialog.
     pub fn add_favorite(&mut self, p: FavPrompt) {
         let conn = if p.shared {
             String::new()
@@ -1508,7 +1508,7 @@ impl App {
 
     fn store_filters(&mut self) {
         if let Err(e) = filters::save(&self.filters) {
-            self.notice = Notice::error(format!("Erro ao salvar filtros: {e}"));
+            self.notice = Notice::error(format!("Error saving filters: {e}"));
         }
     }
 
@@ -1519,7 +1519,7 @@ impl App {
 
     fn save_favorites(&mut self) {
         if let Err(e) = favorites::save(&self.favorites) {
-            self.notice = Notice::error(format!("Erro ao salvar favoritos: {e}"));
+            self.notice = Notice::error(format!("Error saving favorites: {e}"));
         }
     }
 
@@ -1541,19 +1541,19 @@ impl App {
         match config::save(&self.saved, &mut self.secrets) {
             Ok(r) if r.not_stored > 0 => {
                 self.notice = Notice::info(format!(
-                    "{} senha(s) não foram salvas em disco (só nesta sessão)",
+                    "{} password(s) weren't saved to disk (this session only)",
                     r.not_stored
                 ))
             }
             Ok(r) if r.not_removed > 0 => {
                 self.notice = Notice::error(format!(
-                    "{} senha(s) antiga(s) não puderam ser apagadas de: {}",
+                    "{} old password(s) couldn't be deleted from: {}",
                     r.not_removed,
                     self.secrets.describe()
                 ))
             }
             Ok(_) => {}
-            Err(e) => self.notice = Notice::error(format!("Erro ao salvar conexões: {e}")),
+            Err(e) => self.notice = Notice::error(format!("Error saving connections: {e}")),
         }
     }
 
@@ -1577,8 +1577,8 @@ impl App {
             && !apply_live_settings(s, &cfg)
         {
             self.notice = Notice::info(
-                "Salvo. Reconecte (menu … → Reconectar) para aplicar servidor, usuário, banco, TLS, \
-                 somente leitura, timeout ou SSH.",
+                "Saved. Reconnect (menu … → Reconnect) to apply server, user, database, TLS, \
+                 read-only, timeout or SSH.",
             );
         }
     }
@@ -1595,7 +1595,7 @@ impl App {
         self.save_connections();
         if forgot.is_err() {
             self.notice = Notice::error(format!(
-                "A senha de “{}” não pôde ser apagada de: {}",
+                "The password of “{}” couldn't be deleted from: {}",
                 removed.name,
                 self.secrets.describe()
             ));
@@ -1679,7 +1679,7 @@ impl App {
         }
         let cfg_manual = cfg.manual_commit;
         let (tx, rx) = worker::spawn(cfg.clone(), self.ctx.clone());
-        self.notice = Notice::info(format!("Conectando a {}…", cfg.name));
+        self.notice = Notice::info(format!("Connecting to {}…", cfg.name));
         self.session = Some(Session {
             cfg,
             tx,
@@ -1705,13 +1705,13 @@ impl App {
     pub fn disconnect(&mut self) -> bool {
         if self.session.as_ref().is_some_and(|s| s.txn.open) {
             self.notice =
-                Notice::error("Há uma transação aberta: confirme ou desfaça antes de trocar de conexão.");
+                Notice::error("There's an open transaction: commit or roll back before switching connections.");
             return false;
         }
         if let Some(i) = self.tabs.iter().position(has_unsaved) {
             self.active = i;
             self.notice =
-                Notice::error("Há alterações não salvas: salve ou descarte antes de trocar de conexão.");
+                Notice::error("There are unsaved changes: save or discard them before switching connections.");
             return false;
         }
         if let Some(s) = self.session.take() {
@@ -1719,7 +1719,7 @@ impl App {
             if self.tabs.iter().any(Tab::busy) {
                 s.cancel();
             }
-            self.notice = Notice::info("Desconectado");
+            self.notice = Notice::info("Disconnected");
         }
         self.tabs.clear();
         true
@@ -1743,7 +1743,7 @@ impl App {
                 egui::UserAttentionType::Informational,
             ));
         self.ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-            "✓ {title} terminou ({} s) · dblite",
+            "✓ {title} finished ({} s) · dblite",
             took.as_secs()
         )));
         self.title_changed = true;
@@ -1763,7 +1763,7 @@ impl App {
     fn after_design(&mut self, tab: u64, schema: &str, table: &str) {
         let Some(s) = &self.session else { return };
         s.send(Job::Tables);
-        self.notice = Notice::info(format!("Estrutura de {table} aplicada"));
+        self.notice = Notice::info(format!("Structure of {table} applied"));
         for t in &mut self.tabs {
             match &mut t.kind {
                 TabKind::Structure(st) if st.schema == schema && st.table == table => {
@@ -1794,7 +1794,7 @@ impl App {
         self.open_structure(schema, table);
     }
 
-    /// "Nova tabela" in the first schema of the connection (or the one given).
+    /// "New table" in the first schema of the connection (or the one given).
     pub fn open_new_table(&mut self, schema: Option<&str>) {
         let Some(s) = &self.session else { return };
         let schema = schema
@@ -1806,10 +1806,10 @@ impl App {
                 Kind::Sqlite => "main".to_string(),
             });
         let d = Design::new_table(s.cfg.kind, &schema);
-        self.push_tab("nova tabela".into(), TabKind::Design(Box::new(d)));
+        self.push_tab("new table".into(), TabKind::Design(Box::new(d)));
     }
 
-    /// "Editar estrutura" of a table whose structure was loaded.
+    /// "Edit structure" of a table whose structure was loaded.
     pub fn open_design(&mut self, schema: &str, table: &str, data: &TableStructure) {
         let Some(s) = &self.session else { return };
         if let Some(i) = self.tabs.iter().position(
@@ -1819,7 +1819,7 @@ impl App {
             return;
         }
         let d = Design::from_structure(s.cfg.kind, schema, table, data);
-        self.push_tab(format!("{table} · editar"), TabKind::Design(Box::new(d)));
+        self.push_tab(format!("{table} · edit"), TabKind::Design(Box::new(d)));
     }
 
     fn push_tab(&mut self, title: String, kind: TabKind) -> usize {
@@ -1837,7 +1837,7 @@ impl App {
         {
             ed.close_armed = true;
             t.error = Some(format!(
-                "{} tem alterações não salvas: Ctrl+S salva; feche de novo para descartar.",
+                "{} has unsaved changes: Ctrl+S saves; close again to discard.",
                 t.title
             ));
             self.active = i;
@@ -1847,7 +1847,7 @@ impl App {
             && has_unsaved(t)
         {
             t.error = Some(
-                "Esta aba tem alterações não salvas: salve (Ctrl+S) ou descarte antes de fechar.".into(),
+                "This tab has unsaved changes: save (Ctrl+S) or discard them before closing.".into(),
             );
             self.active = i;
             return;
@@ -1886,7 +1886,7 @@ impl App {
         let Some(s) = &mut self.session else { return };
         if s.txn.open && !on {
             self.notice =
-                Notice::error("Confirme ou desfaça a transação aberta antes de voltar ao commit automático.");
+                Notice::error("Commit or roll back the open transaction before going back to auto-commit.");
             return;
         }
         s.txn.manual = on;
@@ -1909,7 +1909,7 @@ impl App {
             return;
         }
         let i = self.push_tab(
-            format!("diagrama · {schema}"),
+            format!("diagram · {schema}"),
             TabKind::Diagram(Box::new(DiagramState::new(&schema))),
         );
         let Some(s) = &self.session else { return };
@@ -1923,7 +1923,7 @@ impl App {
         if self.session.is_none() {
             return;
         }
-        self.open_sql(format!("-- carregando a definição de {}…", object.name));
+        self.open_sql(format!("-- loading the definition of {}…", object.name));
         let Some(s) = &self.session else { return };
         let Some(tab) = self.tabs.last_mut() else { return };
         tab.title = object.name.clone();
@@ -1938,10 +1938,10 @@ impl App {
         let Some(s) = &self.session else { return };
         let sql = sql::table_action(s.cfg.kind, &p.schema, &p.table, p.action, &p.input);
         let done = match p.action {
-            sql::TableAction::Rename => format!("{} renomeada para {}", p.table, p.input.trim()),
-            sql::TableAction::Duplicate(_) => format!("{} duplicada em {}", p.table, p.input.trim()),
-            sql::TableAction::Truncate => format!("{} esvaziada", p.table),
-            sql::TableAction::Drop => format!("{} excluída", p.table),
+            sql::TableAction::Rename => format!("{} renamed to {}", p.table, p.input.trim()),
+            sql::TableAction::Duplicate(_) => format!("{} duplicated as {}", p.table, p.input.trim()),
+            sql::TableAction::Truncate => format!("{} truncated", p.table),
+            sql::TableAction::Drop => format!("{} dropped", p.table),
         };
         s.send(Job::Admin { sql, done });
         let same = |t: &Tab| match &t.kind {
@@ -1964,7 +1964,7 @@ impl App {
         }
     }
 
-    /// "Executar…" on a function or procedure: a new editor tab with the call, asking for the
+    /// "Run…" on a function or procedure: a new editor tab with the call, asking for the
     /// arguments first (when there are any).
     pub fn run_object(&mut self, object: &DbObject) {
         let Some(s) = &self.session else { return };
@@ -1989,7 +1989,7 @@ impl App {
         }
     }
 
-    /// "Gerar SQL": a statement for a table in a new editor tab.
+    /// "Generate SQL": a statement for a table in a new editor tab.
     pub fn open_template(&mut self, schema: &str, table: &str, what: sql::Template) {
         let Some(s) = &self.session else { return };
         let cols: Vec<(String, bool)> = s
@@ -2002,7 +2002,7 @@ impl App {
         self.open_sql(text);
     }
 
-    /// A `.sql` file in a "executar arquivo" tab (not run yet: the tab has the button).
+    /// A `.sql` file in a "run file" tab (not run yet: the tab has the button).
     pub fn open_script(&mut self, path: PathBuf) {
         let Some(s) = &self.session else { return };
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -2022,7 +2022,7 @@ impl App {
         self.push_tab(crate::files::title(&path), TabKind::Script(Box::new(st)));
     }
 
-    /// "Exportar .sql" of a table, a schema or the whole database, in a tab with its options.
+    /// "Export .sql" of a table, a schema or the whole database, in a tab with its options.
     pub fn open_dump(&mut self, scope: DumpScope) {
         let Some(s) = &self.session else { return };
         let all = |schema: Option<&str>| -> Vec<(String, String)> {
@@ -2034,14 +2034,14 @@ impl App {
         };
         let (what, tables, objects_of) = match scope {
             DumpScope::Table(schema, table) => (
-                format!("tabela {schema}.{table}"),
+                format!("table {schema}.{table}"),
                 vec![(schema, table)],
                 Vec::new(),
             ),
             DumpScope::Schema(schema) => (format!("schema {schema}"), all(Some(&schema)), vec![schema]),
             // MySQL lists every database in the sidebar; "the database" is the one in use.
             DumpScope::Database if s.cfg.kind == Kind::MySql => (
-                format!("banco {}", s.current_db),
+                format!("database {}", s.current_db),
                 all(Some(&s.current_db)),
                 vec![s.current_db.clone()],
             ),
@@ -2049,11 +2049,11 @@ impl App {
                 let tables = all(None);
                 let mut schemas: Vec<String> = tables.iter().map(|(sc, _)| sc.clone()).collect();
                 schemas.dedup();
-                (format!("banco {}", s.current_db), tables, schemas)
+                (format!("database {}", s.current_db), tables, schemas)
             }
         };
         let title = format!(
-            "Exportar {}",
+            "Export {}",
             what.split_once(' ').map_or(what.as_str(), |(_, w)| w)
         );
         let st = DumpState {
@@ -2073,7 +2073,7 @@ impl App {
         self.push_tab(title, TabKind::Dump(Box::new(st)));
     }
 
-    /// "Comparar estrutura": this connection's schema against another (here or elsewhere).
+    /// "Compare structure": this connection's schema against another (here or elsewhere).
     pub fn open_compare(&mut self, schema: Option<String>) {
         let Some(s) = &self.session else { return };
         let here = match s.cfg.kind {
@@ -2092,10 +2092,10 @@ impl App {
             same_connection: true,
             saved: None,
         };
-        self.push_tab("Comparar estrutura".into(), TabKind::Compare(Box::new(st)));
+        self.push_tab("Compare structure".into(), TabKind::Compare(Box::new(st)));
     }
 
-    /// Ctrl+P "Executar arquivo .sql…".
+    /// Ctrl+P "Run .sql file…".
     pub fn pick_script(&mut self) {
         if crate::files::NATIVE_DIALOGS {
             if let Some(path) = crate::files::pick_open() {
@@ -2124,7 +2124,7 @@ impl App {
             focus: true,
             ..Default::default()
         };
-        self.push_tab("Histórico".into(), TabKind::History(Box::new(st)));
+        self.push_tab("History".into(), TabKind::History(Box::new(st)));
     }
 
     /// Drops one entry from the history (and the file).
@@ -2132,7 +2132,7 @@ impl App {
         history::forget(&mut self.history, conn, sql);
     }
 
-    /// Opens the "buscar valor" tab (or focuses it).
+    /// Opens the "search value" tab (or focuses it).
     pub fn open_search(&mut self) {
         if let Some(i) = self
             .tabs
@@ -2158,7 +2158,7 @@ impl App {
             cancel: Arc::default(),
             focus: true,
         };
-        self.push_tab("Buscar valor".into(), TabKind::Search(Box::new(st)));
+        self.push_tab("Search value".into(), TabKind::Search(Box::new(st)));
     }
 
     /// Opens (or focuses) the server activity monitor.
@@ -2182,7 +2182,7 @@ impl App {
             confirm_kill: None,
             kill_error: None,
         };
-        let i = self.push_tab("Atividade".into(), TabKind::Activity(Box::new(state)));
+        let i = self.push_tab("Activity".into(), TabKind::Activity(Box::new(state)));
         if let Some(s) = &self.session {
             refresh_activity(&mut self.tabs[i], s);
         }
@@ -2209,7 +2209,7 @@ impl App {
         if let TabKind::Table(ts) = &mut tab.kind {
             if !ts.changes.is_empty() {
                 tab.error =
-                    Some("Esta aba tem alterações pendentes: salve ou descarte antes de filtrar.".into());
+                    Some("This tab has pending changes: save or discard them before filtering.".into());
                 return;
             }
             ts.filter = filter;
@@ -2267,7 +2267,7 @@ impl App {
             table: table.into(),
             data: None,
         };
-        let i = self.push_tab(format!("{table} · estrutura"), TabKind::Structure(Box::new(st)));
+        let i = self.push_tab(format!("{table} · structure"), TabKind::Structure(Box::new(st)));
         let Some(s) = &self.session else { return };
         let tab = &mut self.tabs[i];
         tab.begin_job();
@@ -2311,7 +2311,7 @@ pub fn start_export(tab: &mut Tab, s: &Session, format: Format, whole_table: boo
                     k.qualified(&ts.schema, &ts.table),
                     ts.cols.clone(),
                 ),
-                _ => ("consulta".to_string(), "tabela".to_string(), vec![]),
+                _ => ("query".to_string(), "table".to_string(), vec![]),
             };
             (base, name, cols, ExportSource::Rows(res.clone()))
         }
@@ -2359,8 +2359,8 @@ pub fn open_insert_form(tab: &mut Tab) {
     );
 }
 
-/// "Duplicar linha": the insert form filled with a row's values. Keys the database generates
-/// stay on "Padrão", so the copy gets a new one.
+/// "Duplicate row": the insert form filled with a row's values. Keys the database generates
+/// stay on "Default", so the copy gets a new one.
 pub fn open_duplicate_form(tab: &mut Tab, row: usize) {
     open_insert_form(tab);
     let Some(res) = &tab.result else { return };
@@ -2407,7 +2407,7 @@ pub fn submit_insert(tab: &mut Tab, s: &Session) {
             FieldMode::Value if f.kind == ValueKind::Bool => match sql::parse_bool(&f.text) {
                 Some(b) => Some(sql::bool_value(k, b).to_string()),
                 None => {
-                    tab.error = Some(format!("{}: \"{}\" não é um booleano", f.name, f.text));
+                    tab.error = Some(format!("{}: \"{}\" is not a boolean", f.name, f.text));
                     ts.insert = Some(fields);
                     return;
                 }
@@ -2434,7 +2434,7 @@ pub fn refresh_activity(tab: &mut Tab, s: &Session) {
     tab.send_rows_job(s, Job::Activity { tab: id, view });
 }
 
-/// Starts "Comparar estrutura" with what the tab has chosen.
+/// Starts "Compare structure" with what the tab has chosen.
 pub fn start_compare(tab: &mut Tab, s: &Session, saved: &[ConnConfig]) {
     let TabKind::Compare(st) = &mut tab.kind else {
         return;
@@ -2492,13 +2492,13 @@ pub fn compare_script(st: &CompareState) -> String {
         return String::new();
     };
     format!(
-        "-- Comparação de estrutura: {}\n-- Execute no DESTINO. Remoção de tabelas fica comentada.\n{}\n",
+        "-- Structure comparison: {}\n-- Run it on the TARGET. Dropping tables is left commented out.\n{}\n",
         st.compared,
         crate::compare::script(diffs)
     )
 }
 
-/// Starts "Exportar .sql": a new file in Downloads named after what is exported.
+/// Starts "Export .sql": a new file in Downloads named after what is exported.
 pub fn start_dump(tab: &mut Tab, s: &Session) {
     let TabKind::Dump(st) = &mut tab.kind else { return };
     if st.running || (!st.structure && !st.data) {
@@ -2612,7 +2612,7 @@ pub fn cancel_search(tab: &mut Tab, s: &Session) {
     }
 }
 
-/// Zeroes the "consultas lentas" counters on the server.
+/// Zeroes the "slow queries" counters on the server.
 pub fn reset_query_stats(tab: &mut Tab, s: &Session) {
     let TabKind::Activity(st) = &mut tab.kind else {
         return;
@@ -2679,7 +2679,7 @@ pub struct PathPrompt {
     /// `Some(tab id)` to save that tab; `None` to open a file.
     pub save_tab: Option<u64>,
     pub path: String,
-    /// Open it in an "executar arquivo" tab instead of the editor.
+    /// Open it in a "run file" tab instead of the editor.
     pub run: bool,
 }
 
@@ -2689,7 +2689,7 @@ pub fn file_dirty(t: &Tab) -> bool {
         .is_some_and(|ed| ed.file.is_some() && ed.text != ed.saved_text)
 }
 
-/// Closed tabs remembered for "reabrir aba fechada".
+/// Closed tabs remembered for "reopen closed tab".
 const MAX_CLOSED: usize = 20;
 
 /// A tab as the session file (and the closed-tabs list) keeps it; `None` for tabs that are
@@ -2744,7 +2744,7 @@ pub fn reload(tab: &mut Tab, s: &Session) {
     if !ts.changes.is_empty() {
         // A reload (page, sort, filter) would show rows the pending changes don't refer to.
         tab.error = Some(format!(
-            "Salve (Ctrl+S) ou descarte as {} alteração(ões) pendentes antes de recarregar.",
+            "Save (Ctrl+S) or discard the {} pending change(s) before reloading.",
             ts.changes.len()
         ));
         return;
@@ -2808,7 +2808,7 @@ pub fn run_sql(tab: &mut Tab, s: &Session, sql: String) {
         {
             let n = src.changes.len();
             tab.error = Some(format!(
-                "Salve (Ctrl+S) ou descarte as {n} alteração(ões) pendentes no resultado antes de executar outra consulta."
+                "Save (Ctrl+S) or discard the {n} pending change(s) in the result before running another query."
             ));
             return;
         }
@@ -2856,7 +2856,7 @@ pub fn locate_error(text: &str, sent: &str, e: &crate::error::DbError) -> Option
     })
 }
 
-/// Opens "Filtrar valores" for a column of a table tab, with what was unchecked last time.
+/// Opens "Filter values" for a column of a table tab, with what was unchecked last time.
 pub fn open_value_filter(tab: &mut Tab, s: &Session, column: &str) {
     let TabKind::Table(ts) = &mut tab.kind else { return };
     let data_type = ts
@@ -2975,7 +2975,7 @@ pub fn refresh_import_preview(ts: &mut TableState) {
 /// Starts the import as set up in the dialog.
 pub fn submit_import(tab: &mut Tab, s: &Session) {
     if s.cfg.read_only {
-        tab.error = Some("Conexão somente leitura: não é possível importar.".into());
+        tab.error = Some("Read-only connection: importing isn't possible.".into());
         return;
     }
     let TabKind::Table(ts) = &mut tab.kind else { return };
@@ -2984,7 +2984,7 @@ pub fn submit_import(tab: &mut Tab, s: &Session) {
         return;
     };
     if form.mapping.iter().all(Option::is_none) {
-        tab.error = Some("Associe pelo menos uma coluna do arquivo a uma coluna da tabela.".into());
+        tab.error = Some("Map at least one file column to a table column.".into());
         return;
     }
     let cols_of = |kind| {
@@ -3024,7 +3024,7 @@ pub fn filter_by_value(tab: &mut Tab, s: &Session, column: &str, value: Option<&
     reload(tab, s);
 }
 
-/// Whether `sql` is a single UPDATE or DELETE (what "Prévia" works on).
+/// Whether `sql` is a single UPDATE or DELETE (what "Preview" works on).
 pub fn previewable(sql: &str) -> bool {
     sql::statement_ranges(sql, false).len() == 1
         && sql::statement_words_first(sql).is_some_and(|w| w == "UPDATE" || w == "DELETE")
@@ -3042,7 +3042,7 @@ pub fn preview(tab: &mut Tab, s: &Session, sql: String) {
     s.send(Job::Preview { tab: tab.id, sql });
 }
 
-/// "Repetir a cada": runs the tab's last query again, quietly (no history entry, the
+/// "Repeat every": runs the tab's last query again, quietly (no history entry, the
 /// editable source and the selection stay).
 pub fn rerun(tab: &mut Tab, s: &Session) {
     if has_unsaved(tab) {
@@ -3063,13 +3063,13 @@ pub fn explain(tab: &mut Tab, s: &Session, sql: &str, analyze: bool) {
     let parts = sql::statement_ranges(sql, false);
     let [(a, b)] = parts[..] else {
         tab.error =
-            Some("Explicar funciona com um comando por vez: coloque o cursor nele ou selecione-o.".into());
+            Some("Explain works on one statement at a time: put the cursor on it or select it.".into());
         return;
     };
     let one: String = sql.chars().skip(a).take(b - a).collect();
     if analyze && sql::script_risk(&one).writes {
         tab.error = Some(
-            "EXPLAIN ANALYZE executa o comando de verdade: aqui ele só é usado em consultas de leitura."
+            "EXPLAIN ANALYZE really runs the statement: here it's only used on read queries."
                 .into(),
         );
         return;
@@ -3084,7 +3084,7 @@ pub fn explain(tab: &mut Tab, s: &Session, sql: &str, analyze: bool) {
 }
 
 /// Records a new value for a cell as a pending change (saved together with Ctrl+S). Typed
-/// booleans ("true", "sim", "0"...) are normalized for the engine.
+/// booleans ("true", "yes", "0"...) are normalized for the engine.
 fn set_cell(
     ts: &mut TableState,
     res: &QueryResult,
@@ -3095,14 +3095,14 @@ fn set_cell(
 ) -> Result<(), String> {
     if !ts.cols.iter().any(|c| c.name == res.columns[col]) {
         return Err(format!(
-            "\"{}\" não é uma coluna de {}: não dá para editar",
+            "\"{}\" is not a column of {}: it can't be edited",
             res.columns[col], ts.table
         ));
     }
     let val = match (kinds[col], val) {
         (ValueKind::Bool, Some(v)) => match sql::parse_bool(&v) {
             Some(b) => Some(sql::bool_value(k, b).to_string()),
-            None => return Err(format!("\"{v}\" não é um booleano (use true ou false)")),
+            None => return Err(format!("\"{v}\" is not a boolean (use true or false)")),
         },
         (_, v) => v,
     };
@@ -3254,7 +3254,7 @@ pub mod tests {
         let (s, jobs, _replies) = fake_session(Kind::Postgres);
         let mut tab = table_tab();
         handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 2, Some("bia".into())), true);
-        assert!(jobs.try_recv().is_err(), "edits wait for Salvar");
+        assert!(jobs.try_recv().is_err(), "edits wait for Save");
         handle_grid_event(&mut tab, &s, GridEvent::DeleteRow(0), true);
         save_changes(&mut tab, &s);
         let Ok(Job::Batch { stmts, .. }) = jobs.try_recv() else {
@@ -3322,7 +3322,7 @@ pub mod tests {
                 ("nome".into(), Some("dani".into())),
             ]
         );
-        assert!(tab.error.as_deref().is_some_and(|e| e.contains("1 célula")));
+        assert!(tab.error.as_deref().is_some_and(|e| e.contains("1 pasted cell")));
         assert_eq!(
             tab.range(),
             Some(CellRange {
@@ -3557,7 +3557,7 @@ mod poll_tests {
         app.poll();
         assert!(app.session.is_none());
         assert!(app.notice.as_ref().is_some_and(|n| n.error));
-        assert!(!app.tabs[0].busy(), "nothing stays stuck on Carregando…");
+        assert!(!app.tabs[0].busy(), "nothing stays stuck on Loading…");
     }
 
     #[test]
@@ -3624,7 +3624,7 @@ mod poll_tests {
         let (s, _jobs, _replies) = fake_session(Kind::Postgres);
         let mut app = app_with(s);
         app.open_sql("select 1".into());
-        app.tabs[0].title = "Relatório".into();
+        app.tabs[0].title = "Report".into();
         app.tabs[0].renamed = true;
         app.open_table("public", "clientes");
         if let TabKind::Table(ts) = &mut app.tabs[1].kind {
@@ -3639,9 +3639,9 @@ mod poll_tests {
             "last closed first"
         );
         app.reopen_closed_tab();
-        assert_eq!(app.tabs[1].title, "Relatório");
+        assert_eq!(app.tabs[1].title, "Report");
         app.duplicate_tab(1);
-        assert_eq!(app.tabs[2].title, "Relatório (cópia)");
+        assert_eq!(app.tabs[2].title, "Report (copy)");
         app.close_others(2, false);
         assert_eq!(app.tabs.len(), 1);
     }
@@ -3886,7 +3886,7 @@ mod poll_tests {
             code: 1054,
         }));
         // The statement ran with Ctrl+Enter is the second one; accents before it count as chars.
-        let text = "-- relatório\nSELECT 1;\nSELECT nome, emial FROM clientes;";
+        let text = "-- report\nSELECT 1;\nSELECT nome, emial FROM clientes;";
         let spot = locate_error(text, "SELECT nome, emial FROM clientes", &e).unwrap();
         assert_eq!((spot.line, spot.column), (3, 14));
         let chars: String = text
@@ -3970,7 +3970,7 @@ mod poll_tests {
         assert!(has_unsaved(t));
         // Running something else first would lose the edit: refused.
         run_sql(t, s, "SELECT 1".into());
-        assert!(t.error.as_deref().is_some_and(|e| e.contains("pendentes")));
+        assert!(t.error.as_deref().is_some_and(|e| e.contains("pending")));
         save_changes(t, s);
         let Some(Job::Batch { stmts, refresh, .. }) = jobs.try_iter().last() else {
             panic!("expected a batch")
@@ -4096,7 +4096,7 @@ mod poll_tests {
         app.open_sql(String::new());
         let id = app.tabs[0].id;
         app.tabs[0].pending = 1;
-        let notice = Some("Nenhuma linha foi alterada".to_string());
+        let notice = Some("No rows were changed".to_string());
         replies
             .send(Reply::Rows {
                 tab: id,
@@ -4109,7 +4109,7 @@ mod poll_tests {
             app.tabs[0]
                 .error
                 .as_deref()
-                .is_some_and(|e| e.starts_with("Nenhuma linha"))
+                .is_some_and(|e| e.starts_with("No rows"))
         );
         assert!(!app.tabs[0].busy() && app.session.is_some());
     }

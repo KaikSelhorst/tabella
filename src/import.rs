@@ -20,7 +20,7 @@ pub struct Preview {
     pub delimiter: u8,
     /// Spreadsheets: the sheet read (the first one).
     pub sheet: Option<String>,
-    /// Column names from the first line, or "coluna 1", "coluna 2"... without a header.
+    /// Column names from the first line, or "column 1", "column 2"... without a header.
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
 }
@@ -35,7 +35,7 @@ pub struct ImportSpec {
     pub has_header: bool,
     /// For each file column, the table column it goes into (`None` = skip it).
     pub mapping: Vec<Option<String>>,
-    /// Table columns that are booleans: "sim", "true", "1"... are normalized for the engine.
+    /// Table columns that are booleans: "yes", "true", "1"... are normalized for the engine.
     pub bool_cols: Vec<String>,
     /// Numeric table columns: "1.520,30" (Brazilian format) is read as 1520.30.
     pub number_cols: Vec<String>,
@@ -51,7 +51,7 @@ pub fn preview(path: &Path, has_header: bool) -> Result<Preview, String> {
         rows.truncate(PREVIEW_ROWS + 1);
         return finish_preview(rows, has_header, 0, Some(sheet));
     }
-    let bytes = read_start(path).map_err(|e| format!("não foi possível ler {}: {e}", path.display()))?;
+    let bytes = read_start(path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
     let text = decode(&bytes);
     let first = text.lines().next().unwrap_or("");
     let delimiter = [b',', b';', b'\t']
@@ -80,7 +80,7 @@ fn finish_preview(
     sheet: Option<String>,
 ) -> Result<Preview, String> {
     if rows.is_empty() {
-        return Err("o arquivo está vazio".into());
+        return Err("the file is empty".into());
     }
     let width = rows.iter().map(Vec::len).max().unwrap_or(0);
     let headers = if has_header {
@@ -88,7 +88,7 @@ fn finish_preview(
         h.resize_with(width, String::new);
         h
     } else {
-        (1..=width).map(|i| format!("coluna {i}")).collect()
+        (1..=width).map(|i| format!("column {i}")).collect()
     };
     rows.truncate(PREVIEW_ROWS);
     Ok(Preview {
@@ -100,7 +100,7 @@ fn finish_preview(
 }
 
 /// Table column for each file column: same name ignoring case, spaces and accents-free
-/// underscores ("Data de criação" ≠ "criado_em", but "Nome" = "nome", "data nasc" = "data_nasc").
+/// underscores ("Creation date" ≠ "created_at", but "Name" = "name", "birth date" = "birth_date").
 pub fn auto_mapping(headers: &[String], columns: &[String]) -> Vec<Option<String>> {
     let norm = |s: &str| s.trim().to_lowercase().replace([' ', '-'], "_");
     headers
@@ -119,7 +119,7 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec, nested: bool) -> DbResult<u64> {
         .collect();
     if targets.is_empty() {
         return Err(DbError::Other(
-            "nenhuma coluna do arquivo foi associada à tabela".into(),
+            "no column of the file was mapped to the table".into(),
         ));
     }
     let names: Vec<String> = targets.iter().map(|(_, c)| c.clone()).collect();
@@ -133,7 +133,7 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec, nested: bool) -> DbResult<u64> {
             .has_headers(spec.has_header)
             .flexible(true)
             .from_path(&spec.path)
-            .map_err(|e| DbError::Other(format!("não foi possível abrir o arquivo: {e}")))?;
+            .map_err(|e| DbError::Other(format!("couldn't open the file: {e}")))?;
         Box::new(reader.into_byte_records().map(|r| {
             r.map(|rec| rec.iter().map(decode).collect())
                 .map_err(|e| e.to_string())
@@ -153,7 +153,7 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec, nested: bool) -> DbResult<u64> {
             let from = *done + first_line;
             conn.execute(&stmt).map_err(|e| {
                 DbError::Other(format!(
-                    "linhas {from}–{} do arquivo: {e}. Nada foi importado.",
+                    "file rows {from}–{}: {e}. Nothing was imported.",
                     from + batch.len() as u64 - 1
                 ))
             })?;
@@ -164,7 +164,7 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec, nested: bool) -> DbResult<u64> {
         for (n, rec) in records.enumerate() {
             let rec = rec.map_err(|e| {
                 DbError::Other(format!(
-                    "linha {} do arquivo: {e}. Nada foi importado.",
+                    "file row {}: {e}. Nothing was imported.",
                     n as u64 + first_line
                 ))
             })?;
@@ -179,7 +179,7 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec, nested: bool) -> DbResult<u64> {
                         return match sql::parse_bool(&v) {
                             Some(b) => Ok(Some(sql::bool_value(spec.kind, b).to_string())),
                             None => Err(DbError::Other(format!(
-                                "linha {} do arquivo, coluna {col}: \"{v}\" não é um booleano. Nada foi importado.",
+                                "file row {}, column {col}: \"{v}\" is not a boolean. Nothing was imported.",
                                 n as u64 + first_line
                             ))),
                         };
@@ -252,15 +252,15 @@ pub fn is_spreadsheet(path: &Path) -> bool {
 pub fn sheet_rows(path: &Path) -> Result<(String, Vec<Vec<String>>), String> {
     use calamine::{Data, Reader};
     let mut book =
-        calamine::open_workbook_auto(path).map_err(|e| format!("não foi possível ler a planilha: {e}"))?;
+        calamine::open_workbook_auto(path).map_err(|e| format!("couldn't read the spreadsheet: {e}"))?;
     let name = book
         .sheet_names()
         .first()
         .cloned()
-        .ok_or("a planilha não tem abas")?;
+        .ok_or("the spreadsheet has no sheets")?;
     let range = book
         .worksheet_range(&name)
-        .map_err(|e| format!("não foi possível ler a aba {name}: {e}"))?;
+        .map_err(|e| format!("couldn't read sheet {name}: {e}"))?;
     let cell = |c: &Data| match c {
         Data::Empty | Data::Error(_) => String::new(),
         Data::String(s) | Data::DateTimeIso(s) | Data::DurationIso(s) => s.clone(),
@@ -340,7 +340,7 @@ pub(crate) mod tests {
         assert_eq!(pv.rows[0], ["João", "São Paulo; SP", "sim"]);
         assert_eq!(pv.rows.len(), 2);
         let pv = preview(&p, false).unwrap();
-        assert_eq!(pv.headers, ["coluna 1", "coluna 2", "coluna 3"]);
+        assert_eq!(pv.headers, ["column 1", "column 2", "column 3"]);
         assert_eq!(pv.rows.len(), 3);
         let _ = std::fs::remove_file(p);
 

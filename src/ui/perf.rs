@@ -63,7 +63,7 @@ fn big_result(rows: usize, cols: usize) -> (QueryResult, Vec<ColumnInfo>) {
             if c == 0 {
                 "id".into()
             } else {
-                format!("coluna_{c}")
+                format!("column_{c}")
             }
         })
         .collect();
@@ -88,7 +88,7 @@ fn big_result(rows: usize, cols: usize) -> (QueryResult, Vec<ColumnInfo>) {
             (0..cols)
                 .map(|c| match c % 3 {
                     0 => Some(format!("{}.{:02}", r * 7 + c, r % 100)),
-                    1 => Some(format!("valor {r} da coluna {c} com algum texto")),
+                    1 => Some(format!("value {r} of column {c} with some text")),
                     _ => (r % 7 != 0).then(|| format!("x{r}")),
                 })
                 .collect()
@@ -108,7 +108,7 @@ fn frame_times() {
     let mut harness = Driver::new();
     let report = |name: &str, d: Duration| eprintln!("{name:<58} {:>8.2} ms/frame", d.as_secs_f64() * 1000.0);
 
-    report("base: tabela de 40 linhas", harness.time(30));
+    report("base: 40-row table", harness.time(30));
 
     // An editor result at the cap: 5000 rows x 20 columns, editable (source with columns).
     let (res, info) = big_result(5000, 20);
@@ -122,7 +122,7 @@ fn frame_times() {
         ed.source = Some(Box::new(src));
         app.active = 1;
     }
-    report("editor: resultado 5000 x 20", harness.time(30));
+    report("editor: 5000 x 20 result", harness.time(30));
 
     // 300 pending edits on it: every frame used to copy the result to show them.
     {
@@ -132,13 +132,13 @@ fn frame_times() {
         for r in 0..300 {
             src.changes.push(Change::Set {
                 key: vec![res.rows[r * 10][0].clone()],
-                col: "coluna_1".into(),
-                value: Some(format!("novo {r}")),
+                col: "column_1".into(),
+                value: Some(format!("new {r}")),
                 before: None,
             });
         }
     }
-    report("editor: + 300 alterações pendentes", harness.time(30));
+    report("editor: + 300 pending changes", harness.time(30));
 
     // Everything selected (Ctrl+A): sum / average under the grid.
     {
@@ -147,7 +147,7 @@ fn frame_times() {
         tab.anchor = Some((0, 0));
         tab.selected = Some((4999, 19));
     }
-    report("editor: seleção de 100 mil células", harness.time(30));
+    report("editor: 100k-cell selection", harness.time(30));
     {
         let tab = &mut harness.state_mut().tabs[1];
         tab.anchor = None;
@@ -164,12 +164,12 @@ fn frame_times() {
         ed.hide_equal = false;
         let mut now = before.clone();
         for r in (0..5000).step_by(7) {
-            now.rows[r][1] = Some(format!("mudou {r}"));
+            now.rows[r][1] = Some(format!("changed {r}"));
         }
         now.elapsed = Duration::from_millis(1);
         tab.result = Some(now);
     }
-    report("editor: comparando 5000 x 20 com o fixado", harness.time(30));
+    report("editor: comparing 5000 x 20 with the pinned one", harness.time(30));
     {
         let ed = harness.state_mut().tabs[1].editor_mut().unwrap();
         ed.pinned = None;
@@ -182,12 +182,12 @@ fn frame_times() {
         tab.result = None;
         let text: String = (0..5000)
             .map(|i| {
-                format!("SELECT id, nome, 'texto {i}' FROM clientes WHERE id = {i} AND ativo; -- linha {i}\n")
+                format!("SELECT id, name, 'text {i}' FROM customers WHERE id = {i} AND active; -- line {i}\n")
             })
             .collect();
         *tab.editor_mut().unwrap() = Editor::new(text);
     }
-    report("editor: script de 5000 linhas", harness.time(30));
+    report("editor: 5000-line script", harness.time(30));
 
     // Large catalog: 3000 tables, 40 000 columns, sidebar filtered, palette open.
     {
@@ -196,22 +196,22 @@ fn frame_times() {
         s.tables = (0..3000)
             .map(|i| TableRef {
                 schema: format!("schema_{}", i / 300),
-                name: format!("tabela_{i}"),
+                name: format!("table_{i}"),
                 is_view: false,
                 estimate: Some(i),
-                search_key: format!("tabela_{i}"),
+                search_key: format!("table_{i}"),
                 size: Some(i * 1000),
             })
             .collect();
         s.columns = (0..40_000)
-            .map(|i| (format!("tabela_{}", i / 13), format!("coluna_{i}")))
+            .map(|i| (format!("table_{}", i / 13), format!("column_{i}")))
             .collect();
         app.tabs.truncate(1);
         app.active = 0;
     }
-    report("sidebar: 3000 tabelas", harness.time(30));
-    harness.state_mut().filter = "tabela_1".into();
-    report("sidebar: 3000 tabelas filtradas", harness.time(30));
+    report("sidebar: 3000 tables", harness.time(30));
+    harness.state_mut().filter = "table_1".into();
+    report("sidebar: 3000 tables filtered", harness.time(30));
     harness.state_mut().filter.clear();
     harness.state_mut().dialog = Some(crate::app::Dialog::Palette(Palette {
         query: "col".into(),
@@ -219,7 +219,7 @@ fn frame_times() {
         started: false,
     }));
     report(
-        "Ctrl+P: 3000 tabelas + 40 mil colunas, buscando",
+        "Ctrl+P: 3000 tables + 40k columns, searching",
         harness.time(30),
     );
     harness.state_mut().dialog = None;

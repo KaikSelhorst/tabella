@@ -1,181 +1,190 @@
 # dblite
 
-Cliente leve de banco de dados para **PostgreSQL**, **MySQL** e **SQLite**, feito em Rust com
-[egui](https://github.com/emilk/egui). Um único executável, sem runtime.
+Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, written in Rust with
+[egui](https://github.com/emilk/egui). A single executable, no runtime.
 
-## Recursos
+## Features
 
-- Navegação de tabelas com paginação, filtro `WHERE`, ordenação e total de linhas
-- Edição direta na grade e num painel de detalhes da linha (tabelas com chave primária): as
-  alterações ficam pendentes e são salvas juntas numa transação (`Ctrl+S`), com desfazer (`Ctrl+Z`)
-- Editor SQL com realce de sintaxe, autocomplete, formatação (`Shift+Alt+F`), histórico,
-  consultas favoritas e execução da seleção
-- Importar conexão colando uma URL (`postgres://…`, `mysql://…`)
-- Reabre a última conexão, as abas (com o texto dos editores) e o tamanho da janela
-- Paleta de comandos (`Ctrl+P`) para abrir tabelas, conexões e consultas recentes
-- Inserção de linhas por formulário (cada coluna: padrão do banco, `NULL` ou valor)
-- Aba "Estrutura": colunas, índices, chaves estrangeiras e DDL pronto para copiar
-- Exportação para CSV, Excel, JSON ou SQL (`INSERT`): a página atual ou a tabela inteira (em blocos,
-  sem carregar tudo na memória), salva na pasta Downloads
-- Cópia de linhas como JSON ou `INSERT`
-- Cancelamento de consultas em andamento e timeout por conexão (aplicado no servidor)
-- Túnel SSH pelo cliente `ssh` do sistema (chaves ou agente)
-- Cor por conexão: uma faixa colorida no topo enquanto conectado (ex.: vermelho para produção)
-- Busca em todas as colunas da tabela e "filtrar por este valor" (igual/diferente) no menu da célula
-- Chaves estrangeiras clicáveis: `Ctrl+clique` (ou o menu da célula) abre a linha referenciada
-- Tamanho em disco das tabelas na sidebar, com opção de ordenar por tamanho
-- Monitor de atividade: sessões do servidor, atualização automática, cancelar consulta ou
-  encerrar conexão (com confirmação)
-- Editor: `Ctrl+Enter` executa o comando sob o cursor (marcado na margem), `F5` executa tudo;
-  um script com várias consultas mostra um resultado para cada
-- Plano de execução visual (`Ctrl+E`, ou EXPLAIN ANALYZE só para leituras): tempo/custo de cada
-  etapa, varreduras completas em tabelas grandes e estimativas erradas destacadas
-- Seleção de várias células (arrastar, `Shift`+clique/setas, `Ctrl+A`): copia como texto
-  separado por tabs (cola no Excel) e mostra contagem, soma, média, mínimo e máximo
-- Colar do Excel na grade (`Ctrl+V`): cada célula vira uma alteração pendente
-- Importar CSV para uma tabela (botão ou arrastar o arquivo): separador e codificação detectados,
-  colunas associadas pelo nome, números como `1.520,30` e `sim`/`não` convertidos, tudo numa
-  transação
-- Commit manual por conexão (ou só na sessão, pelo menu "…"): alterações ficam numa transação
-  até "Confirmar" ou "Desfazer", com faixa de aviso e confirmação ao fechar a janela. Edições
-  da grade e importações usam savepoint dentro dela. No MySQL, DDL confirma sozinho
-- Parâmetros no SQL (`WHERE id = :id`): o app pede os valores antes de executar
-- Buscar e substituir no editor (`Ctrl+F` / `Ctrl+H`)
-- JSON em árvore no painel de detalhes (copia valor ou caminho, ex.: `$.itens[0].preco`)
-- Estatísticas da coluna (clique direito no cabeçalho): nulos, distintos, mín/máx e valores
-  mais comuns, com atalho para filtrar
-- Fixar colunas à esquerda (ficam visíveis ao rolar para o lado) e esconder colunas, pelo
-  clique direito no cabeçalho; lembrado por aba de tabela
-- Buscar no resultado do editor (`Ctrl+F` na grade); em tabelas, `Ctrl+F` vai para a busca no banco
-- Duplicar linha: formulário de inserção já preenchido (chaves geradas ficam no padrão)
-- Filtros salvos por tabela (funil antes do WHERE)
-- Snippets no autocomplete (`sel`, `cnt`, `grp`, `dup`, `join`, `upd`…) e `:parâmetros` destacados
-- Atalhos de teclado e snippets em uma tela (`F1`)
-- Criar e alterar tabelas por formulário: colunas (nome, tipo, nulo, padrão), chave primária e
-  índices, com o SQL gerado à vista; abre no editor ou executa (com confirmação)
-- Prévia de UPDATE/DELETE (botão "Prévia" ou `Ctrl+Shift+Enter`; automática se a conexão pedir):
-  quantas linhas e quais seriam afetadas, sem alterar nada
-- "Linhas que apontam para esta" no menu da célula: abre as tabelas cujas chaves estrangeiras
-  referenciam a linha
-- Monitor de atividade com três visões: sessões, bloqueios (quem trava quem) e consultas lentas
-  (`pg_stat_statements` / `performance_schema`), com "Zerar estatísticas"
-- Gráfico rápido do resultado do editor: barras ou linha, valor ao passar o mouse
-- Resultado de um SELECT simples de uma tabela (com a chave primária no SELECT) é editável no
-  próprio editor: duplo clique, colar, excluir, `Ctrl+S` salva e a consulta roda de novo
-- Sugestão de índice no plano de execução: varreduras completas com filtro em tabelas grandes
-  viram um `CREATE INDEX` pronto para abrir no editor
-- Painel "Servidor" no monitor de atividade: versão, tempo no ar, tamanho, conexões, acerto do
-  cache, maiores tabelas e índices sem uso
-- Ícone próprio, e aviso (botão piscando na barra de tarefas e título) quando algo que levou
-  10 s ou mais termina com a janela em segundo plano
-- Colunas no `Ctrl+P`: digite parte do nome ("cpf", "clientes.email") para achar onde está
-- Buscar um valor em todas as tabelas (`Ctrl+Shift+F`): olha só colunas onde o valor caberia,
-  pula tabelas grandes por padrão, mostra o progresso, pode ser cancelada e abre cada achado
-  já filtrado
-- No editor, passar o mouse sobre o nome de uma tabela mostra as colunas; `Ctrl+clique` abre
-- Abas: clique direito para renomear, duplicar, fechar as outras/da direita; `Ctrl+Shift+T`
-  reabre a última fechada
-- "Repetir": roda a última consulta de leitura a cada 2 s … 1 min
-- Diagrama ER por schema (`Ctrl+P` ou clique direito no schema): tabelas e chaves
-  estrangeiras organizadas sozinhas, com zoom, arrastar e duplo clique para abrir
-- Autocomplete entende apelidos (`FROM pedidos p` → `p.` sugere as colunas de pedidos) e,
-  depois de `JOIN`, sugere a junção pronta pelas chaves estrangeiras
-  (`clientes c ON c.id = p.cliente_id`)
-- Arquivos `.sql`: abrir (`Ctrl+O` ou arrastar), salvar (`Ctrl+S`) e salvar como
-  (`Ctrl+Shift+S`); a aba marca alterações não salvas e avisa antes de fechar
-- Histórico completo (`Ctrl+Shift+H`): busca, filtro por conexão e por erro, abrir no editor
-- Tema claro ou escuro e zoom da interface pelo `Ctrl+P` (zoom também com `Ctrl +`/`Ctrl −`/
-  `Ctrl 0`); os dois ficam lembrados
-- Funções, procedures, triggers e sequences na sidebar (views junto com as tabelas): um clique
-  abre o código num editor, pronto para alterar e rodar
-- "Gerar SQL" no clique direito da tabela: SELECT, INSERT, UPDATE e DELETE pela chave, com
-  `:parâmetros`
-- Edição em massa: definir valor ou NULL em todas as células selecionadas, preencher para baixo
-  (`Ctrl+D`) e excluir as linhas selecionadas (`Delete`)
-- Exportar para Excel (.xlsx, com números e booleanos como tais) e copiar como tabela Markdown
-- Trocar de banco/schema sem editar a conexão (seletores abaixo da conexão na sidebar); o
-  editor mostra onde os nomes sem schema vão parar
-- Executar função/procedure pelo clique direito: os argumentos viram `:parâmetros` pedidos
-  num formulário
-- Ações de tabela no clique direito: renomear, duplicar (só estrutura ou com dados), esvaziar
-  (`TRUNCATE`) e excluir, estas duas só depois de digitar o nome da tabela
-- Executar arquivo `.sql` grande (`Ctrl+P` ou menu de arquivo do editor) sem abrir no editor:
-  lê comando a comando (entende `DELIMITER`, `$$` e `COPY … FROM stdin` do pg_dump), mostra o
-  progresso, para no primeiro erro dizendo a linha, pode ser cancelado e roda numa transação
-- Erro de SQL marcado no editor: o trecho fica sublinhado, o cursor vai até ele e a mensagem
-  diz linha e coluna
-- Filtro por coluna estilo Excel (clique direito no cabeçalho → "Filtrar valores…"): valores
-  distintos com contagem, marcar/desmarcar e busca; vira `IN`/`NOT IN` no WHERE e a coluna ganha
-  um funil
-- Exportar tabela, schema ou banco como `.sql` (estrutura e/ou dados, views, funções, triggers),
-  em blocos e com progresso; recarrega com "Executar arquivo .sql", psql ou mysql
-- Comparar estrutura entre schemas ou bancos (inclusive de outra conexão, ex.: dev × produção)
-  e gerar o SQL que iguala o destino; remoções destacadas e `DROP TABLE` só comentado
-- Importar Excel (.xlsx, .xls) e ODS no mesmo diálogo do CSV
-- "Testar conexão" no formulário (servidor e versão, ou o erro do servidor) sem salvar; o
-  formulário diz o que falta quando "Salvar" está desabilitado
-- Avisos no canto da tela: os informativos somem sozinhos, os de erro ficam até fechar (com
-  copiar)
-- Editor grande para valores longos (menu da célula, Shift+Enter ou ↗ no painel de detalhes):
-  JSON formatado, colorido e validado sem alterar números; volta compacto se veio compacto
-- Fixar um resultado no editor e comparar com os próximos: linhas novas, removidas e
-  alteradas (antigo → novo), casadas pela chave escolhida ou pela posição
-- Chave estrangeira escolhida numa lista (Enter/duplo clique na célula, ou a lupa no painel e no
-  formulário de nova linha): id e um nome legível, com busca; tabelas pequenas filtradas na
-  hora, grandes buscadas no banco (pausa na digitação, 50 resultados, até 2 s por busca)
-- SQLite: abrir um arquivo `.db` (ou criar um novo, ou colar `sqlite:///caminho`) e usar quase
-  tudo — tabelas, editor, edição na grade, chaves estrangeiras, estrutura, designer, importar,
-  exportar `.sql`, comparar estrutura. O que depende de servidor (atividade, sessões, plano visual)
-  avisa que não existe no SQLite; alterar tipo/NULL de coluna existente aparece como comentário
-  (o SQLite não faz)
-- Barra de abas rola (inclusive com a roda do mouse), segue a aba ativa e lista todas quando não
-  cabem
+- Table browsing with paging, a `WHERE` filter, sorting and the total row count
+- Editing directly in the grid and in a row detail panel (tables with a primary key): changes
+  stay pending and are saved together in one transaction (`Ctrl+S`), with undo (`Ctrl+Z`)
+- SQL editor with syntax highlighting, autocomplete, formatting (`Shift+Alt+F`), history,
+  favorite queries and running the selection
+- Import a connection by pasting a URL (`postgres://…`, `mysql://…`)
+- Reopens the last connection, the tabs (with the editors' text) and the window size
+- Command palette (`Ctrl+P`) to open tables, connections and recent queries
+- Inserting rows through a form (each column: database default, `NULL` or a value)
+- "Structure" tab: columns, indexes, foreign keys and DDL ready to copy
+- Export to CSV, Excel, JSON or SQL (`INSERT`): the current page or the whole table (in chunks,
+  without loading everything into memory), saved to the Downloads folder
+- Copying rows as JSON or `INSERT`
+- Cancelling running queries and a per-connection timeout (applied on the server)
+- SSH tunnel through the system's `ssh` client (keys or agent)
+- A color per connection: a colored band at the top while connected (e.g. red for production)
+- Search across all of a table's columns and "filter by this value" (equal/different) in the
+  cell menu
+- Clickable foreign keys: `Ctrl+click` (or the cell menu) opens the referenced row
+- Tables' size on disk in the sidebar, with an option to sort by size
+- Activity monitor: server sessions, auto refresh, cancel a query or kill a connection (with
+  confirmation)
+- Editor: `Ctrl+Enter` runs the statement under the cursor (marked in the margin), `F5` runs
+  everything; a script with several queries shows one result for each
+- Visual execution plan (`Ctrl+E`, or EXPLAIN ANALYZE for reads only): time/cost of each step,
+  with full scans of large tables and bad estimates highlighted
+- Multi-cell selection (drag, `Shift`+click/arrows, `Ctrl+A`): copies as tab-separated text
+  (pastes into Excel) and shows count, sum, average, minimum and maximum
+- Pasting from Excel into the grid (`Ctrl+V`): each cell becomes a pending change
+- Importing CSV into a table (button or dragging the file): separator and encoding detected,
+  columns matched by name, numbers like `1.520,30` and `yes`/`no` converted, all in one
+  transaction
+- Manual commit per connection (or just for the session, from the "…" menu): changes stay in a
+  transaction until "Commit" or "Roll back", with a warning band and a confirmation when closing
+  the window. Grid edits and imports use a savepoint inside it. In MySQL, DDL commits on its own
+- Parameters in SQL (`WHERE id = :id`): the app asks for the values before running
+- Find and replace in the editor (`Ctrl+F` / `Ctrl+H`)
+- JSON as a tree in the detail panel (copies a value or its path, e.g. `$.items[0].price`)
+- Column statistics (right-click the header): nulls, distinct values, min/max and the most
+  common values, with a shortcut to filter
+- Pinning columns to the left (they stay visible when scrolling sideways) and hiding columns,
+  from the header's right-click menu; remembered per table tab
+- Find in the editor's result (`Ctrl+F` in the grid); in tables, `Ctrl+F` goes to the database
+  search
+- Duplicate row: the insert form already filled in (generated keys stay on default)
+- Saved filters per table (funnel before the WHERE)
+- Snippets in autocomplete (`sel`, `cnt`, `grp`, `dup`, `join`, `upd`…) and highlighted
+  `:parameters`
+- Keyboard shortcuts and snippets on one screen (`F1`)
+- Creating and altering tables through a form: columns (name, type, null, default), primary key
+  and indexes, with the generated SQL in view; opens it in the editor or runs it (with
+  confirmation)
+- UPDATE/DELETE preview ("Preview" button or `Ctrl+Shift+Enter`; automatic if the connection
+  asks for it): how many rows and which ones would be affected, without changing anything
+- "Rows pointing to this one" in the cell menu: opens the tables whose foreign keys reference
+  the row
+- Activity monitor with three views: sessions, locks (who blocks whom) and slow queries
+  (`pg_stat_statements` / `performance_schema`), with "Reset statistics"
+- Quick chart of the editor's result: bars or line, value on hover
+- The result of a simple single-table SELECT (with the primary key in the SELECT) is editable in
+  the editor itself: double-click, paste, delete, `Ctrl+S` saves and the query runs again
+- Index suggestion in the execution plan: filtered full scans of large tables become a
+  `CREATE INDEX` ready to open in the editor
+- "Server" panel in the activity monitor: version, uptime, size, connections, cache hit rate,
+  biggest tables and unused indexes
+- Its own icon, and a notification (taskbar button flashing and window title) when something
+  that took 10 s or more finishes while the window is in the background
+- Columns in `Ctrl+P`: type part of the name ("ssn", "customers.email") to find where it is
+- Search a value in all tables (`Ctrl+Shift+F`): only looks at columns where the value would
+  fit, skips large tables by default, shows progress, can be cancelled and opens each match
+  already filtered
+- In the editor, hovering a table name shows its columns; `Ctrl+click` opens it
+- Tabs: right-click to rename, duplicate, close the others/the ones to the right;
+  `Ctrl+Shift+T` reopens the last closed one
+- "Repeat": runs the last read query every 2 s … 1 min
+- ER diagram per schema (`Ctrl+P` or right-click the schema): tables and foreign keys laid out
+  automatically, with zoom, dragging and double-click to open
+- Autocomplete understands aliases (`FROM orders o` → `o.` suggests the columns of orders) and,
+  after `JOIN`, suggests the join ready-made from the foreign keys
+  (`customers c ON c.id = o.customer_id`)
+- `.sql` files: open (`Ctrl+O` or drag), save (`Ctrl+S`) and save as (`Ctrl+Shift+S`); the tab
+  marks unsaved changes and warns before closing
+- Full history (`Ctrl+Shift+H`): search, filter by connection and by error, open in the editor
+- Light or dark theme and interface zoom from `Ctrl+P` (zoom also with `Ctrl +`/`Ctrl −`/
+  `Ctrl 0`); both are remembered
+- Functions, procedures, triggers and sequences in the sidebar (views along with the tables):
+  one click opens the code in an editor, ready to change and run
+- "Generate SQL" in the table's right-click menu: SELECT, INSERT, UPDATE and DELETE by key, with
+  `:parameters`
+- Bulk editing: set a value or NULL in all selected cells, fill down (`Ctrl+D`) and delete the
+  selected rows (`Delete`)
+- Export to Excel (.xlsx, with numbers and booleans as such) and copy as a Markdown table
+- Switching database/schema without editing the connection (selectors below the connection in
+  the sidebar); the editor shows where names without a schema end up
+- Running a function/procedure from the right-click menu: the arguments become `:parameters`
+  asked for in a form
+- Table actions in the right-click menu: rename, duplicate (structure only or with data),
+  truncate (`TRUNCATE`) and drop, these two only after typing the table name
+- Running a large `.sql` file (`Ctrl+P` or the editor's file menu) without opening it in the
+  editor: reads it statement by statement (understands `DELIMITER`, `$$` and pg_dump's
+  `COPY … FROM stdin`), shows progress, stops at the first error with its line, can be
+  cancelled and runs in a transaction
+- SQL errors marked in the editor: the spot is underlined, the cursor goes to it and the
+  message gives the line and column
+- Excel-style column filter (right-click the header → "Filter values…"): distinct values with
+  counts, check/uncheck and search; becomes `IN`/`NOT IN` in the WHERE and the column gets a
+  funnel
+- Exporting a table, schema or database as `.sql` (structure and/or data, views, functions,
+  triggers), in chunks and with progress; loads back with "Run .sql file", psql or mysql
+- Comparing structure between schemas or databases (including another connection's, e.g.
+  dev × production) and generating the SQL that brings the target in line; removals are
+  highlighted and `DROP TABLE` is only commented
+- Importing Excel (.xlsx, .xls) and ODS in the same dialog as CSV
+- "Test connection" in the form (server and version, or the server's error) without saving; the
+  form says what's missing when "Save" is disabled
+- Notifications in the corner of the screen: informational ones go away on their own, errors
+  stay until closed (with copy)
+- Large editor for long values (cell menu, Shift+Enter or ↗ in the detail panel): JSON
+  formatted, colored and validated without touching numbers; saved compact again if it came
+  compact
+- Pinning a result in the editor and comparing it with the next ones: new, removed and changed
+  rows (old → new), matched by the chosen key or by position
+- Picking a foreign key from a list (Enter/double-click on the cell, or the magnifier in the
+  panel and in the new row form): id and a readable name, with search; small tables filtered on
+  the spot, large ones searched in the database (pause while typing, 50 results, up to 2 s per
+  search)
+- SQLite: open a `.db` file (or create a new one, or paste `sqlite:///path`) and use almost
+  everything — tables, editor, grid editing, foreign keys, structure, designer, import, `.sql`
+  export, structure comparison. What depends on a server (activity, sessions, visual plan) says
+  it doesn't exist in SQLite; changing the type/NULL of an existing column shows up as a comment
+  (SQLite can't do it)
+- The tab bar scrolls (including with the mouse wheel), follows the active tab and lists all
+  tabs when they don't fit
 
-## Segurança
+## Security
 
-- **Senhas** nunca vão em texto para o disco: Gerenciador de Credenciais (Windows), chaveiro do
-  sistema via Secret Service (Linux com GNOME Keyring/KWallet) ou, sem chaveiro, um cofre
-  criptografado com senha mestra (Argon2id + ChaCha20-Poly1305).
-- **Valores** nas edições geradas pelo app são parâmetros (MySQL) ou literais com escape
-  independente da configuração do servidor (Postgres).
-- **Filtro `WHERE`** aceita uma única condição (sem `;` nem `--`).
-- **TLS**: Postgres tenta TLS por padrão (`prefer`); "SSL/TLS" exige e verifica o certificado.
-- **Somente leitura** por conexão: a sessão fica read-only no próprio servidor.
-- Comandos destrutivos no editor (`DROP`, `TRUNCATE`, `ALTER`, `DELETE`/`UPDATE` sem `WHERE`)
-  pedem confirmação.
+- **Passwords** never go to disk in plain text: Credential Manager (Windows), the system keyring
+  via Secret Service (Linux with GNOME Keyring/KWallet) or, without a keyring, a vault encrypted
+  with a master password (Argon2id + ChaCha20-Poly1305).
+- **Values** in the edits the app generates are parameters (MySQL) or literals escaped
+  independently of the server configuration (Postgres).
+- **The `WHERE` filter** accepts a single condition (no `;` or `--`).
+- **TLS**: Postgres tries TLS by default (`prefer`); "SSL/TLS" requires it and verifies the
+  certificate.
+- **Read-only** per connection: the session is read-only on the server itself.
+- Destructive statements in the editor (`DROP`, `TRUNCATE`, `ALTER`, `DELETE`/`UPDATE` without
+  `WHERE`) ask for confirmation.
 
 ## Build
 
 ```sh
 cargo build --release                                      # Linux
-cargo build --release --target x86_64-pc-windows-gnu       # Windows (precisa de mingw-w64)
+cargo build --release --target x86_64-pc-windows-gnu       # Windows (needs mingw-w64)
 ```
 
-A feature `dev-conn` lista as conexões dos bancos de exemplo (abaixo). Ela embute as senhas de
-teste no binário: não use em builds distribuídos.
+The `dev-conn` feature lists the connections of the sample databases (below). It embeds the test
+passwords in the binary: don't use it in distributed builds.
 
-## Bancos para desenvolvimento e testes
+## Databases for development and tests
 
 ```sh
-docker compose --profile dev up -d --wait     # dados de exemplo pesados: Postgres :5432, MySQL :3307 (~4 min)
-docker compose --profile test up -d --wait    # bancos dos testes de integração
-cargo test                                    # testes de unidade e de interface
-cargo test -- --ignored db:: worker:: tunnel::   # testes contra os bancos reais (e SSH)
+docker compose --profile dev up -d --wait     # heavy sample data: Postgres :5432, MySQL :3307 (~4 min)
+docker compose --profile test up -d --wait    # databases for the integration tests
+cargo test                                    # unit and UI tests
+cargo test -- --ignored db:: worker:: tunnel::   # tests against the real databases (and SSH)
 ```
 
-Os dados de exemplo são grandes de propósito: no Postgres, `clientes` (1 mi), `pedidos` (5 mi),
-`eventos` (300 mil, tabela larga com JSON, arrays e IPs) e 200 tabelas pequenas no schema `arquivo`;
-no MySQL, `produtos` (1 mi), `vendas` (3 mi), `logs` (200 mil) e 150 tabelas no banco `arquivo`.
-Os scripts em `dev/` podem ser rodados de novo num banco existente (recriam o que é deles).
+The sample data is large on purpose: in Postgres, `clientes` (1M), `pedidos` (5M), `eventos`
+(300k, a wide table with JSON, arrays and IPs) and 200 small tables in the `arquivo` schema; in
+MySQL, `produtos` (1M), `vendas` (3M), `logs` (200k) and 150 tables in the `arquivo` database.
+The scripts in `dev/` can be run again on an existing database (they recreate what they own).
 
-O perfil `test` inclui um servidor SSH descartável (porta 52222) que alcança o Postgres de teste;
-a chave em `dev/ssh/` serve só para ele.
+The `test` profile includes a throwaway SSH server (port 52222) that reaches the test Postgres;
+the key in `dev/ssh/` is only for it.
 
-As capturas de tela da interface (dados falsos, sem banco) são geradas com
-`DBLITE_SHOTS=<pasta> cargo test screenshots -- --ignored` e precisam de um driver Vulkan
-(no WSL: `mesa-vulkan-drivers`).
+The UI screenshots (fake data, no database) are generated with
+`DBLITE_SHOTS=<folder> cargo test screenshots -- --ignored` and need a Vulkan driver
+(on WSL: `mesa-vulkan-drivers`).
 
-## Configuração
+## Configuration
 
-Arquivos em `%APPDATA%\dblite` (Windows) ou `~/.config/dblite` (Linux); `DBLITE_CONFIG_DIR`
-muda o local. `connections.json` não contém senhas.
+Files live in `%APPDATA%\dblite` (Windows) or `~/.config/dblite` (Linux); `DBLITE_CONFIG_DIR`
+changes the location. `connections.json` holds no passwords.

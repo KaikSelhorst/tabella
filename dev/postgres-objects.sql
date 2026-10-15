@@ -120,5 +120,5 @@ CREATE OR REPLACE VIEW pedidos_do_mes AS
 
 CREATE SEQUENCE IF NOT EXISTS numero_nota_fiscal_seq START 1000;
 CREATE SEQUENCE IF NOT EXISTS protocolo_atendimento_seq START 500000 INCREMENT 10;
--- One already in use, so "valor atual" shows something.
+-- One already in use, so "current value" shows something.
 SELECT nextval('numero_nota_fiscal_seq') FROM generate_series(1, 42);

@@ -21,12 +21,12 @@ pub struct Tunnel {
 impl Tunnel {
     /// Forwards a local port to `db_host:db_port` as seen from the SSH server.
     pub fn open(ssh: &SshConfig, db_host: &str, db_port: u16) -> Result<Tunnel, String> {
-        check_arg("usuário SSH", &ssh.user, false)?;
-        check_arg("host SSH", &ssh.host, true)?;
-        check_arg("host do banco", db_host, true)?;
-        let local_port = free_port().map_err(|e| format!("sem porta local livre: {e}"))?;
+        check_arg("SSH user", &ssh.user, false)?;
+        check_arg("SSH host", &ssh.host, true)?;
+        check_arg("database host", db_host, true)?;
+        let local_port = free_port().map_err(|e| format!("no free local port: {e}"))?;
         let mut cmd = crate::programs::command("ssh")
-            .ok_or("cliente ssh não encontrado; instale o OpenSSH Client do Windows")?;
+            .ok_or("ssh client not found; install Windows' OpenSSH Client")?;
         cmd.args([
             "-N",
             // Fail instead of prompting (there is no terminal) or silently not forwarding.
@@ -63,7 +63,7 @@ impl Tunnel {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
         let child = cmd.spawn().map_err(|e| {
-            format!("não foi possível iniciar o ssh ({e}); o cliente OpenSSH está instalado?")
+            format!("couldn't start ssh ({e}); is the OpenSSH client installed?")
         })?;
         let mut tunnel = Tunnel { child, local_port };
         tunnel.wait_ready()?;
@@ -81,7 +81,7 @@ impl Tunnel {
                 }
                 let err = err.trim();
                 return Err(if err.is_empty() {
-                    "o ssh encerrou sem abrir o túnel".into()
+                    "ssh exited without opening the tunnel".into()
                 } else {
                     format!("SSH: {err}")
                 });
@@ -90,7 +90,7 @@ impl Tunnel {
                 return Ok(());
             }
             if Instant::now() > deadline {
-                return Err("SSH: tempo esgotado ao abrir o túnel".into());
+                return Err("SSH: timed out opening the tunnel".into());
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -109,11 +109,11 @@ impl Drop for Tunnel {
 /// Users may contain `@` (`joao@corp`: ssh splits at the last one); host names may not.
 fn check_arg(what: &str, v: &str, host: bool) -> Result<(), String> {
     if v.trim().is_empty() {
-        return Err(format!("SSH: informe o {what}"));
+        return Err(format!("SSH: enter the {what}"));
     }
     if v.starts_with('-') || v.chars().any(|c| c.is_whitespace() || c.is_control()) || host && v.contains('@')
     {
-        return Err(format!("SSH: {what} inválido: {v:?}"));
+        return Err(format!("SSH: invalid {what}: {v:?}"));
     }
     Ok(())
 }
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn option_like_fields_are_refused() {
         let mut cfg = SshConfig {
-            host: "bastion.exemplo.com".into(),
+            host: "bastion.example.com".into(),
             port: 22,
             user: "-oProxyCommand=calc".into(),
             key_path: String::new(),
@@ -139,7 +139,7 @@ mod tests {
             Tunnel::open(&cfg, "db", 5432)
                 .err()
                 .unwrap()
-                .contains("usuário SSH inválido")
+                .contains("invalid SSH user")
         );
         cfg.user = "deploy".into();
         cfg.host = "-F/tmp/x".into();
@@ -147,14 +147,14 @@ mod tests {
             Tunnel::open(&cfg, "db", 5432)
                 .err()
                 .unwrap()
-                .contains("host SSH inválido")
+                .contains("invalid SSH host")
         );
-        cfg.host = "bastion.exemplo.com".into();
+        cfg.host = "bastion.example.com".into();
         assert!(
-            Tunnel::open(&cfg, "db interno", 5432)
+            Tunnel::open(&cfg, "internal db", 5432)
                 .err()
                 .unwrap()
-                .contains("host do banco")
+                .contains("database host")
         );
     }
 

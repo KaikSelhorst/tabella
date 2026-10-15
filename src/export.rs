@@ -76,7 +76,7 @@ impl Writer {
         let out = if format == Format::Xlsx {
             if first.columns.len() > XLSX_MAX_COLS {
                 return Err(std::io::Error::other(
-                    "o Excel aceita até 16.384 colunas: exporte em CSV para mais que isso",
+                    "Excel accepts up to 16,384 columns: export to CSV for more than that",
                 ));
             }
             // Header in bold, frozen above the data. Column numbers fit in u16 from here on.
@@ -124,7 +124,7 @@ impl Writer {
                 Sink::Xlsx { sheet, .. } => {
                     if self.written >= XLSX_MAX_ROWS {
                         return Err(std::io::Error::other(
-                            "o Excel aceita até 1.048.575 linhas: exporte em CSV para mais que isso",
+                            "Excel accepts up to 1,048,575 rows: export to CSV for more than that",
                         ));
                     }
                     xlsx_row(sheet, (self.written + 1) as u32, &self.kinds, row)?;

@@ -1,4 +1,4 @@
-//! "Exportar .sql": options, progress, and the file it wrote.
+//! "Export .sql": options, progress, and the file it wrote.
 
 use super::*;
 use std::fmt::Write as _;
@@ -20,34 +20,34 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(theme::icon(icon::DOWNLOAD_SIMPLE).size(15.0).color(t.muted_foreground));
-                        ui.label(egui::RichText::new("Exportar como .sql").size(15.0).color(t.foreground));
+                        ui.label(egui::RichText::new("Export as .sql").size(15.0).color(t.foreground));
                     });
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(&st.what).monospace().color(t.foreground));
-                    let mut detail = format!("{} tabela(s)", st.tables.len());
+                    let mut detail = format!("{} table(s)", st.tables.len());
                     if !st.objects_of.is_empty() {
-                        detail.push_str(" · views, funções, procedures e triggers");
+                        detail.push_str(" · views, functions, procedures and triggers");
                     }
-                    let _ = write!(detail, " · de {}", s.cfg.name);
+                    let _ = write!(detail, " · from {}", s.cfg.name);
                     ui.label(egui::RichText::new(detail).size(12.0).color(t.muted_foreground));
                     ui.add_space(8.0);
                     ui.add_enabled_ui(!st.running, |ui| {
                         ui.horizontal(|ui| {
-                            ui.checkbox(&mut st.structure, "estrutura");
-                            ui.checkbox(&mut st.data, "dados");
-                            ui.add_enabled(st.structure, egui::Checkbox::new(&mut st.drop, "DROP antes de criar"))
-                                .on_hover_text("Para substituir o que já existir no destino com o mesmo nome");
+                            ui.checkbox(&mut st.structure, "structure");
+                            ui.checkbox(&mut st.data, "data");
+                            ui.add_enabled(st.structure, egui::Checkbox::new(&mut st.drop, "DROP before creating"))
+                                .on_hover_text("To replace whatever already exists in the target with the same name");
                         });
                     });
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().interact_size.y = 28.0;
                         if st.running {
-                            if ui.add(theme::outline_button("Cancelar")).clicked() {
+                            if ui.add(theme::outline_button("Cancel")).clicked() {
                                 cancel = true;
                             }
                         } else {
-                            let label = if st.outcome.is_some() { "Exportar de novo" } else { "Exportar" };
+                            let label = if st.outcome.is_some() { "Export again" } else { "Export" };
                             if ui
                                 .add_enabled(
                                     st.structure || st.data,
@@ -61,15 +61,15 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     });
                     let hint = match s.cfg.kind {
                         crate::db::Kind::Postgres => {
-                            "Salvo em Downloads. Tabelas sem chaves estrangeiras, os dados, depois as chaves e as \
-                             sequences: roda com \"Executar arquivo .sql\" ou psql."
+                            "Saved to Downloads. Tables without foreign keys, the data, then the keys and the \
+                             sequences: runs with \"Run .sql file\" or psql."
                         }
                         crate::db::Kind::MySql => {
-                            "Salvo em Downloads, sem o nome do banco: execute no banco de destino (\"Executar \
-                             arquivo .sql\" ou mysql)."
+                            "Saved to Downloads, without the database name: run it on the target database (\"Run \
+                             .sql file\" or mysql)."
                         }
                         crate::db::Kind::Sqlite => {
-                            "Salvo em Downloads: roda num arquivo SQLite com \"Executar arquivo .sql\" ou sqlite3."
+                            "Saved to Downloads: runs on an SQLite file with \"Run .sql file\" or sqlite3."
                         }
                     };
                     ui.label(egui::RichText::new(hint).size(11.0).color(t.subtle));
@@ -87,7 +87,7 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         ui.add(egui::ProgressBar::new(frac).desired_width(320.0).desired_height(6.0).fill(fill));
                         let took = st.took.or_else(|| st.started.map(|at| at.elapsed())).unwrap_or_default();
                         let text = format!(
-                            "{} de {} tabelas · {} linhas · {} · {:.1}s",
+                            "{} of {} tables · {} rows · {} · {:.1}s",
                             p.tables,
                             p.total,
                             palette::format_count(p.rows as i64),
@@ -108,15 +108,15 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                                 ui.label(egui::RichText::new(path.display().to_string()).monospace().color(t.foreground));
                             });
                             ui.add_space(4.0);
-                            if ui.add(theme::outline_button("Mostrar na pasta")).clicked() {
+                            if ui.add(theme::outline_button("Show in folder")).clicked() {
                                 export::reveal(path);
                             }
                         }
                         Some(Err(e)) => {
                             let title = if e == "cancelado" {
-                                "Cancelado: o arquivo incompleto foi apagado."
+                                "Cancelled: the incomplete file was deleted."
                             } else {
-                                "A exportação falhou; o arquivo incompleto foi apagado."
+                                "The export failed; the incomplete file was deleted."
                             };
                             ui.horizontal(|ui| {
                                 ui.label(theme::icon(icon::WARNING).size(16.0).color(t.destructive));

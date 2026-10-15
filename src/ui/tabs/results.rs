@@ -9,12 +9,12 @@ pub(super) fn status_text(tab: &Tab, read_only: bool) -> String {
         return String::new();
     };
     let hint = match &tab.kind {
-        TabKind::Table(_) if read_only => " · conexão somente leitura",
+        TabKind::Table(_) if read_only => " · read-only connection",
         TabKind::Table(ts) if !ts.cols.is_empty() => {
             if ts.cols.iter().any(|c| c.pk) {
-                " · duplo clique ou Enter edita · Ctrl+S salva"
+                " · double-click or Enter edits · Ctrl+S saves"
             } else {
-                " · sem chave primária: somente leitura"
+                " · no primary key: read-only"
             }
         }
         _ => "",
@@ -22,7 +22,7 @@ pub(super) fn status_text(tab: &Tab, read_only: bool) -> String {
     format!("{}{hint}", summary(res))
 }
 
-/// "Resultado 1 · 2 · 3" above the grid when a script returned several result sets.
+/// "Result 1 · 2 · 3" above the grid when a script returned several result sets.
 pub(super) fn result_sets_strip(ui: &mut egui::Ui, tab: &Tab) -> Option<usize> {
     let t = theme::tokens();
     let mut pick = None;
@@ -36,7 +36,7 @@ pub(super) fn result_sets_strip(ui: &mut egui::Ui, tab: &Tab) -> Option<usize> {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.label(egui::RichText::new("RESULTADOS").size(11.0).color(t.subtle));
+                        ui.label(egui::RichText::new("RESULTS").size(11.0).color(t.subtle));
                         for (i, set) in tab.sets.iter().enumerate() {
                             let shown = i == tab.set_shown;
                             let set = if shown {
@@ -46,15 +46,15 @@ pub(super) fn result_sets_strip(ui: &mut egui::Ui, tab: &Tab) -> Option<usize> {
                             };
                             let n = set.rows.len();
                             let label = if set.columns.is_empty() {
-                                format!("#{} · {} afetada(s)", i + 1, set.affected.unwrap_or(0))
+                                format!("#{} · {} affected", i + 1, set.affected.unwrap_or(0))
                             } else {
-                                let unit = if n == 1 { "linha" } else { "linhas" };
+                                let unit = if n == 1 { "row" } else { "rows" };
                                 format!("#{} · {} {unit}", i + 1, palette::compact_count(n as i64))
                             };
                             let color = if shown { t.foreground } else { t.muted_foreground };
                             let b = egui::Button::new(egui::RichText::new(label).size(12.0).color(color))
                                 .selected(shown);
-                            let tip = format!("{} coluna(s): {}", set.columns.len(), set.columns.join(", "));
+                            let tip = format!("{} column(s): {}", set.columns.len(), set.columns.join(", "));
                             if ui.add(b).on_hover_text(tip).clicked() {
                                 pick = Some(i);
                             }
@@ -68,18 +68,18 @@ pub(super) fn result_sets_strip(ui: &mut egui::Ui, tab: &Tab) -> Option<usize> {
 pub(super) fn summary(res: &QueryResult) -> String {
     if res.columns.is_empty() {
         format!(
-            "{} linha(s) afetada(s) · {} ms",
+            "{} row(s) affected · {} ms",
             res.affected.unwrap_or(0),
             res.elapsed.as_millis()
         )
     } else {
         let truncated = if res.truncated {
-            " · resultado truncado"
+            " · result truncated"
         } else {
             ""
         };
         format!(
-            "{} linha(s) · {} ms{truncated}",
+            "{} row(s) · {} ms{truncated}",
             res.rows.len(),
             res.elapsed.as_millis()
         )
@@ -120,14 +120,14 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
             ui.add_space(48.0);
             ui.vertical_centered(|ui| {
                 ui.spinner();
-                ui.label(egui::RichText::new("Carregando…").color(t.subtle));
+                ui.label(egui::RichText::new("Loading…").color(t.subtle));
             });
         } else if !editable && tab.error.is_none() {
             ui.add_space(48.0);
             ui.vertical_centered(|ui| {
                 ui.label(theme::icon(icon::PLAY).size(20.0).color(t.subtle));
                 ui.label(
-                    egui::RichText::new("Execute uma consulta para ver o resultado aqui").color(t.subtle),
+                    egui::RichText::new("Run a query to see the result here").color(t.subtle),
                 );
             });
         }
@@ -142,14 +142,14 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
             if s.cfg.read_only {
                 None
             } else if pk.is_empty() {
-                Some(format!("· {} não tem chave primária: somente leitura", src.table))
+                Some(format!("· {} has no primary key: read-only", src.table))
             } else if pk.iter().all(|p| res.columns.contains(p)) {
                 Some(format!(
-                    "· editável ({}) · duplo clique edita · Ctrl+S salva",
+                    "· editable ({}) · double-click edits · Ctrl+S saves",
                     src.table
                 ))
             } else {
-                Some(format!("· inclua {} no SELECT para poder editar", pk.join(", ")))
+                Some(format!("· include {} in the SELECT to be able to edit", pk.join(", ")))
             }
         }
         _ => None,
@@ -194,14 +194,14 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
                             let color = if on { t.lime } else { t.muted_foreground };
                             let b = egui::Button::new(theme::icon_text(
                                 icon::CHART_BAR,
-                                "Gráfico",
+                                "Chart",
                                 color,
                                 t.foreground,
                             ))
                             .frame(false);
                             if ui
                                 .add(b)
-                                .on_hover_text("Barras ou linha de uma coluna numérica")
+                                .on_hover_text("Bars or line of a numeric column")
                                 .clicked()
                             {
                                 chart_spec = if on {
@@ -433,7 +433,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
     if res.rows.is_empty() {
         ui.add_space(32.0);
         ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new("Nenhuma linha").color(t.subtle));
+            ui.label(egui::RichText::new("No rows").color(t.subtle));
         });
     }
 
@@ -567,7 +567,7 @@ pub(super) fn found_cells(
     out
 }
 
-/// "Definir valor nas N células": type the value (or choose NULL).
+/// "Set value in the N cells": type the value (or choose NULL).
 pub(super) fn fill_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEvent> {
     let cells = tab.selection().map_or(0, |s| (s.r1 - s.r0 + 1) * s.cols.len());
     let value = tab.fill_prompt.as_mut()?;
@@ -579,12 +579,12 @@ pub(super) fn fill_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEven
         .show(ctx, |ui| {
             ui.set_width(380.0);
             ui.label(
-                egui::RichText::new(format!("Valor para {cells} célula(s)"))
+                egui::RichText::new(format!("Value for {cells} cell(s)"))
                     .size(15.0)
                     .color(t.foreground),
             );
             ui.label(
-                egui::RichText::new("Fica pendente até salvar (Ctrl+S), como as outras edições.")
+                egui::RichText::new("Stays pending until saved (Ctrl+S), like the other edits.")
                     .size(11.0)
                     .color(t.subtle),
             );
@@ -600,13 +600,13 @@ pub(super) fn fill_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEven
             }
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(theme::primary_button(None, "Aplicar")).clicked() {
+                if ui.add(theme::primary_button(None, "Apply")).clicked() {
                     out = Some(GridEvent::FillSelection(Some(value.clone())));
                 }
                 if ui.add(theme::outline_button("NULL")).clicked() {
                     out = Some(GridEvent::FillSelection(None));
                 }
-                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                if ui.add(theme::outline_button("Cancel")).clicked() {
                     cancel = true;
                 }
             });
@@ -617,7 +617,7 @@ pub(super) fn fill_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEven
     out
 }
 
-/// "Estatísticas da coluna": fill rate, distinct values, range and the most common values, each
+/// "Column statistics": fill rate, distinct values, range and the most common values, each
 /// one a click away from becoming a filter (table tabs).
 pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     let Some(view) = &tab.col_stats else { return };
@@ -639,7 +639,7 @@ pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 None => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(egui::RichText::new("Contando…").color(t.muted_foreground));
+                        ui.label(egui::RichText::new("Counting…").color(t.muted_foreground));
                     });
                 }
                 Some(Err(e)) => {
@@ -648,7 +648,7 @@ pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 Some(Ok(st)) => {
                     let pct = |n: i64| {
                         if st.total > 0 {
-                            format!("{:.1}%", n as f64 * 100.0 / st.total as f64).replace('.', ",")
+                            format!("{:.1}%", n as f64 * 100.0 / st.total as f64)
                         } else {
                             "–".into()
                         }
@@ -662,23 +662,23 @@ pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                                 ui.label(egui::RichText::new(v).monospace().color(t.foreground));
                                 ui.end_row();
                             };
-                            row(ui, "Linhas", palette::format_count(st.total));
+                            row(ui, "Rows", palette::format_count(st.total));
                             row(
                                 ui,
-                                "Nulos",
+                                "Nulls",
                                 format!("{} · {}", palette::format_count(st.nulls), pct(st.nulls)),
                             );
-                            row(ui, "Distintos", palette::format_count(st.distinct));
+                            row(ui, "Distinct", palette::format_count(st.distinct));
                             if let Some(v) = &st.min {
-                                row(ui, "Mínimo", v.clone());
+                                row(ui, "Minimum", v.clone());
                             }
                             if let Some(v) = &st.max {
-                                row(ui, "Máximo", v.clone());
+                                row(ui, "Maximum", v.clone());
                             }
                         });
                     ui.add_space(12.0);
                     ui.label(
-                        egui::RichText::new("VALORES MAIS COMUNS")
+                        egui::RichText::new("MOST COMMON VALUES")
                             .size(11.0)
                             .color(t.subtle),
                     );
@@ -725,7 +725,7 @@ pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                                             )
                                             .frame(false),
                                         )
-                                        .on_hover_text("Filtrar a tabela por este valor")
+                                        .on_hover_text("Filter the table by this value")
                                         .clicked()
                                 {
                                     filter = Some(v.clone());
@@ -737,13 +737,13 @@ pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                         }
                     }
                     if st.top.is_empty() {
-                        ui.label(egui::RichText::new("Nenhuma linha").color(t.subtle));
+                        ui.label(egui::RichText::new("No rows").color(t.subtle));
                     }
                 }
             }
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(theme::outline_button("Fechar")).clicked() {
+                if ui.add(theme::outline_button("Close")).clicked() {
                     close = true;
                 }
             });
@@ -817,7 +817,7 @@ pub(super) fn keyboard_event(
     })
 }
 
-/// "6 células · 4 valores · soma 5,5 · média 2,75 · mín 1,5 · máx 4" under a range selection.
+/// "6 cells · 4 values · sum 5.5 · avg 2.75 · min 1.5 · max 4" under a range selection.
 pub(super) fn selection_stats(
     ui: &mut egui::Ui,
     tab_id: u64,
@@ -827,13 +827,13 @@ pub(super) fn selection_stats(
 ) {
     let t = theme::tokens();
     let st = values::stats(shown, kinds, range);
-    let mut parts = vec![format!("{} células", st.cells), format!("{} valores", st.values)];
+    let mut parts = vec![format!("{} cells", st.cells), format!("{} values", st.values)];
     if let Some((n, sum, lo, hi)) = st.numbers {
         let f = values::format_number;
-        parts.push(format!("soma {}", f(sum)));
-        parts.push(format!("média {}", f(sum / n as f64)));
-        parts.push(format!("mín {}", f(lo)));
-        parts.push(format!("máx {}", f(hi)));
+        parts.push(format!("sum {}", f(sum)));
+        parts.push(format!("avg {}", f(sum / n as f64)));
+        parts.push(format!("min {}", f(lo)));
+        parts.push(format!("max {}", f(hi)));
     }
     let text = parts.join("  ·  ");
     egui::Panel::bottom(egui::Id::new(("stats", tab_id)))
@@ -855,7 +855,7 @@ pub(super) fn selection_stats(
                         .add(
                             egui::Button::new(theme::icon(icon::COPY).color(t.muted_foreground)).frame(false),
                         )
-                        .on_hover_text("Copiar resumo")
+                        .on_hover_text("Copy summary")
                         .clicked()
                     {
                         ui.ctx().copy_text(text.clone());
@@ -865,7 +865,7 @@ pub(super) fn selection_stats(
         });
 }
 
-/// "Filtrar valores": check the values to keep; the list comes from the database.
+/// "Filter values": check the values to keep; the list comes from the database.
 pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     let id = tab.id;
     let TabKind::Table(ts) = &mut tab.kind else { return };
@@ -884,7 +884,7 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
                 ui.label(theme::icon(icon::FUNNEL).size(16.0).color(t.lime));
                 ui.label(egui::RichText::new(&vf.column).size(15.0).color(t.foreground));
                 ui.label(
-                    egui::RichText::new(format!("em {table}"))
+                    egui::RichText::new(format!("in {table}"))
                         .size(11.0)
                         .color(t.subtle),
                 );
@@ -893,9 +893,9 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
             let r = ui.add(
                 TextEdit::singleline(&mut vf.search)
                     .hint_text(if vf.complete {
-                        "Buscar na lista"
+                        "Search the list"
                     } else {
-                        "Buscar (Enter busca no banco)"
+                        "Search (Enter searches the database)"
                     })
                     .desired_width(f32::INFINITY),
             );
@@ -911,7 +911,7 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
                 None => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(egui::RichText::new("Lendo os valores…").color(t.muted_foreground));
+                        ui.label(egui::RichText::new("Reading the values…").color(t.muted_foreground));
                     });
                     None
                 }
@@ -930,13 +930,13 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
                         needle.is_empty() || v.as_deref().unwrap_or("null").to_lowercase().contains(&needle)
                     })
                     .collect();
-                // "Selecionar todos" acts on what the search shows.
+                // "Select all" acts on what the search shows.
                 let all_on = shown.iter().all(|(v, _)| !vf.unchecked.contains(v));
                 let mut all = all_on;
                 let label = if needle.is_empty() {
-                    "Selecionar todos"
+                    "Select all"
                 } else {
-                    "Selecionar os encontrados"
+                    "Select the matches"
                 };
                 if ui.checkbox(&mut all, label).changed() {
                     for (v, _) in &shown {
@@ -976,17 +976,17 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
                             });
                         }
                         if shown.is_empty() {
-                            ui.label(egui::RichText::new("Nenhum valor encontrado").color(t.subtle));
+                            ui.label(egui::RichText::new("No values found").color(t.subtle));
                         }
                     });
                 ui.separator();
                 let kept = values.iter().filter(|(v, _)| !vf.unchecked.contains(v)).count();
                 can_apply = kept > 0;
-                let mut note = format!("{kept} de {} marcados", values.len());
+                let mut note = format!("{kept} of {} checked", values.len());
                 if !vf.complete {
                     let _ = write!(
                         note,
-                        " · só os {} mais comuns: os outros ficam de fora ao aplicar",
+                        " · only the {} most common: the others are left out when applying",
                         sql::DISTINCT_LIMIT
                     );
                 }
@@ -995,12 +995,12 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 apply = ui
-                    .add_enabled(can_apply, theme::primary_button(Some(icon::FUNNEL), "Aplicar"))
-                    .on_disabled_hover_text("Marque pelo menos um valor")
+                    .add_enabled(can_apply, theme::primary_button(Some(icon::FUNNEL), "Apply"))
+                    .on_disabled_hover_text("Check at least one value")
                     .clicked();
-                cancel = ui.add(theme::outline_button("Cancelar")).clicked();
+                cancel = ui.add(theme::outline_button("Cancel")).clicked();
                 if had {
-                    clear = ui.add(theme::outline_button("Remover filtro")).clicked();
+                    clear = ui.add(theme::outline_button("Remove filter")).clicked();
                 }
             });
         });
@@ -1037,13 +1037,13 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
                 ui.label(egui::RichText::new(&ve.column).size(15.0).color(t.foreground));
                 ui.label(egui::RichText::new(&ve.data_type).size(11.0).color(t.subtle));
                 ui.label(
-                    egui::RichText::new(format!("linha {}", ve.row + 1))
+                    egui::RichText::new(format!("row {}", ve.row + 1))
                         .size(11.0)
                         .color(t.subtle),
                 );
                 if !ve.editable {
                     ui.label(
-                        egui::RichText::new("· somente leitura")
+                        egui::RichText::new("· read-only")
                             .size(11.0)
                             .color(t.subtle),
                     );
@@ -1053,19 +1053,19 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
             ui.horizontal(|ui| {
                 let valid = check.as_ref().is_some_and(Result::is_ok);
                 if json && ve.editable && !ve.null {
-                    if ui.add_enabled(valid, egui::Button::new("Formatar")).clicked() {
+                    if ui.add_enabled(valid, egui::Button::new("Format")).clicked() {
                         ve.text = values::json_pretty(&ve.text);
                     }
-                    if ui.add_enabled(valid, egui::Button::new("Compactar")).clicked() {
+                    if ui.add_enabled(valid, egui::Button::new("Compact")).clicked() {
                         ve.text = values::json_compact(&ve.text);
                     }
                 }
-                if ui.button("Copiar").clicked() {
+                if ui.button("Copy").clicked() {
                     ui.ctx().copy_text(ve.text.clone());
                 }
                 if ve.editable {
                     ui.checkbox(&mut ve.null, "NULL")
-                        .on_hover_text("Salvar a célula como NULL");
+                        .on_hover_text("Save the cell as NULL");
                 }
             });
             ui.add_space(4.0);
@@ -1117,21 +1117,21 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let lines = ve.text.lines().count().max(1);
-                let size = format!("{} caracteres · {lines} linha(s)", ve.text.chars().count());
+                let size = format!("{} characters · {lines} line(s)", ve.text.chars().count());
                 ui.label(egui::RichText::new(size).size(11.0).color(t.subtle));
                 match &check {
                     Some(Ok(())) => {
-                        ui.label(egui::RichText::new("· JSON válido").size(11.0).color(t.lime));
+                        ui.label(egui::RichText::new("· valid JSON").size(11.0).color(t.lime));
                     }
                     Some(Err((line, col, _))) => {
-                        let msg = format!("· JSON inválido: linha {line}, coluna {col}");
+                        let msg = format!("· invalid JSON: line {line}, column {col}");
                         ui.label(egui::RichText::new(msg).size(11.0).color(t.destructive));
                     }
                     None => {}
                 }
                 if ve.compact && ve.editable {
                     ui.label(
-                        egui::RichText::new("· volta compacto ao salvar, como estava")
+                        egui::RichText::new("· saved compact again, as it was")
                             .size(11.0)
                             .color(t.subtle),
                     );
@@ -1141,17 +1141,17 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ve.editable {
                     let why = if !changed {
-                        "Nada mudou"
+                        "Nothing changed"
                     } else {
-                        "Coluna JSON: corrija o JSON antes de salvar"
+                        "JSON column: fix the JSON before saving"
                     };
                     save = ui
-                        .add_enabled(can_save, theme::primary_button(None, "Salvar"))
-                        .on_hover_text("Fica pendente, como as outras edições (Ctrl+S grava)")
+                        .add_enabled(can_save, theme::primary_button(None, "Save"))
+                        .on_hover_text("Stays pending, like the other edits (Ctrl+S writes it)")
                         .on_disabled_hover_text(why)
                         .clicked();
                 }
-                let label = if ve.editable { "Cancelar" } else { "Fechar" };
+                let label = if ve.editable { "Cancel" } else { "Close" };
                 close = ui.add(theme::outline_button(label)).clicked();
             });
         });
@@ -1169,7 +1169,7 @@ enum PinAction {
     Unpin,
 }
 
-/// "Fixar" while nothing is pinned; then "Comparar", "Fixar este" and unpin.
+/// "Pin" while nothing is pinned; then "Compare", "Pin this" and unpin.
 fn pin_buttons(ui: &mut egui::Ui, pinned_at: Option<u64>, comparing: bool) -> Option<PinAction> {
     let t = theme::tokens();
     let mut action = None;
@@ -1179,8 +1179,8 @@ fn pin_buttons(ui: &mut egui::Ui, pinned_at: Option<u64>, comparing: bool) -> Op
     match pinned_at {
         None => {
             if ui
-                .add(button(icon::PUSH_PIN, "Fixar", t.muted_foreground))
-                .on_hover_text("Guarda este resultado para comparar com os próximos")
+                .add(button(icon::PUSH_PIN, "Pin", t.muted_foreground))
+                .on_hover_text("Keeps this result to compare with the next ones")
                 .clicked()
             {
                 action = Some(PinAction::Pin);
@@ -1189,13 +1189,13 @@ fn pin_buttons(ui: &mut egui::Ui, pinned_at: Option<u64>, comparing: bool) -> Op
         Some(at) => {
             let unpin =
                 egui::Button::new(theme::icon(icon::PUSH_PIN_SLASH).color(t.muted_foreground)).frame(false);
-            if ui.add(unpin).on_hover_text("Desafixar").clicked() {
+            if ui.add(unpin).on_hover_text("Unpin").clicked() {
                 action = Some(PinAction::Unpin);
             }
             if !comparing
                 && ui
-                    .add(button(icon::PUSH_PIN, "Fixar este", t.muted_foreground))
-                    .on_hover_text("Troca o fixado por este resultado")
+                    .add(button(icon::PUSH_PIN, "Pin this", t.muted_foreground))
+                    .on_hover_text("Replaces the pinned result with this one")
                     .clicked()
             {
                 action = Some(PinAction::Pin);
@@ -1203,8 +1203,8 @@ fn pin_buttons(ui: &mut egui::Ui, pinned_at: Option<u64>, comparing: bool) -> Op
             let color = if comparing { t.lime } else { t.muted_foreground };
             let when = crate::history::ago(at, crate::history::now());
             if ui
-                .add(button(icon::GIT_DIFF, "Comparar com o fixado", color))
-                .on_hover_text(format!("Fixado {when}: linhas novas, removidas e alteradas"))
+                .add(button(icon::GIT_DIFF, "Compare with the pinned one", color))
+                .on_hover_text(format!("Pinned {when}: new, removed and changed rows"))
                 .clicked()
             {
                 action = Some(PinAction::Compare(!comparing));
@@ -1235,9 +1235,9 @@ pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Opti
             });
             ui.add_space(8.0);
             let hint = match (&p.label, p.numeric_key) {
-                (Some(l), true) => format!("Buscar por {l} ou pelo número de {}", p.fk.column),
-                (Some(l), false) => format!("Buscar por {l} ou {}", p.fk.column),
-                (None, _) => format!("Buscar por {}", p.fk.column),
+                (Some(l), true) => format!("Search by {l} or by the number of {}", p.fk.column),
+                (Some(l), false) => format!("Search by {l} or {}", p.fk.column),
+                (None, _) => format!("Search by {}", p.fk.column),
             };
             let r = ui.add(
                 TextEdit::singleline(&mut p.search)
@@ -1274,14 +1274,14 @@ pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Opti
                     None => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(egui::RichText::new("Carregando…").color(t.muted_foreground));
+                            ui.label(egui::RichText::new("Loading…").color(t.muted_foreground));
                         });
                     }
                     Some(Err(e)) => {
                         ui.label(egui::RichText::new(e).color(t.destructive));
                     }
                     Some(Ok(_)) if shown.is_empty() => {
-                        ui.label(egui::RichText::new("Nada encontrado").color(t.subtle));
+                        ui.label(egui::RichText::new("Nothing found").color(t.subtle));
                     }
                     Some(Ok(_)) => {
                         // Keys padded to the same width (monospace), so the labels line up.
@@ -1318,12 +1318,12 @@ pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Opti
             ui.add_space(6.0);
             let note = match (&p.options, p.local) {
                 (Some(Ok(rows)), true) if rows.len() as i64 > crate::sql::FK_LOCAL_ROWS => {
-                    "Tabela grande: digite para filtrar".to_string()
+                    "Large table: type to filter".to_string()
                 }
-                (Some(Ok(_)), true) => format!("{} · filtra enquanto você digita", p.fk.table),
-                (_, false) if p.loading => "Buscando…".to_string(),
+                (Some(Ok(_)), true) => format!("{} · filters as you type", p.fk.table),
+                (_, false) if p.loading => "Searching…".to_string(),
                 (_, false) => format!(
-                    "{} é grande: busca no banco, até {} resultados",
+                    "{} is large: searches the database, up to {} results",
                     p.fk.table,
                     crate::sql::FK_SEARCH_ROWS
                 ),
@@ -1331,7 +1331,7 @@ pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Opti
             };
             ui.label(egui::RichText::new(note).size(11.0).color(t.subtle));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                if ui.add(theme::outline_button("Cancel")).clicked() {
                     p.focused = false;
                     chosen = Some(String::new());
                 }
@@ -1350,7 +1350,7 @@ pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Opti
     let p = tab.fk_picker.as_ref()?;
     let target = p.target;
     match chosen {
-        // "Cancelar" (empty) or Esc: nothing chosen.
+        // "Cancel" (empty) or Esc: nothing chosen.
         Some(k) if k.is_empty() => {
             tab.fk_picker = None;
             None

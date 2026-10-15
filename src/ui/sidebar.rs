@@ -81,9 +81,9 @@ impl App {
             ui.label(theme::icon(icon::DATABASE).size(12.0).color(tk.subtle));
             let half = (ui.available_width() - 28.0) / 2.0;
             let db_tip = if pg {
-                "Banco: trocar reconecta no mesmo servidor (as abas desta conexão fecham)"
+                "Database: switching reconnects to the same server (this connection's tabs close)"
             } else {
-                "Banco onde os nomes sem prefixo são procurados (USE)"
+                "Database where unprefixed names are looked up (USE)"
             };
             pick_db = combo(
                 ui,
@@ -101,7 +101,7 @@ impl App {
                     &schema,
                     &schemas,
                     ui.available_width() - 8.0,
-                    "Schema onde os nomes sem prefixo são procurados primeiro (search_path)",
+                    "Schema where unprefixed names are looked up first (search_path)",
                 );
             }
         });
@@ -136,30 +136,30 @@ impl App {
                         ..self.saved[i].clone()
                     })
                     .into(),
-                    None => egui::RichText::new("Selecionar conexão…")
+                    None => egui::RichText::new("Select connection…")
                         .color(theme::tokens().muted_foreground)
                         .into(),
                 };
                 ui.add_enabled_ui(current.is_some(), |ui| {
                     ui.menu_button(theme::icon(icon::DOTS_THREE), |ui| {
-                        if ui.button("Reconectar").clicked() {
+                        if ui.button("Reconnect").clicked() {
                             connect = current;
                             ui.close();
                         }
-                        if ui.button("Editar").clicked() {
+                        if ui.button("Edit").clicked() {
                             edit = current;
                             ui.close();
                         }
-                        if ui.button("Excluir").clicked() {
+                        if ui.button("Delete").clicked() {
                             delete = current;
                             ui.close();
                         }
                         if let Some(mut on) = session_manual {
                             ui.separator();
                             if ui
-                                .checkbox(&mut on, "Commit manual nesta sessão")
+                                .checkbox(&mut on, "Manual commit in this session")
                                 .on_hover_text(
-                                    "Alterações ficam numa transação até você confirmar ou desfazer",
+                                    "Changes stay in a transaction until you commit or roll back",
                                 )
                                 .changed()
                             {
@@ -182,11 +182,11 @@ impl App {
                                 ui.close();
                             }
                             r.context_menu(|ui| {
-                                if ui.button("Editar").clicked() {
+                                if ui.button("Edit").clicked() {
                                     edit = Some(i);
                                     ui.close();
                                 }
-                                if ui.button("Excluir").clicked() {
+                                if ui.button("Delete").clicked() {
                                     delete = Some(i);
                                     ui.close();
                                 }
@@ -200,7 +200,7 @@ impl App {
                                 false,
                                 theme::icon_text(
                                     icon::PLUS,
-                                    "Adicionar conexão…",
+                                    "Add connection…",
                                     theme::tokens().lime,
                                     theme::tokens().foreground,
                                 ),
@@ -241,7 +241,7 @@ impl App {
     fn table_tree(&mut self, ui: &mut egui::Ui) {
         let Some(s) = &self.session else {
             ui.label(
-                egui::RichText::new("Sem conexão ativa")
+                egui::RichText::new("No active connection")
                     .size(11.0)
                     .color(theme::tokens().subtle),
             );
@@ -250,14 +250,14 @@ impl App {
         if !s.ready {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Conectando…");
+                ui.label("Connecting…");
             });
             return;
         }
         let mut action = tree_toolbar(ui, s, self.sort_by_size);
         ui.add(
             TextEdit::singleline(&mut self.filter)
-                .hint_text("Filtrar tabelas…")
+                .hint_text("Filter tables…")
                 .margin(egui::Margin::symmetric(8, 5))
                 .desired_width(ui.available_width()),
         );
@@ -345,13 +345,13 @@ enum TreeAction {
     Compare(String),
 }
 
-/// "TABELAS" with quiet icon actions, like a file tree.
+/// "TABLES" with quiet icon actions, like a file tree.
 fn tree_toolbar(ui: &mut egui::Ui, s: &Session, by_size: bool) -> Option<TreeAction> {
     let tk = theme::tokens();
     let mut action = None;
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("TABELAS").size(11.0).color(tk.subtle));
+        ui.label(egui::RichText::new("TABLES").size(11.0).color(tk.subtle));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let button = |ui: &mut egui::Ui, glyph: &str, tip: &str| {
@@ -359,13 +359,13 @@ fn tree_toolbar(ui: &mut egui::Ui, s: &Session, by_size: bool) -> Option<TreeAct
                     .on_hover_text(tip)
                     .clicked()
             };
-            if button(ui, icon::PLUGS, "Desconectar") {
+            if button(ui, icon::PLUGS, "Disconnect") {
                 action = Some(TreeAction::Disconnect);
             }
-            if button(ui, icon::PULSE, "Atividade no servidor") {
+            if button(ui, icon::PULSE, "Server activity") {
                 action = Some(TreeAction::Activity);
             }
-            if !s.cfg.read_only && button(ui, icon::PLUS, "Nova tabela") {
+            if !s.cfg.read_only && button(ui, icon::PLUS, "New table") {
                 action = Some(TreeAction::NewTable(None));
             }
             let sort =
@@ -373,18 +373,18 @@ fn tree_toolbar(ui: &mut egui::Ui, s: &Session, by_size: bool) -> Option<TreeAct
             if ui
                 .add(egui::Button::new(sort).frame(false))
                 .on_hover_text(if by_size {
-                    "Ordenar por nome"
+                    "Sort by name"
                 } else {
-                    "Ordenar por tamanho"
+                    "Sort by size"
                 })
                 .clicked()
             {
                 action = Some(TreeAction::ToggleSort);
             }
-            if button(ui, icon::ARROWS_CLOCKWISE, "Recarregar tabelas") {
+            if button(ui, icon::ARROWS_CLOCKWISE, "Reload tables") {
                 s.send(Job::Tables);
             }
-            if button(ui, icon::CODE, "Novo editor SQL") {
+            if button(ui, icon::CODE, "New SQL editor") {
                 action = Some(TreeAction::NewSql);
             }
         });
@@ -433,7 +433,7 @@ impl Tree<'_> {
         let schema = &group[0].schema;
         let is_default = schema == self.default_schema();
         let header = if is_default {
-            egui::RichText::new(format!("{schema}  {}  · padrão", visible.len()))
+            egui::RichText::new(format!("{schema}  {}  · default", visible.len()))
                 .size(11.0)
                 .color(tk.foreground)
         } else {
@@ -459,24 +459,24 @@ impl Tree<'_> {
         let header = if is_default {
             section
                 .header_response
-                .on_hover_text("Nomes sem schema no editor (SELECT * FROM tabela) vão para cá")
+                .on_hover_text("Names without a schema in the editor (SELECT * FROM table) go here")
         } else {
             section.header_response
         };
         header.context_menu(|ui| {
-            if ui.button("Diagrama ER deste schema").clicked() {
+            if ui.button("ER diagram of this schema").clicked() {
                 action = Some(TreeAction::Diagram(schema.clone()));
                 ui.close();
             }
-            if !self.s.cfg.read_only && ui.button("Nova tabela aqui").clicked() {
+            if !self.s.cfg.read_only && ui.button("New table here").clicked() {
                 action = Some(TreeAction::NewTable(Some(schema.clone())));
                 ui.close();
             }
-            if ui.button("Exportar schema como .sql…").clicked() {
+            if ui.button("Export schema as .sql…").clicked() {
                 action = Some(TreeAction::Dump(DumpScope::Schema(schema.clone())));
                 ui.close();
             }
-            if ui.button("Comparar estrutura com…").clicked() {
+            if ui.button("Compare structure with…").clicked() {
                 action = Some(TreeAction::Compare(schema.clone()));
                 ui.close();
             }
@@ -506,7 +506,7 @@ impl Tree<'_> {
         };
         let r = match (t.estimate, t.size) {
             (Some(n), Some(b)) => r.on_hover_text(format!(
-                "~{} linhas · {}",
+                "~{} rows · {}",
                 palette::format_count(n),
                 palette::format_bytes(b)
             )),
@@ -539,23 +539,23 @@ impl Tree<'_> {
     fn table_menu(&self, ui: &mut egui::Ui, t: &TableRef) -> Option<TreeAction> {
         let s = self.s;
         let (schema, name) = (t.schema.clone(), t.name.clone());
-        if ui.button("Abrir dados").clicked() {
+        if ui.button("Open data").clicked() {
             return Some(TreeAction::Open(schema, name));
         }
-        if ui.button("Estrutura").clicked() {
+        if ui.button("Structure").clicked() {
             return Some(TreeAction::Structure(schema, name));
         }
-        if ui.button("SELECT em novo editor").clicked() {
+        if ui.button("SELECT in new editor").clicked() {
             let from = s.cfg.kind.qualified(&t.schema, &t.name);
             return Some(TreeAction::Sql(format!("SELECT * FROM {from} LIMIT 100;")));
         }
         let mut action = None;
-        ui.menu_button("Gerar SQL", |ui| {
+        ui.menu_button("Generate SQL", |ui| {
             for (what, label) in [
-                (Template::Select, "SELECT com as colunas"),
+                (Template::Select, "SELECT with the columns"),
                 (Template::Insert, "INSERT"),
-                (Template::Update, "UPDATE pela chave"),
-                (Template::Delete, "DELETE pela chave"),
+                (Template::Update, "UPDATE by key"),
+                (Template::Delete, "DELETE by key"),
             ] {
                 if ui.button(label).clicked() {
                     action = Some(TreeAction::Template(schema.clone(), name.clone(), what));
@@ -566,20 +566,20 @@ impl Tree<'_> {
         if action.is_some() {
             return action;
         }
-        if !t.is_view && ui.button("Exportar como .sql…").clicked() {
+        if !t.is_view && ui.button("Export as .sql…").clicked() {
             return Some(TreeAction::Dump(DumpScope::Table(schema, name)));
         }
         if !t.is_view && !s.cfg.read_only {
             ui.separator();
             for (what, label) in [
-                (TableAction::Rename, "Renomear…"),
-                (TableAction::Duplicate(false), "Duplicar…"),
-                (TableAction::Truncate, "Esvaziar (TRUNCATE)…"),
-                (TableAction::Drop, "Excluir tabela…"),
+                (TableAction::Rename, "Rename…"),
+                (TableAction::Duplicate(false), "Duplicate…"),
+                (TableAction::Truncate, "Truncate (TRUNCATE)…"),
+                (TableAction::Drop, "Drop table…"),
             ] {
                 if ui.button(label).clicked() {
                     let input = match what {
-                        TableAction::Duplicate(_) => format!("{}_copia", t.name),
+                        TableAction::Duplicate(_) => format!("{}_copy", t.name),
                         TableAction::Rename => t.name.clone(),
                         _ => String::new(),
                     };
@@ -592,7 +592,7 @@ impl Tree<'_> {
                 }
             }
         }
-        if t.is_view && ui.button("Ver código da view").clicked() {
+        if t.is_view && ui.button("View the view's code").clicked() {
             return s
                 .objects
                 .iter()
@@ -659,27 +659,27 @@ fn object_row(ui: &mut egui::Ui, o: &DbObject) -> Option<TreeAction> {
             .min_size(egui::vec2(ui.available_width(), 22.0)),
     );
     let tip = match o.kind {
-        ObjKind::Trigger => format!("{} · tabela {}", o.name, o.table),
+        ObjKind::Trigger => format!("{} · table {}", o.name, o.table),
         ObjKind::Function | ObjKind::Procedure => format!("{}({})", o.name, o.args),
         _ => o.name.clone(),
     };
-    let r = r.on_hover_text(format!("{tip}\nclique abre o código"));
+    let r = r.on_hover_text(format!("{tip}\nclick opens the code"));
     let mut action = r.clicked().then(|| TreeAction::Object(o.clone()));
     r.context_menu(|ui| {
         if matches!(o.kind, ObjKind::Function | ObjKind::Procedure)
             && ui
-                .button("Executar…")
-                .on_hover_text("Pede os argumentos e mostra o resultado")
+                .button("Run…")
+                .on_hover_text("Asks for the arguments and shows the result")
                 .clicked()
         {
             action = Some(TreeAction::Run(o.clone()));
             ui.close();
         }
-        if ui.button("Ver código").clicked() {
+        if ui.button("View code").clicked() {
             action = Some(TreeAction::Object(o.clone()));
             ui.close();
         }
-        if ui.button("Copiar nome").clicked() {
+        if ui.button("Copy name").clicked() {
             ui.ctx().copy_text(o.name.clone());
             ui.close();
         }
@@ -713,7 +713,7 @@ fn conn_label(c: &ConnConfig) -> egui::text::LayoutJob {
     );
     if c.read_only {
         let fmt = TextFormat::simple(egui::FontId::proportional(10.0), t.destructive);
-        job.append("somente leitura", 6.0, fmt);
+        job.append("read-only", 6.0, fmt);
     } else if c.manual_commit {
         let fmt = TextFormat::simple(egui::FontId::proportional(10.0), t.warning);
         job.append("commit manual", 6.0, fmt);

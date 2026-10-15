@@ -186,7 +186,7 @@ fn bool_picker(
                     }
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new("↑↓ Enter escolhe · Esc cancela")
+                        RichText::new("↑↓ Enter picks · Esc cancels")
                             .size(10.0)
                             .color(t.subtle),
                     );
@@ -226,12 +226,12 @@ pub struct GridOpts<'a> {
     pub view: &'a [usize],
     /// How many of `view`'s first columns stay put when scrolling sideways.
     pub pinned: usize,
-    /// Cells matching "buscar no resultado", and the one it is on.
+    /// Cells matching "find in result", and the one it is on.
     pub found: Option<&'a HashSet<(usize, usize)>>,
     pub found_current: Option<(usize, usize)>,
     /// Foreign keys elsewhere pointing at this table, offered in the cell menu.
     pub incoming: &'a [IncomingFk],
-    /// Columns with a "Filtrar valores" condition: a funnel in their header.
+    /// Columns with a "Filter values" condition: a funnel in their header.
     pub filtered: &'a [String],
 }
 
@@ -396,7 +396,7 @@ pub fn grid(
                                 egui::Label::new(theme::icon(icon::FUNNEL).color(t.lime).size(12.0))
                                     .sense(Sense::click()),
                             )
-                            .on_hover_text("Filtrado por valores: clique para mudar")
+                            .on_hover_text("Filtered by values: click to change")
                             .clicked()
                     {
                         event = Some(GridEvent::FilterValues(ci));
@@ -414,7 +414,7 @@ pub fn grid(
                         Some(c) => format!(
                             "{name}: {}{}",
                             c.data_type,
-                            if c.pk { " (chave primária)" } else { "" }
+                            if c.pk { " (primary key)" } else { "" }
                         ),
                         None => name.clone(),
                     });
@@ -623,7 +623,7 @@ pub fn grid(
                         let r = match fk {
                             Some(f) => r
                                 .on_hover_text(format!(
-                                    "Ctrl+clique abre {}.{} ({} = este valor)",
+                                    "Ctrl+click opens {}.{} ({} = this value)",
                                     f.schema, f.table, f.column
                                 ))
                                 .on_hover_cursor(egui::CursorIcon::PointingHand),
@@ -648,7 +648,7 @@ pub fn grid(
                         } else if dragging && selected != Some((ri, ci)) && r.contains_pointer() {
                             event = Some(GridEvent::Extend(ri, ci));
                         } else if r.clicked() || (r.secondary_clicked() && !in_range(ri, ci)) {
-                            // Right-clicking inside the range keeps it, for "Copiar seleção".
+                            // Right-clicking inside the range keeps it, for "Copy selection".
                             event = Some(GridEvent::Select(ri, ci));
                         }
                         r.context_menu(|ui| {
@@ -687,38 +687,38 @@ fn header_menu(
     let mut event = None;
     if can_filter
         && ui
-            .button("Filtrar valores…")
-            .on_hover_text("Marque os valores que ficam, como no filtro do Excel")
+            .button("Filter values…")
+            .on_hover_text("Check the values to keep, like Excel's filter")
             .clicked()
     {
         event = Some(GridEvent::FilterValues(ci));
         ui.close();
     }
-    if ui.button("Estatísticas da coluna").clicked() {
+    if ui.button("Column statistics").clicked() {
         event = Some(GridEvent::ColumnStats(ci));
         ui.close();
     }
     ui.separator();
     let pin = if vi < pinned {
-        "Desafixar"
+        "Unpin"
     } else {
-        "Fixar à esquerda"
+        "Pin to the left"
     };
     if ui
         .button(pin)
-        .on_hover_text("Colunas fixadas ficam visíveis ao rolar para o lado")
+        .on_hover_text("Pinned columns stay visible when scrolling sideways")
         .clicked()
     {
         event = Some(GridEvent::TogglePin(ci));
         ui.close();
     }
-    if view.len() > 1 && ui.button("Esconder coluna").clicked() {
+    if view.len() > 1 && ui.button("Hide column").clicked() {
         event = Some(GridEvent::ToggleColumn(ci));
         ui.close();
     }
     let hidden = res.columns.len() - view.len();
     ui.menu_button(
-        format!("Colunas visíveis ({}/{})", view.len(), res.columns.len()),
+        format!("Visible columns ({}/{})", view.len(), res.columns.len()),
         |ui| {
             egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                 for (i, n) in res.columns.iter().enumerate() {
@@ -732,12 +732,12 @@ fn header_menu(
             });
         },
     );
-    if hidden > 0 && ui.button(format!("Mostrar todas ({hidden} ocultas)")).clicked() {
+    if hidden > 0 && ui.button(format!("Show all ({hidden} hidden)")).clicked() {
         event = Some(GridEvent::ShowAllColumns);
         ui.close();
     }
     ui.separator();
-    if ui.button("Copiar nome").clicked() {
+    if ui.button("Copy name").clicked() {
         ui.ctx().copy_text(name.clone());
         ui.close();
     }
@@ -763,13 +763,13 @@ fn cell_menu(
     let val = &res.rows[ri][ci];
     let mut event = None;
     let open = if can_edit {
-        "Abrir valor para editar…"
+        "Open value to edit…"
     } else {
-        "Abrir valor…"
+        "Open value…"
     };
     if ui
         .add(egui::Button::new(open).shortcut_text("Shift+Enter"))
-        .on_hover_text("Editor grande: JSON formatado e validado, textos longos")
+        .on_hover_text("Large editor: formatted and validated JSON, long texts")
         .clicked()
     {
         event = Some(GridEvent::OpenValue(ri, ci));
@@ -778,7 +778,7 @@ fn cell_menu(
     ui.separator();
     if let Some(f) = fk
         && ui
-            .button(format!("Abrir {} ({} = este valor)", f.table, f.column))
+            .button(format!("Open {} ({} = this value)", f.table, f.column))
             .clicked()
     {
         event = Some(GridEvent::FollowFk(ri, ci));
@@ -796,7 +796,7 @@ fn cell_menu(
         })
         .collect();
     if !pointing.is_empty() {
-        ui.menu_button("Linhas que apontam para esta", |ui| {
+        ui.menu_button("Rows pointing to this one", |ui| {
             for (i, f) in &pointing {
                 let label = format!("{}.{}  ({} = {})", f.table, f.column, f.column, f.target);
                 if ui.button(label).clicked() {
@@ -809,9 +809,9 @@ fn cell_menu(
     }
     if can_filter {
         let (eq, ne) = if val.is_some() {
-            ("Filtrar: igual a este valor", "Filtrar: diferente deste valor")
+            ("Filter: equal to this value", "Filter: different from this value")
         } else {
-            ("Filtrar: é NULL", "Filtrar: não é NULL")
+            ("Filter: is NULL", "Filter: is not NULL")
         };
         if ui.button(eq).clicked() {
             event = Some(GridEvent::Filter(ri, ci, FilterOp::Eq));
@@ -825,18 +825,18 @@ fn cell_menu(
     }
     if let Some(sel) = range.filter(|_| can_edit) {
         let cells = (sel.r1 - sel.r0 + 1) * sel.cols.len();
-        if ui.button(format!("Definir valor nas {cells} células…")).clicked() {
+        if ui.button(format!("Set value in the {cells} cells…")).clicked() {
             event = Some(GridEvent::AskFill);
             ui.close();
         }
-        if ui.button("Definir NULL na seleção").clicked() {
+        if ui.button("Set NULL in the selection").clicked() {
             event = Some(GridEvent::FillSelection(None));
             ui.close();
         }
         if sel.r1 > sel.r0
             && ui
-                .add(egui::Button::new("Preencher para baixo").shortcut_text("Ctrl+D"))
-                .on_hover_text("Cada coluna recebe o valor da primeira linha selecionada")
+                .add(egui::Button::new("Fill down").shortcut_text("Ctrl+D"))
+                .on_hover_text("Each column gets the value of the first selected row")
                 .clicked()
         {
             event = Some(GridEvent::FillDown);
@@ -844,7 +844,7 @@ fn cell_menu(
         }
         let rows = sel.r1 - sel.r0 + 1;
         if ui
-            .add(egui::Button::new(format!("Excluir {rows} linha(s)")).shortcut_text("Delete"))
+            .add(egui::Button::new(format!("Delete {rows} row(s)")).shortcut_text("Delete"))
             .clicked()
         {
             event = Some(GridEvent::DeleteRows);
@@ -854,41 +854,41 @@ fn cell_menu(
     }
     if range.is_some() {
         if ui
-            .button("Copiar seleção")
-            .on_hover_text("Ctrl+C · texto separado por tabs, cola no Excel")
+            .button("Copy selection")
+            .on_hover_text("Ctrl+C · tab-separated text, pastes into Excel")
             .clicked()
         {
             event = Some(GridEvent::CopyCells { headers: false });
             ui.close();
         }
-        if ui.button("Copiar seleção com cabeçalho").clicked() {
+        if ui.button("Copy selection with header").clicked() {
             event = Some(GridEvent::CopyCells { headers: true });
             ui.close();
         }
         ui.separator();
     }
     let md = if range.is_some() {
-        "Copiar seleção como Markdown"
+        "Copy selection as Markdown"
     } else {
-        "Copiar resultado como Markdown"
+        "Copy result as Markdown"
     };
     if ui
         .button(md)
-        .on_hover_text("Tabela pronta para colar em issue, documentação ou chat")
+        .on_hover_text("A table ready to paste into an issue, docs or chat")
         .clicked()
     {
         event = Some(GridEvent::CopyMarkdown);
         ui.close();
     }
-    if ui.button("Copiar valor").clicked() {
+    if ui.button("Copy value").clicked() {
         ui.ctx().copy_text(val.clone().unwrap_or_default());
         ui.close();
     }
-    if ui.button("Copiar linha como JSON").clicked() {
+    if ui.button("Copy row as JSON").clicked() {
         event = Some(GridEvent::Copy(ri, CopyAs::Json));
         ui.close();
     }
-    if ui.button("Copiar linha como INSERT").clicked() {
+    if ui.button("Copy row as INSERT").clicked() {
         event = Some(GridEvent::Copy(ri, CopyAs::Insert));
         ui.close();
     }
@@ -896,8 +896,8 @@ fn cell_menu(
         // The insert form belongs to table tabs.
         if can_filter
             && ui
-                .button("Duplicar linha")
-                .on_hover_text("Abre o formulário de inserção preenchido com esta linha")
+                .button("Duplicate row")
+                .on_hover_text("Opens the insert form filled with this row")
                 .clicked()
         {
             event = Some(GridEvent::DuplicateRow(ri));
@@ -908,9 +908,9 @@ fn cell_menu(
             ui.close();
         }
         let label = if row_deleted {
-            "Restaurar linha"
+            "Restore row"
         } else {
-            "Excluir linha"
+            "Delete row"
         };
         if ui.button(label).clicked() {
             event = Some(GridEvent::DeleteRow(ri));
@@ -924,7 +924,7 @@ fn cell_menu(
 struct CellState {
     selected: bool,
     in_range: bool,
-    /// Matches "buscar no resultado"; `true` for the match it is on.
+    /// Matches "find in result"; `true` for the match it is on.
     found: Option<bool>,
     deleted: bool,
     changed: bool,

@@ -80,7 +80,7 @@ fn design_view(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     match design::design_tab(ui, tab.id, d, busy) {
         Some(DesignAction::Run(sql)) => {
             if s.cfg.read_only {
-                tab.error = Some("Conexão somente leitura: não é possível alterar a estrutura.".into());
+                tab.error = Some("Read-only connection: the structure can't be changed.".into());
             } else if sql::script_risk(&sql).dangers.is_empty() {
                 app::run_sql(tab, s, sql);
             } else {
@@ -121,7 +121,7 @@ pub(super) enum Request {
     History,
     /// Remove one history entry: (connection, sql).
     ForgetHistory(String, String),
-    /// "Editar estrutura" of schema.table (its Estrutura tab has the data).
+    /// "Edit structure" of schema.table (its Structure tab has the data).
     Design(String, String),
     /// schema, table, name, filter
     SaveFilter(String, String, String, String),
@@ -207,7 +207,7 @@ impl App {
                                             .data(|d| d.get_temp::<String>(name_id))
                                             .unwrap_or_else(|| tab.title.clone());
                                         ui.label(
-                                            egui::RichText::new("Nome da aba").size(11.0).color(t.subtle),
+                                            egui::RichText::new("Tab name").size(11.0).color(t.subtle),
                                         );
                                         let r = ui.add(TextEdit::singleline(&mut name).desired_width(200.0));
                                         if r.lost_focus()
@@ -221,19 +221,19 @@ impl App {
                                             ui.data_mut(|d| d.insert_temp(name_id, name));
                                         }
                                         ui.separator();
-                                        if is_sql && ui.button("Duplicar").clicked() {
+                                        if is_sql && ui.button("Duplicate").clicked() {
                                             action = Some(TabAction::Duplicate(i));
                                             ui.close();
                                         }
                                         if ui
-                                            .add_enabled(n > 1, egui::Button::new("Fechar as outras"))
+                                            .add_enabled(n > 1, egui::Button::new("Close others"))
                                             .clicked()
                                         {
                                             action = Some(TabAction::CloseOthers(i, false));
                                             ui.close();
                                         }
                                         if ui
-                                            .add_enabled(i + 1 < n, egui::Button::new("Fechar as da direita"))
+                                            .add_enabled(i + 1 < n, egui::Button::new("Close tabs to the right"))
                                             .clicked()
                                         {
                                             action = Some(TabAction::CloseOthers(i, true));
@@ -242,7 +242,7 @@ impl App {
                                         if ui
                                             .add_enabled(
                                                 closed,
-                                                egui::Button::new("Reabrir aba fechada")
+                                                egui::Button::new("Reopen closed tab")
                                                     .shortcut_text("Ctrl+Shift+T"),
                                             )
                                             .clicked()
@@ -252,7 +252,7 @@ impl App {
                                         }
                                     });
                                     let x = theme::icon(icon::X).size(11.0).color(t.subtle);
-                                    let x = ui.add(egui::Button::new(x).frame(false)).on_hover_text("Fechar");
+                                    let x = ui.add(egui::Button::new(x).frame(false)).on_hover_text("Close");
                                     if i == self.active {
                                         theme::tab_underline(ui, label_rect.union(x.rect));
                                     }
@@ -283,7 +283,7 @@ impl App {
                             });
                         })
                         .response
-                        .on_hover_text(format!("Todas as {} abas", self.tabs.len()));
+                        .on_hover_text(format!("All {} tabs", self.tabs.len()));
                     }
                 });
                 if let Some(i) = pick {
@@ -374,7 +374,7 @@ impl App {
                 match view {
                     Some(o) => self.open_object(o),
                     None => {
-                        self.notice = app::Notice::error(format!("Não encontrei a definição da view {name}"))
+                        self.notice = app::Notice::error(format!("Couldn't find the definition of view {name}"))
                     }
                 }
             }
@@ -412,7 +412,7 @@ pub(super) fn error_banner(ui: &mut egui::Ui, e: &str) {
         });
 }
 
-/// "Exportar" dropdown: what is on screen, or (table tabs) the whole table. Returns the choice;
+/// "Export" dropdown: what is on screen, or (table tabs) the whole table. Returns the choice;
 /// the caller starts the export once it can borrow the tab again.
 pub(super) fn export_menu(
     ui: &mut egui::Ui,
@@ -423,7 +423,7 @@ pub(super) fn export_menu(
     let t = theme::tokens();
     let label = theme::tool(
         icon::DOWNLOAD_SIMPLE,
-        "Exportar",
+        "Export",
         compact,
         t.muted_foreground,
         t.foreground,
@@ -435,7 +435,7 @@ pub(super) fn export_menu(
             let heading = |ui: &mut egui::Ui, text: &str| {
                 ui.label(egui::RichText::new(text).size(11.0).color(t.subtle));
             };
-            heading(ui, if is_table { "PÁGINA ATUAL" } else { "RESULTADO" });
+            heading(ui, if is_table { "CURRENT PAGE" } else { "RESULT" });
             for f in Format::ALL {
                 if ui.button(f.label()).clicked() {
                     chosen = Some((f, false));
@@ -444,7 +444,7 @@ pub(super) fn export_menu(
             }
             if is_table {
                 ui.separator();
-                heading(ui, "TABELA INTEIRA (COM FILTRO)");
+                heading(ui, "WHOLE TABLE (WITH FILTER)");
                 for f in Format::ALL {
                     if ui.button(f.label()).clicked() {
                         chosen = Some((f, true));
@@ -454,18 +454,18 @@ pub(super) fn export_menu(
             }
             ui.separator();
             ui.label(
-                egui::RichText::new("Salvo na pasta Downloads")
+                egui::RichText::new("Saved to the Downloads folder")
                     .size(11.0)
                     .color(t.subtle),
             );
         })
         .response
-        .on_hover_text("Exportar");
+        .on_hover_text("Export");
     });
     chosen
 }
 
-/// "Exportado N linhas para arquivo · Abrir pasta · ×" after an export finishes.
+/// "Exported N rows to file · Open folder · ×" after an export finishes.
 pub(super) fn export_banner(ui: &mut egui::Ui, tab: &mut Tab) {
     let Some((path, rows)) = &tab.exported else { return };
     let t = theme::tokens();
@@ -482,13 +482,13 @@ pub(super) fn export_banner(ui: &mut egui::Ui, tab: &mut Tab) {
                     .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().to_string());
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} linha(s) exportada(s) para {name}",
+                        "{} row(s) exported to {name}",
                         palette::format_count(*rows as i64)
                     ))
                     .color(t.foreground),
                 )
                 .on_hover_text(path.display().to_string());
-                if ui.link("Abrir pasta").clicked() {
+                if ui.link("Open folder").clicked() {
                     export::reveal(path);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -509,13 +509,13 @@ pub(super) fn busy_indicator(ui: &mut egui::Ui, s: &Session) {
     ui.spinner();
     let stop = egui::Button::new(theme::icon_text(
         icon::STOP,
-        "Cancelar",
+        "Cancel",
         t.destructive,
         t.foreground,
     ));
     if ui
         .add(stop)
-        .on_hover_text("Interrompe a consulta no servidor")
+        .on_hover_text("Stops the query on the server")
         .clicked()
     {
         s.cancel();
@@ -534,9 +534,9 @@ pub(super) fn detail_toggle(ui: &mut egui::Ui, show: &mut bool) {
     let t = theme::tokens();
     let color = if *show { t.lime } else { t.muted_foreground };
     let tip = if *show {
-        "Esconder detalhes da linha"
+        "Hide row details"
     } else {
-        "Mostrar detalhes da linha"
+        "Show row details"
     };
     if ui
         .button(theme::icon(icon::SIDEBAR_SIMPLE).color(color))

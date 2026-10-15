@@ -1,4 +1,4 @@
-//! "Buscar valor em todas as tabelas": which tables and columns to look in, the query for each,
+//! "Search value in all tables": which tables and columns to look in, the query for each,
 //! and what a match looks like.
 
 use crate::db::{Conn, Kind, SchemaColumn, TableRef};
@@ -175,7 +175,7 @@ mod tests {
             col("pedidos", "status", "text"),
         ];
         let (t, skipped) = targets(&tables, &cols, "ana@exemplo.com", false);
-        assert_eq!(skipped, 1, "the big table waits for \"incluir tabelas grandes\"");
+        assert_eq!(skipped, 1, "the big table waits for \"include large tables\"");
         assert_eq!(t[0].columns, ["email"]);
         let (t, _) = targets(&tables, &cols, "42", true);
         assert_eq!(

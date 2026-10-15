@@ -7,7 +7,7 @@
 \timing on
 SET client_min_messages = warning;
 
--- For the "consultas lentas" view (the server loads it via shared_preload_libraries).
+-- For the "slow queries" view (the server loads it via shared_preload_libraries).
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
 DROP TABLE IF EXISTS pedidos, eventos, clientes CASCADE;

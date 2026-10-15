@@ -1,8 +1,8 @@
-//! "Atividade no servidor": sessions, locks, slow queries and the server panel.
+//! "Server activity": sessions, locks, slow queries and the server panel.
 
 use super::*;
 
-/// How often the activity tab refreshes itself while "Atualizar automaticamente" is on.
+/// How often the activity tab refreshes itself while "Auto refresh" is on.
 pub(super) const ACTIVITY_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Sessions on the server, with buttons to cancel the selected one's query or close it.
@@ -21,10 +21,10 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             .parse::<i64>()
             .ok()
     });
-    // The statement of the selected row ("consultas lentas"), to open in the editor.
+    // The statement of the selected row ("slow queries"), to open in the editor.
     let selected_query = tab.selected.and_then(|(row, _)| {
         let res = tab.result.as_ref()?;
-        let col = res.columns.iter().position(|c| c == "consulta")?;
+        let col = res.columns.iter().position(|c| c == "query")?;
         res.rows.get(row)?.get(col)?.clone()
     });
     let TabKind::Activity(st) = &mut tab.kind else {
@@ -41,10 +41,10 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 ui.label(theme::icon(icon::PULSE).size(15.0).color(t.muted_foreground));
                 ui.spacing_mut().item_spacing.x = 0.0;
                 for (view, label, tip) in [
-                    (ActivityView::Sessions, "Sessões", "Quem está conectado e o que está executando"),
-                    (ActivityView::Locks, "Bloqueios", "Sessões esperando por travas de outra (a primeira coluna é quem bloqueia)"),
-                    (ActivityView::Slow, "Consultas lentas", "O que mais consumiu tempo no servidor desde a última vez que as estatísticas foram zeradas"),
-                    (ActivityView::Server, "Servidor", "Versão, tamanho, conexões, cache, maiores tabelas e índices sem uso"),
+                    (ActivityView::Sessions, "Sessions", "Who is connected and what they're running"),
+                    (ActivityView::Locks, "Locks", "Sessions waiting on another one's locks (the first column is the blocker)"),
+                    (ActivityView::Slow, "Slow queries", "What took the most server time since the statistics were last reset"),
+                    (ActivityView::Server, "Server", "Version, size, connections, cache, biggest tables and unused indexes"),
                 ] {
                     let on = st.view == view;
                     let color = if on { t.foreground } else { t.muted_foreground };
@@ -66,7 +66,7 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let refresh_btn = theme::icon_text(
                         icon::ARROWS_CLOCKWISE,
-                        "Atualizar",
+                        "Refresh",
                         t.muted_foreground,
                         t.foreground,
                     );
@@ -76,17 +76,17 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     if view == ActivityView::Server {
                         return;
                     }
-                    ui.checkbox(&mut st.auto_refresh, "a cada 2 s");
+                    ui.checkbox(&mut st.auto_refresh, "every 2 s");
                     ui.separator();
                     if view == ActivityView::Slow {
                         if ui
                             .add_enabled(!busy, egui::Button::new(theme::icon_text(
                                 icon::ERASER,
-                                "Zerar estatísticas",
+                                "Reset statistics",
                                 t.muted_foreground,
                                 t.foreground,
                             )))
-                            .on_hover_text("Recomeça a contagem: útil para medir só o que acontece daqui em diante")
+                            .on_hover_text("Restarts the count: useful to measure only what happens from now on")
                             .clicked()
                         {
                             reset_stats = true;
@@ -94,11 +94,11 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         if ui
                             .add_enabled(selected_query.is_some(), egui::Button::new(theme::icon_text(
                                 icon::CODE,
-                                "Abrir no editor",
+                                "Open in editor",
                                 t.muted_foreground,
                                 t.foreground,
                             )))
-                            .on_disabled_hover_text("Selecione uma consulta")
+                            .on_disabled_hover_text("Select a query")
                             .clicked()
                             && let Some(q) = &selected_query
                         {
@@ -107,19 +107,19 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         return;
                     }
                     let end =
-                        theme::icon_text(icon::PLUGS, "Encerrar conexão", t.muted_foreground, t.foreground);
+                        theme::icon_text(icon::PLUGS, "Kill connection", t.muted_foreground, t.foreground);
                     if ui
                         .add_enabled(target.is_some() && !busy, egui::Button::new(end))
-                        .on_disabled_hover_text("Selecione uma sessão")
+                        .on_disabled_hover_text("Select a session")
                         .clicked()
                     {
                         st.confirm_kill = target.map(|id| (id, true));
                     }
                     let stop =
-                        theme::icon_text(icon::STOP, "Cancelar consulta", t.muted_foreground, t.foreground);
+                        theme::icon_text(icon::STOP, "Cancel query", t.muted_foreground, t.foreground);
                     if ui
                         .add_enabled(target.is_some() && !busy, egui::Button::new(stop))
-                        .on_disabled_hover_text("Selecione uma sessão")
+                        .on_disabled_hover_text("Select a session")
                         .clicked()
                     {
                         st.confirm_kill = target.map(|id| (id, false));
@@ -187,7 +187,7 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     result_area(ui, tab, cx, false);
 }
 
-/// "Servidor": headline numbers as tiles, then the biggest tables and the least used indexes.
+/// "Server": headline numbers as tiles, then the biggest tables and the least used indexes.
 pub(super) fn server_panel(
     ui: &mut egui::Ui,
     tab_id: u64,
@@ -235,20 +235,20 @@ pub(super) fn server_panel(
                         }
                     });
                     ui.add_space(16.0);
-                    ui.label(egui::RichText::new("MAIORES TABELAS").size(11.0).color(t.subtle));
+                    ui.label(egui::RichText::new("BIGGEST TABLES").size(11.0).color(t.subtle));
                     ui.add_space(4.0);
                     preview_rows(ui, tab_id ^ 1, &info.largest);
                     ui.add_space(16.0);
                     ui.label(
-                        egui::RichText::new("ÍNDICES MENOS USADOS")
+                        egui::RichText::new("LEAST USED INDEXES")
                             .size(11.0)
                             .color(t.subtle),
                     );
                     ui.label(
                         egui::RichText::new(
-                            "Leituras desde que as estatísticas começaram (no MySQL, desde que a tabela foi \
-                             aberta; vazio = sem dados). Índice pouco usado ocupa espaço e deixa as escritas \
-                             mais lentas, mas os que apoiam chave estrangeira costumam ser necessários.",
+                            "Reads since the statistics started (in MySQL, since the table was \
+                             opened; empty = no data). A rarely used index takes space and slows down writes, \
+                             but the ones backing a foreign key are usually needed.",
                         )
                         .size(11.0)
                         .color(t.subtle),
@@ -256,7 +256,7 @@ pub(super) fn server_panel(
                     ui.add_space(4.0);
                     if info.indexes.rows.is_empty() {
                         ui.label(
-                            egui::RichText::new("Nenhum índice além de chaves primárias e únicos")
+                            egui::RichText::new("No indexes besides primary and unique keys")
                                 .color(t.muted_foreground),
                         );
                     } else {
@@ -272,15 +272,15 @@ pub(super) fn confirm_kill(ctx: &egui::Context, tab_id: u64, id: i64, terminate:
     let mut answer = None;
     let (title, text, button) = if terminate {
         (
-            "Encerrar conexão",
-            "A sessão é desconectada; uma transação aberta nela é desfeita.",
-            "Encerrar",
+            "Kill connection",
+            "The session is disconnected; an open transaction in it is rolled back.",
+            "Kill",
         )
     } else {
         (
-            "Cancelar consulta",
-            "O comando em andamento nessa sessão é interrompido; a conexão continua aberta.",
-            "Cancelar consulta",
+            "Cancel query",
+            "The statement running in that session is interrupted; the connection stays open.",
+            "Cancel query",
         )
     };
     let modal = egui::Modal::new(egui::Id::new(("confirm_kill", tab_id)))
@@ -290,7 +290,7 @@ pub(super) fn confirm_kill(ctx: &egui::Context, tab_id: u64, id: i64, terminate:
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::WARNING).size(16.0).color(t.destructive));
                 ui.label(
-                    egui::RichText::new(format!("{title} — sessão {id}"))
+                    egui::RichText::new(format!("{title} — session {id}"))
                         .size(15.0)
                         .color(t.foreground),
                 );
@@ -302,7 +302,7 @@ pub(super) fn confirm_kill(ctx: &egui::Context, tab_id: u64, id: i64, terminate:
                 if ui.add(danger_button(button)).clicked() {
                     answer = Some(true);
                 }
-                if ui.add(theme::outline_button("Voltar")).clicked() {
+                if ui.add(theme::outline_button("Back")).clicked() {
                     answer = Some(false);
                 }
             });

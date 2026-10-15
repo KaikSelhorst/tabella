@@ -120,7 +120,7 @@ pub enum FilterOp {
     Ne,
 }
 
-/// One condition on a column, e.g. `"nome" = 'ana'`. A NULL value becomes IS (NOT) NULL.
+/// One condition on a column, e.g. `"name" = 'ana'`. A NULL value becomes IS (NOT) NULL.
 pub fn filter_condition(kind: Kind, column: &str, op: FilterOp, value: Option<&str>) -> String {
     let col = kind.quote_ident(column);
     match (op, value) {
@@ -180,9 +180,9 @@ pub fn check_filter(filter: &str) -> Result<(), String> {
                 i += 1;
             }
         } else if c == ';' {
-            return Err("O filtro aceita uma única condição: \";\" não é permitido.".into());
+            return Err("The filter accepts a single condition: \";\" isn't allowed.".into());
         } else if c == '-' && chars.get(i + 1) == Some(&'-') {
-            return Err("Comentários (--) não são permitidos no filtro.".into());
+            return Err("Comments (--) aren't allowed in the filter.".into());
         }
         i += 1;
     }
@@ -407,7 +407,7 @@ pub fn tx_control(script: &str) -> Option<TxControl> {
         .next_back()
 }
 
-/// The two queries behind "Estatísticas da coluna": totals (count, non-null, distinct and, with
+/// The two queries behind "Column statistics": totals (count, non-null, distinct and, with
 /// `ordered`, min/max), then the most common values. Postgres compares through text so json and
 /// other types without equality still work.
 pub fn column_stats(
@@ -556,7 +556,7 @@ pub fn bind_params(kind: Kind, script: &str, value: impl Fn(&str) -> String) -> 
 }
 
 /// Char range of the identifier at `cursor` (letters, digits, `_`, `$`, dots and quotes, so
-/// `public."Tabela"` comes whole). `None` on whitespace or punctuation.
+/// `public."Table"` comes whole). `None` on whitespace or punctuation.
 pub fn word_at(text: &str, cursor: usize) -> Option<(usize, usize)> {
     let chars: Vec<char> = text.chars().collect();
     let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '$' | '.' | '"' | '`');
@@ -576,7 +576,7 @@ pub fn word_at(text: &str, cursor: usize) -> Option<(usize, usize)> {
     while b < chars.len() && is_word(chars[b]) {
         b += 1;
     }
-    // Trailing dots ("tabela.") aren't part of the name.
+    // Trailing dots ("table.") aren't part of the name.
     while b > a && chars[b - 1] == '.' {
         b -= 1;
     }
@@ -644,7 +644,7 @@ pub fn parse_args(args: &str) -> Vec<RoutineArg> {
         .collect()
 }
 
-/// The call of a function or procedure with `:parâmetros` for its inputs. OUT arguments are
+/// The call of a function or procedure with `:parameters` for its inputs. OUT arguments are
 /// NULL placeholders (Postgres) or session variables read back afterwards (MySQL).
 pub fn call_template(kind: Kind, schema: &str, name: &str, args: &[RoutineArg], procedure: bool) -> String {
     let target = kind.qualified(schema, name);
@@ -719,9 +719,9 @@ pub fn table_action(kind: Kind, schema: &str, table: &str, action: TableAction, 
         }
         // No CREATE TABLE … LIKE in SQLite: the columns (and rows) come, the rest doesn't.
         (TableAction::Duplicate(data), Kind::Sqlite) => format!(
-            "-- SQLite: a cópia leva as colunas{}, mas não a chave primária, os índices nem as restrições.\n\
+            "-- SQLite: the copy gets the columns{}, but not the primary key, indexes or constraints.\n\
              CREATE TABLE {new} AS SELECT * FROM {t}{};",
-            if data { " e os dados" } else { "" },
+            if data { " and the data" } else { "" },
             if data { "" } else { " WHERE 0" }
         ),
         (TableAction::Truncate, Kind::Sqlite) => format!("DELETE FROM {t};"),
@@ -730,7 +730,7 @@ pub fn table_action(kind: Kind, schema: &str, table: &str, action: TableAction, 
     }
 }
 
-/// What "Gerar SQL" writes for a table.
+/// What "Generate SQL" writes for a table.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Template {
     Select,
@@ -739,7 +739,7 @@ pub enum Template {
     Delete,
 }
 
-/// A statement for a table, with `:parâmetros` where values go (the editor asks for them when
+/// A statement for a table, with `:parameters` where values go (the editor asks for them when
 /// it runs). `cols` are `(name, is primary key)`; without a key the WHERE uses every column.
 pub fn template(kind: Kind, schema: &str, table: &str, cols: &[(String, bool)], what: Template) -> String {
     let t = kind.qualified(schema, table);
@@ -940,7 +940,7 @@ fn split_dotted(name: &str) -> Vec<String> {
     parts
 }
 
-/// Reads for "prévia" of an UPDATE or DELETE, without running it: how many rows it would
+/// Reads for "preview" of an UPDATE or DELETE, without running it: how many rows it would
 /// touch, and those rows as they are now.
 #[derive(Debug, PartialEq)]
 pub struct PreviewQueries {
@@ -1035,7 +1035,7 @@ pub fn statement_words_first(script: &str) -> Option<String> {
 pub struct ScriptRisk {
     /// Anything other than reads (SELECT, SHOW, EXPLAIN...).
     pub writes: bool,
-    /// Human descriptions of destructive statements, e.g. "DELETE sem WHERE".
+    /// Human descriptions of destructive statements, e.g. "DELETE without WHERE".
     pub dangers: Vec<String>,
 }
 
@@ -1057,7 +1057,7 @@ pub fn script_risk(script: &str) -> ScriptRisk {
                 let object = words.get(1).map(String::as_str).unwrap_or("");
                 risk.dangers.push(format!("{first} {object}").trim().to_string());
             }
-            "DELETE" | "UPDATE" if !has("WHERE") => risk.dangers.push(format!("{first} sem WHERE")),
+            "DELETE" | "UPDATE" if !has("WHERE") => risk.dangers.push(format!("{first} without WHERE")),
             _ => {}
         }
     }
@@ -1213,10 +1213,10 @@ pub fn delete_row(kind: Kind, schema: &str, table: &str, wh: Stmt) -> Stmt {
     Stmt::new(format!("DELETE FROM {} WHERE ", kind.qualified(schema, table))).append(wh)
 }
 
-/// Values "Filtrar valores" lists at most (the most common ones).
+/// Values "Filter values" lists at most (the most common ones).
 pub const DISTINCT_LIMIT: usize = 1000;
 
-/// The column as "Filtrar valores" compares it: Postgres `json`/`xml` have no equality, so as text.
+/// The column as "Filter values" compares it: Postgres `json`/`xml` have no equality, so as text.
 pub fn value_expr(kind: Kind, column: &str, data_type: &str) -> String {
     let c = kind.quote_ident(column);
     match kind {
@@ -1517,10 +1517,10 @@ mod tests {
         );
         let r = script_risk("delete from t; update t set a = 1 where id = 2; DROP TABLE x");
         assert!(r.writes);
-        assert_eq!(r.dangers, ["DELETE sem WHERE", "DROP TABLE"]);
+        assert_eq!(r.dangers, ["DELETE without WHERE", "DROP TABLE"]);
         // Words inside strings and comments don't count.
         let r = script_risk("UPDATE t SET note = 'no where here' /* where */");
-        assert_eq!(r.dangers, ["UPDATE sem WHERE"]);
+        assert_eq!(r.dangers, ["UPDATE without WHERE"]);
         assert!(script_risk("insert into t values (1)").writes);
         assert!(script_risk("WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d").writes);
         // Reads that undo read-only mode or write server files.

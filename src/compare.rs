@@ -1,4 +1,4 @@
-//! "Comparar estrutura": the tables of two schemas (two databases, or two schemas of one) and
+//! "Compare structure": the tables of two schemas (two databases, or two schemas of one) and
 //! the SQL that makes the target's structure match the source's. Only structure: data is left
 //! alone.
 
@@ -174,7 +174,7 @@ pub enum Status {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
-    /// For people: "coluna email: text → varchar(120)".
+    /// For people: "column email: text → varchar(120)".
     pub what: String,
     pub sql: String,
     /// Loses data (drops a column, a table).
@@ -206,12 +206,12 @@ pub fn diff(kind: Kind, a: &Snapshot, b: &Snapshot) -> Vec<TableDiff> {
                     );
                 }
                 let mut items = vec![Item {
-                    what: "tabela nova".into(),
+                    what: "new table".into(),
                     sql,
                     destructive: false,
                 }];
                 items.extend(ta.fks.iter().map(|f| Item {
-                    what: "chave estrangeira".into(),
+                    what: "foreign key".into(),
                     sql: retarget(kind, f, &a.schema, &b.schema),
                     destructive: false,
                 }));
@@ -225,7 +225,7 @@ pub fn diff(kind: Kind, a: &Snapshot, b: &Snapshot) -> Vec<TableDiff> {
                 table: name.clone(),
                 status: Status::Extra,
                 items: vec![Item {
-                    what: "só existe no destino".into(),
+                    what: "only in the target".into(),
                     sql: format!("-- DROP TABLE {};", target(name)),
                     destructive: true,
                 }],
@@ -329,7 +329,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
         Kind::MySql if def.contains("FOREIGN KEY") => alter(format!("DROP FOREIGN KEY {}", q(name))),
         Kind::MySql => alter(format!("DROP CHECK {}", q(name))),
         Kind::Sqlite => {
-            format!("-- SQLite não remove restrição de uma tabela existente ({table}): recrie a tabela")
+            format!("-- SQLite can't drop a constraint of an existing table ({table}): recreate the table")
         }
     };
     let same = |x: &str, y: &str| plain(kind, x, sa) == plain(kind, y, sb);
@@ -337,13 +337,13 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
     for (name, def) in &b.constraints {
         match a.constraints.get(name) {
             None => items.push(item(
-                format!("constraint {name} a mais"),
+                format!("extra constraint {name}"),
                 drop_constraint(name, def),
                 false,
             )),
             Some(da) if !same(da, def) => {
                 items.push(item(
-                    format!("constraint {name} diferente"),
+                    format!("constraint {name} differs"),
                     drop_constraint(name, def),
                     false,
                 ));
@@ -354,9 +354,9 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
     }
     for (name, def) in &b.indexes {
         match a.indexes.get(name) {
-            None => items.push(item(format!("índice {name} a mais"), drop_index(name), false)),
+            None => items.push(item(format!("extra index {name}"), drop_index(name), false)),
             Some(da) if !same(da, def) => {
-                items.push(item(format!("índice {name} diferente"), drop_index(name), false))
+                items.push(item(format!("index {name} differs"), drop_index(name), false))
             }
             _ => {}
         }
@@ -376,11 +376,11 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
                 if let Some(d) = &ca.default {
                     let _ = write!(def, " DEFAULT {}", retarget(kind, d, sa, sb));
                 }
-                items.push(item(format!("coluna {name} nova"), alter(def), false));
+                items.push(item(format!("new column {name}"), alter(def), false));
             }
             (Kind::MySql, None) => {
                 items.push(item(
-                    format!("coluna {name} nova"),
+                    format!("new column {name}"),
                     alter(format!("ADD COLUMN {}", ca.line)),
                     false,
                 ));
@@ -389,7 +389,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
                 if ca.data_type != cb.data_type {
                     let t = &ca.data_type;
                     items.push(item(
-                        format!("coluna {name}: {} → {t}", cb.data_type),
+                        format!("column {name}: {} → {t}", cb.data_type),
                         alter(format!("ALTER COLUMN {c} TYPE {t} USING {c}::{t}")),
                         false,
                     ));
@@ -401,7 +401,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
                         ("NOT NULL", "SET NOT NULL")
                     };
                     items.push(item(
-                        format!("coluna {name}: {what}"),
+                        format!("column {name}: {what}"),
                         alter(format!("ALTER COLUMN {c} {sql}")),
                         false,
                     ));
@@ -416,8 +416,8 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
                         None => format!("ALTER COLUMN {c} DROP DEFAULT"),
                     };
                     let what = format!(
-                        "coluna {name}: padrão {}",
-                        ca.default.as_deref().unwrap_or("nenhum")
+                        "column {name}: default {}",
+                        ca.default.as_deref().unwrap_or("none")
                     );
                     items.push(item(what, alter(sql), false));
                 }
@@ -427,8 +427,8 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
                     ca.data_type != cb.data_type || ca.nullable != cb.nullable || ca.default != cb.default;
                 if differs {
                     items.push(item(
-                        format!("coluna {name}: {} → {}", cb.data_type, ca.data_type),
-                        format!("-- SQLite não altera uma coluna existente ({table}.{c}): recrie a tabela"),
+                        format!("column {name}: {} → {}", cb.data_type, ca.data_type),
+                        format!("-- SQLite can't alter an existing column ({table}.{c}): recreate the table"),
                         false,
                     ));
                 }
@@ -436,7 +436,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
             (Kind::MySql, Some(cb)) => {
                 if plain(kind, &ca.line, sa) != plain(kind, &cb.line, sb) {
                     items.push(item(
-                        format!("coluna {name}: {} → {}", cb.line, ca.line),
+                        format!("column {name}: {} → {}", cb.line, ca.line),
                         alter(format!("MODIFY COLUMN {}", ca.line)),
                         false,
                     ));
@@ -447,7 +447,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
     for (name, _) in &b.columns {
         if !cols_a.contains_key(name) {
             items.push(item(
-                format!("coluna {name} só existe no destino (os dados dela se perdem)"),
+                format!("column {name} only exists in the target (its data is lost)"),
                 alter(format!("DROP COLUMN {}", q(name))),
                 true,
             ));
@@ -460,12 +460,12 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
         if b.indexes.contains_key(name) && !changed {
             continue;
         }
-        let what = if changed { "recriar" } else { "novo" };
+        let what = if changed { "recreate" } else { "new" };
         let sql = match kind {
             Kind::Postgres | Kind::Sqlite => format!("{};", retarget(kind, def, sa, sb)),
             Kind::MySql => alter(format!("ADD {def}")),
         };
-        items.push(item(format!("índice {name} ({what})"), sql, false));
+        items.push(item(format!("index {name} ({what})"), sql, false));
     }
     for (name, def) in &a.constraints {
         if b.constraints.contains_key(name) && !adds.contains(&name) {
@@ -479,7 +479,7 @@ fn table_items(kind: Kind, table: &str, a: &TableDef, b: &TableDef, sa: &str, sb
             )),
             Kind::MySql => alter(format!("ADD {}", retarget(kind, def, sa, sb))),
             Kind::Sqlite => {
-                format!("-- SQLite não acrescenta {def} a uma tabela existente ({table}): recrie a tabela")
+                format!("-- SQLite can't add {def} to an existing table ({table}): recreate the table")
             }
         };
         items.push(item(format!("constraint {name}"), sql, false));
@@ -701,7 +701,7 @@ mod tests {
                  CREATE INDEX pedido_total_idx ON cmp_b.pedido (total); \
                  CREATE TABLE cmp_b.sobra (id int);",
             ),
-            Kind::Sqlite => unreachable!("teste de servidor"),
+            Kind::Sqlite => unreachable!("server test"),
         };
         run(&mut c, reset);
         run(&mut c, a);
@@ -787,7 +787,7 @@ mod tests {
         assert!(sql.contains("ADD COLUMN \"ativo\" BOOLEAN DEFAULT 1"), "{sql}");
         assert!(sql.contains("DROP COLUMN \"velha\""), "{sql}");
         // "nome" became NOT NULL: SQLite can't, and the script says so instead of failing.
-        assert!(sql.contains("-- SQLite não altera uma coluna existente"), "{sql}");
+        assert!(sql.contains("-- SQLite can't alter an existing column"), "{sql}");
         b.query(&sql).unwrap_or_else(|e| panic!("{e}\n{sql}"));
         let left = diff(
             Kind::Sqlite,

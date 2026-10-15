@@ -38,29 +38,29 @@ pub fn plan_view(ui: &mut egui::Ui, plan: &Plan, hints: &[(String, String)]) -> 
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::TREE_VIEW).color(t.muted_foreground));
-                ui.label(RichText::new("Plano de execução").color(t.foreground));
+                ui.label(RichText::new("Execution plan").color(t.foreground));
                 let kind = if plan.analyzed {
-                    "executado (ANALYZE)"
+                    "actual (ANALYZE)"
                 } else {
-                    "estimado"
+                    "estimated"
                 };
                 ui.label(RichText::new(kind).size(12.0).color(t.subtle));
                 if let Some(ms) = plan.planning_ms {
                     ui.label(
-                        RichText::new(format!("planejamento {}", ms_text(ms)))
+                        RichText::new(format!("planning {}", ms_text(ms)))
                             .size(12.0)
                             .color(t.subtle),
                     );
                 }
                 if let Some(ms) = plan.execution_ms {
                     ui.label(
-                        RichText::new(format!("execução {}", ms_text(ms)))
+                        RichText::new(format!("execution {}", ms_text(ms)))
                             .size(12.0)
                             .color(t.subtle),
                     );
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let x = theme::icon_text(icon::X, "Fechar plano", t.muted_foreground, t.foreground);
+                    let x = theme::icon_text(icon::X, "Close plan", t.muted_foreground, t.foreground);
                     if ui.add(egui::Button::new(x).frame(false)).clicked() {
                         close = true;
                     }
@@ -68,7 +68,7 @@ pub fn plan_view(ui: &mut egui::Ui, plan: &Plan, hints: &[(String, String)]) -> 
                         .add(
                             egui::Button::new(theme::icon(icon::COPY).color(t.muted_foreground)).frame(false),
                         )
-                        .on_hover_text("Copiar plano como texto")
+                        .on_hover_text("Copy plan as text")
                         .clicked()
                     {
                         ui.ctx().copy_text(plan_text(plan));
@@ -85,9 +85,9 @@ pub fn plan_view(ui: &mut egui::Ui, plan: &Plan, hints: &[(String, String)]) -> 
                 .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
                     let numbers = if plan.analyzed {
-                        ["tempo próprio", "linhas est.", "linhas reais"]
+                        ["self time", "est. rows", "actual rows"]
                     } else {
-                        ["custo próprio", "linhas est.", ""]
+                        ["self cost", "est. rows", ""]
                     };
                     row_layout(
                         ui,
@@ -107,12 +107,12 @@ pub fn plan_view(ui: &mut egui::Ui, plan: &Plan, hints: &[(String, String)]) -> 
                         ui.add_space(16.0);
                         ui.horizontal(|ui| {
                             ui.label(theme::icon(icon::LIGHTBULB).color(t.warning));
-                            ui.label(RichText::new("SUGESTÃO DE ÍNDICE").size(11.0).color(t.subtle));
+                            ui.label(RichText::new("INDEX SUGGESTION").size(11.0).color(t.subtle));
                         });
                         ui.label(
                             RichText::new(
-                                "Tabelas grandes lidas por inteiro para aplicar um filtro. Um índice nas colunas \
-                                 comparadas costuma evitar isso; confira antes de criar em produção.",
+                                "Large tables read in full to apply a filter. An index on the compared columns \
+                                 usually avoids that; double-check before creating it in production.",
                             )
                             .size(11.0)
                             .color(t.subtle),
@@ -123,7 +123,7 @@ pub fn plan_view(ui: &mut egui::Ui, plan: &Plan, hints: &[(String, String)]) -> 
                                 ui.label(RichText::new(what).color(t.muted_foreground));
                                 ui.add(egui::Label::new(RichText::new(sql).monospace().size(12.0).color(t.foreground)).truncate());
                                 if ui
-                                    .button(theme::icon_text(icon::CODE, "Abrir no editor", t.muted_foreground, t.foreground))
+                                    .button(theme::icon_text(icon::CODE, "Open in editor", t.muted_foreground, t.foreground))
                                     .clicked()
                                 {
                                     open_sql = Some(sql.clone());
@@ -208,7 +208,7 @@ fn node_row(ui: &mut egui::Ui, plan: &Plan, n: &Node, depth: usize, weight: Opti
             ui.add(egui::Label::new(RichText::new(&n.label).monospace().color(color)).truncate());
             if big_scan {
                 ui.label(theme::icon(icon::WARNING).size(12.0).color(t.warning))
-                    .on_hover_text("Lê a tabela inteira: um índice nas colunas do filtro pode evitar isso");
+                    .on_hover_text("Reads the whole table: an index on the filter columns may avoid that");
             }
         },
         |ui| {
@@ -221,7 +221,7 @@ fn node_row(ui: &mut egui::Ui, plan: &Plan, n: &Node, depth: usize, weight: Opti
                 };
                 let r = number_cell(ui, RichText::new(real).monospace().size(12.0).color(color));
                 if misestimate {
-                    r.on_hover_text("Estimativa muito diferente do real: rode ANALYZE na tabela para atualizar as estatísticas");
+                    r.on_hover_text("Estimate far from the actual count: run ANALYZE on the table to refresh its statistics");
                 }
             } else {
                 number_cell(ui, RichText::new(""));
@@ -292,14 +292,14 @@ fn plan_text(plan: &Plan) -> String {
     plan.root.walk(0, &mut |n, depth| {
         let mut line = format!("{}-> {}", "   ".repeat(depth), n.label);
         if let Some(c) = n.cost {
-            let _ = write!(line, "  (custo={c:.1}");
+            let _ = write!(line, "  (cost={c:.1}");
             if let Some(r) = n.est_rows {
-                let _ = write!(line, " linhas={r}");
+                let _ = write!(line, " rows={r}");
             }
             line.push(')');
         }
         if let (Some(ms), Some(r)) = (n.actual_ms, n.actual_rows) {
-            let _ = write!(line, " (real {} linhas={r})", ms_text(ms));
+            let _ = write!(line, " (actual {} rows={r})", ms_text(ms));
         }
         out.push_str(&line);
         out.push('\n');

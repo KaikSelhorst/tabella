@@ -13,7 +13,7 @@ pub fn apply(cfg: &mut ConnConfig, url: &str) -> Result<(), String> {
         let windows_drive = path.len() > 2 && path.starts_with('/') && path.as_bytes()[2] == b':';
         let path = decode(if windows_drive { &path[1..] } else { path })?;
         if path.is_empty() {
-            return Err("URL sem o caminho do arquivo".into());
+            return Err("URL without the file path".into());
         }
         cfg.kind = Kind::Sqlite;
         cfg.database = path;
@@ -27,11 +27,11 @@ pub fn apply(cfg: &mut ConnConfig, url: &str) -> Result<(), String> {
     }
     let (scheme, rest) = url
         .split_once("://")
-        .ok_or("URL sem esquema (ex: postgres://…)")?;
+        .ok_or("URL without a scheme (e.g. postgres://…)")?;
     let kind = match scheme.to_ascii_lowercase().as_str() {
         "postgres" | "postgresql" => Kind::Postgres,
         "mysql" | "mariadb" => Kind::MySql,
-        other => return Err(format!("esquema não suportado: {other}")),
+        other => return Err(format!("unsupported scheme: {other}")),
     };
     let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
     let (authority, database) = rest.split_once('/').unwrap_or((rest, ""));
@@ -41,7 +41,7 @@ pub fn apply(cfg: &mut ConnConfig, url: &str) -> Result<(), String> {
     };
     let (host, port) = split_host_port(hostport)?;
     if host.is_empty() {
-        return Err("URL sem host".into());
+        return Err("URL without a host".into());
     }
 
     let mut next = ConnConfig::new(kind);
@@ -59,7 +59,7 @@ pub fn apply(cfg: &mut ConnConfig, url: &str) -> Result<(), String> {
         match k.to_ascii_lowercase().as_str() {
             // libpq's "require" skips the certificate check, but cloud providers hand out URLs
             // with it as the secure choice: the certificate is checked here too. A server with
-            // its own CA fails with a hint to tick "Aceitar certificado inválido".
+            // its own CA fails with a hint to tick "Accept invalid certificate".
             "sslmode" | "ssl-mode" | "ssl_mode" => match v.as_str() {
                 "require" | "required" | "verify-ca" | "verify-full" | "verify_ca" | "verify_identity" => {
                     (next.ssl, next.ssl_insecure) = (true, false)
@@ -86,10 +86,10 @@ fn split_host_port(s: &str) -> Result<(String, Option<u16>), String> {
     let port = |p: &str| {
         p.parse::<u16>()
             .map(Some)
-            .map_err(|_| format!("porta inválida: {p}"))
+            .map_err(|_| format!("invalid port: {p}"))
     };
     if let Some(v6) = s.strip_prefix('[') {
-        let (host, after) = v6.split_once(']').ok_or("IPv6 sem ']'")?;
+        let (host, after) = v6.split_once(']').ok_or("IPv6 without ']'")?;
         let p = match after.strip_prefix(':') {
             Some(p) => port(p)?,
             None => None,
@@ -109,15 +109,15 @@ fn decode(s: &str) -> Result<String, String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' {
-            let hex = s.get(i + 1..i + 3).ok_or("escape % incompleto")?;
-            out.push(u8::from_str_radix(hex, 16).map_err(|_| format!("escape inválido: %{hex}"))?);
+            let hex = s.get(i + 1..i + 3).ok_or("incomplete % escape")?;
+            out.push(u8::from_str_radix(hex, 16).map_err(|_| format!("invalid escape: %{hex}"))?);
             i += 3;
         } else {
             out.push(bytes[i]);
             i += 1;
         }
     }
-    String::from_utf8(out).map_err(|_| "texto inválido após decodificar %".into())
+    String::from_utf8(out).map_err(|_| "invalid text after decoding %".into())
 }
 
 #[cfg(test)]
@@ -133,10 +133,10 @@ mod tests {
 
     #[test]
     fn postgres_url_with_everything() {
-        let c = parse("postgresql://app%40corp:p%3Ass%2Fw@db.exemplo.com:6543/loja?sslmode=require");
+        let c = parse("postgresql://app%40corp:p%3Ass%2Fw@db.example.com:6543/loja?sslmode=require");
         assert_eq!(
             (c.kind, c.host.as_str(), c.port),
-            (Kind::Postgres, "db.exemplo.com", 6543)
+            (Kind::Postgres, "db.example.com", 6543)
         );
         assert_eq!(
             (c.user.as_str(), c.password.as_str(), c.database.as_str()),
@@ -163,7 +163,7 @@ mod tests {
         assert!(
             apply(&mut c, "postgres://h:abc/db")
                 .unwrap_err()
-                .contains("porta")
+                .contains("port")
         );
         assert!(apply(&mut c, "postgres://u:%zz@h/db").is_err());
     }
@@ -171,10 +171,10 @@ mod tests {
     #[test]
     fn sqlite_urls_are_file_paths() {
         let mut c = ConnConfig::new(Kind::Postgres);
-        apply(&mut c, "sqlite:///C:/dados/loja%20nova.db").unwrap();
+        apply(&mut c, "sqlite:///C:/data/new%20store.db").unwrap();
         assert_eq!(
             (c.kind, c.database.as_str(), c.host.as_str()),
-            (Kind::Sqlite, "C:/dados/loja nova.db", "")
+            (Kind::Sqlite, "C:/data/new store.db", "")
         );
         apply(&mut c, "sqlite:///home/eu/app.sqlite3").unwrap();
         assert_eq!(c.database, "/home/eu/app.sqlite3");

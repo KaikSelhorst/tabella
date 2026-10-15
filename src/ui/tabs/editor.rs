@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Room the editor toolbar keeps on its right for the panel toggle and "em banco · schema".
+/// Room the editor toolbar keeps on its right for the panel toggle and "on database · schema".
 const RIGHT_ROOM: f32 = 200.0;
 
 pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
@@ -36,7 +36,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         .default_size(200.0)
         .show(ui, |ui| {
             let editor_id = egui::Id::new(("sql", tab.id));
-            // Selection survives losing focus (e.g. clicking Executar), so read it from the stored state.
+            // Selection survives losing focus (e.g. clicking Run), so read it from the stored state.
             let cursor = TextEdit::load_state(ui.ctx(), editor_id).and_then(|st| st.cursor.char_range());
             let selected_range = cursor
                 .map(|r| r.as_sorted_char_range())
@@ -54,7 +54,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 None
             };
             let statement = current.map(chars);
-            // What Ctrl+Enter / the main button runs, and what F5 / "Executar tudo" runs.
+            // What Ctrl+Enter / the main button runs, and what F5 / "Run all" runs.
             let one = selection
                 .clone()
                 .or_else(|| statement.clone())
@@ -71,18 +71,18 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 let full: Option<f32> = ui.data(|d| d.get_temp(variant));
                 let compact = full.is_some_and(|w| w + RIGHT_ROOM > avail);
                 let label = if selection.is_some() && !compact {
-                    "Executar seleção"
+                    "Run selection"
                 } else if statement.is_some() && !compact {
-                    "Executar comando"
+                    "Run statement"
                 } else {
-                    "Executar"
+                    "Run"
                 };
                 if ui
                     .add_enabled(!busy, theme::primary_button(Some(icon::PLAY), label))
                     .on_hover_text(if statement.is_some() {
-                        "Ctrl+Enter · o comando sob o cursor"
+                        "Ctrl+Enter · the statement under the cursor"
                     } else {
-                        "Ctrl+Enter ou F5"
+                        "Ctrl+Enter or F5"
                     })
                     .clicked()
                 {
@@ -90,8 +90,8 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 }
                 if statement.is_some()
                     && ui
-                        .add_enabled(!busy, theme::outline_button(if compact { "Tudo" } else { "Executar tudo" }))
-                        .on_hover_text("F5 · todos os comandos, um resultado para cada consulta")
+                        .add_enabled(!busy, theme::outline_button(if compact { "All" } else { "Run all" }))
+                        .on_hover_text("F5 · every statement, one result per query")
                         .clicked()
                 {
                     run = Some(all.clone());
@@ -100,9 +100,9 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     && ui
                         .add_enabled(
                             !busy,
-                            egui::Button::new(theme::tool(icon::EYE, "Prévia", compact, t.muted_foreground, t.foreground)),
+                            egui::Button::new(theme::tool(icon::EYE, "Preview", compact, t.muted_foreground, t.foreground)),
                         )
-                        .on_hover_text("Ctrl+Shift+Enter · quantas e quais linhas este UPDATE/DELETE alteraria, sem alterar")
+                        .on_hover_text("Ctrl+Shift+Enter · how many and which rows this UPDATE/DELETE would change, without changing them")
                         .clicked()
                 {
                     preview = Some(one.clone());
@@ -128,16 +128,16 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 if let Some(analyze) = explain_menu(ui, busy, compact) {
                     explain = Some((one.clone(), analyze));
                 }
-                // "Repetir a cada": the last query again on a timer (reads only).
+                // "Repeat every": the last query again on a timer (reads only).
                 let last_reads = !tab_last_query.trim().is_empty() && !sql::script_risk(&tab_last_query).writes;
                 repeat_menu(ui, repeat, last_reads, compact);
                 if let Some(r) = file_menu(ui, s.cfg.read_only, has_file) {
                     file_menu_action = Some(r);
                 }
-                let format = theme::tool(icon::TEXT_ALIGN_LEFT, "Formatar", compact, t.muted_foreground, t.foreground);
+                let format = theme::tool(icon::TEXT_ALIGN_LEFT, "Format", compact, t.muted_foreground, t.foreground);
                 if ui
                     .button(format)
-                    .on_hover_text("Formatar · Shift+Alt+F · formata a seleção, se houver")
+                    .on_hover_text("Format · Shift+Alt+F · formats the selection, if any")
                     .clicked()
                     || format_key
                 {
@@ -342,7 +342,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     if let Some((schema, table)) = open_table {
         cx.request = Some(Request::Data(schema, table));
     }
-    // "Repetir a cada": stops at the first error, so a broken query doesn't keep failing.
+    // "Repeat every": stops at the first error, so a broken query doesn't keep failing.
     let repeat_value = repeat_value.filter(|_| tab.error.is_none());
     let last_run = tab.editor_mut().and_then(|ed| {
         ed.repeat = repeat_value;
@@ -426,29 +426,29 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     result_area(ui, tab, cx, false);
 }
 
-/// "Explicar": `Some(analyze)` when a plan was asked for.
+/// "Explain": `Some(analyze)` when a plan was asked for.
 fn explain_menu(ui: &mut egui::Ui, busy: bool, compact: bool) -> Option<bool> {
     let t = theme::tokens();
     let mut pick = None;
     let label = theme::tool(
         icon::TREE_VIEW,
-        "Explicar",
+        "Explain",
         compact,
         t.muted_foreground,
         t.foreground,
     );
     ui.menu_button(label, |ui| {
         if ui
-            .add_enabled(!busy, egui::Button::new("Plano estimado").shortcut_text("Ctrl+E"))
-            .on_hover_text("EXPLAIN: como o banco pretende executar, sem executar")
+            .add_enabled(!busy, egui::Button::new("Estimated plan").shortcut_text("Ctrl+E"))
+            .on_hover_text("EXPLAIN: how the database plans to run it, without running it")
             .clicked()
         {
             pick = Some(false);
             ui.close();
         }
         if ui
-            .add_enabled(!busy, egui::Button::new("Plano executado (ANALYZE)"))
-            .on_hover_text("EXPLAIN ANALYZE: executa a consulta e mede cada etapa (só leitura)")
+            .add_enabled(!busy, egui::Button::new("Actual plan (ANALYZE)"))
+            .on_hover_text("EXPLAIN ANALYZE: runs the query and times each step (reads only)")
             .clicked()
         {
             pick = Some(true);
@@ -458,18 +458,18 @@ fn explain_menu(ui: &mut egui::Ui, busy: bool, compact: bool) -> Option<bool> {
     pick
 }
 
-/// "Repetir a cada": runs the last query again every `repeat` seconds. Only offered once a
+/// "Repeat every": runs the last query again every `repeat` seconds. Only offered once a
 /// reading query ran (`enabled`), or to switch it off.
 fn repeat_menu(ui: &mut egui::Ui, repeat: &mut Option<u64>, enabled: bool, compact: bool) {
     let t = theme::tokens();
     let label: egui::WidgetText = match *repeat {
-        Some(n) => theme::icon_text(icon::ARROWS_CLOCKWISE, &format!("a cada {n} s"), t.lime, t.lime).into(),
+        Some(n) => theme::icon_text(icon::ARROWS_CLOCKWISE, &format!("every {n} s"), t.lime, t.lime).into(),
         None if compact => theme::icon(icon::ARROWS_CLOCKWISE)
             .color(t.muted_foreground)
             .into(),
         None => theme::icon_text(
             icon::ARROWS_CLOCKWISE,
-            "Repetir",
+            "Repeat",
             t.muted_foreground,
             t.foreground,
         )
@@ -478,12 +478,12 @@ fn repeat_menu(ui: &mut egui::Ui, repeat: &mut Option<u64>, enabled: bool, compa
     ui.add_enabled_ui(enabled || repeat.is_some(), |ui| {
         ui.menu_button(label, |ui| {
             ui.label(
-                egui::RichText::new("Roda a última consulta de novo, sozinha")
+                egui::RichText::new("Runs the last query again on its own")
                     .size(11.0)
                     .color(t.subtle),
             );
             for (n, label) in [
-                (None, "Desligado"),
+                (None, "Off"),
                 (Some(2), "2 s"),
                 (Some(5), "5 s"),
                 (Some(10), "10 s"),
@@ -497,7 +497,7 @@ fn repeat_menu(ui: &mut egui::Ui, repeat: &mut Option<u64>, enabled: bool, compa
             }
         })
         .response
-        .on_disabled_hover_text("Execute uma consulta de leitura primeiro (SELECT…)");
+        .on_disabled_hover_text("Run a read query first (SELECT…)");
     });
 }
 
@@ -507,7 +507,7 @@ fn file_menu(ui: &mut egui::Ui, read_only: bool, has_file: bool) -> Option<Reque
     let mut pick = None;
     ui.menu_button(theme::icon(icon::FOLDER_OPEN).color(t.muted_foreground), |ui| {
         if ui
-            .add(egui::Button::new("Abrir arquivo…").shortcut_text("Ctrl+O"))
+            .add(egui::Button::new("Open file…").shortcut_text("Ctrl+O"))
             .clicked()
         {
             pick = Some(Request::OpenFile);
@@ -515,8 +515,8 @@ fn file_menu(ui: &mut egui::Ui, read_only: bool, has_file: bool) -> Option<Reque
         }
         if !read_only
             && ui
-                .button("Executar arquivo…")
-                .on_hover_text("Roda um .sql grande comando a comando, sem abrir no editor")
+                .button("Run file…")
+                .on_hover_text("Runs a large .sql statement by statement, without opening it in the editor")
                 .clicked()
         {
             pick = Some(Request::RunFile);
@@ -524,14 +524,14 @@ fn file_menu(ui: &mut egui::Ui, read_only: bool, has_file: bool) -> Option<Reque
         }
         ui.separator();
         if ui
-            .add(egui::Button::new("Salvar").shortcut_text("Ctrl+S"))
+            .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
             .clicked()
         {
             pick = Some(Request::SaveFile(false));
             ui.close();
         }
         if ui
-            .add(egui::Button::new("Salvar como…").shortcut_text("Ctrl+Shift+S"))
+            .add(egui::Button::new("Save as…").shortcut_text("Ctrl+Shift+S"))
             .clicked()
         {
             pick = Some(Request::SaveFile(true));
@@ -540,9 +540,9 @@ fn file_menu(ui: &mut egui::Ui, read_only: bool, has_file: bool) -> Option<Reque
     })
     .response
     .on_hover_text(if has_file {
-        "Arquivo .sql desta aba"
+        "This tab's .sql file"
     } else {
-        "Abrir ou salvar como arquivo .sql"
+        "Open or save as a .sql file"
     });
     pick
 }
@@ -553,9 +553,9 @@ fn location_and_keys(ui: &mut egui::Ui, s: &Session, several: bool) {
     let t = theme::tokens();
     let here = match s.cfg.kind {
         crate::db::Kind::Postgres if !s.current_schema.is_empty() => {
-            format!("em {} · {}", s.current_db, s.current_schema)
+            format!("on {} · {}", s.current_db, s.current_schema)
         }
-        _ if !s.current_db.is_empty() => format!("em {}", s.current_db),
+        _ if !s.current_db.is_empty() => format!("on {}", s.current_db),
         _ => String::new(),
     };
     // Cut with "…" when there is little room, never drawn over the buttons.
@@ -569,10 +569,10 @@ fn location_and_keys(ui: &mut egui::Ui, s: &Session, several: bool) {
         .truncate(),
     )
     .on_hover_text(format!(
-        "{here} · banco e schema dos nomes sem prefixo (troque na sidebar)"
+        "{here} · database and schema for unprefixed names (change them in the sidebar)"
     ));
     let keys = if several {
-        "Ctrl+Enter comando · F5 tudo"
+        "Ctrl+Enter statement · F5 all"
     } else {
         "Ctrl+Enter / F5"
     };
@@ -641,7 +641,7 @@ pub(super) fn table_tooltip(ui: &mut egui::Ui, s: &Session, t: &crate::db::Table
         ui.label(egui::RichText::new(format!("{}.{}", t.schema, t.name)).color(tk.foreground));
         if let Some(n) = t.estimate {
             ui.label(
-                egui::RichText::new(format!("~{} linhas", palette::format_count(n)))
+                egui::RichText::new(format!("~{} rows", palette::format_count(n)))
                     .size(11.0)
                     .color(tk.subtle),
             );
@@ -668,13 +668,13 @@ pub(super) fn table_tooltip(ui: &mut egui::Ui, s: &Session, t: &crate::db::Table
         });
     if cols.len() > TOOLTIP_COLUMNS {
         ui.label(
-            egui::RichText::new(format!("… mais {}", cols.len() - TOOLTIP_COLUMNS))
+            egui::RichText::new(format!("… {} more", cols.len() - TOOLTIP_COLUMNS))
                 .size(11.0)
                 .color(tk.subtle),
         );
     }
     ui.label(
-        egui::RichText::new("Ctrl+clique abre a tabela")
+        egui::RichText::new("Ctrl+click opens the table")
             .size(11.0)
             .color(tk.subtle),
     );
@@ -740,7 +740,7 @@ pub(super) fn run_now(tab: &mut Tab, s: &Session, sql: String, mode: RunMode) {
     match mode {
         RunMode::Explain(analyze) => return app::explain(tab, s, &sql, analyze),
         RunMode::Preview => return app::preview(tab, s, sql),
-        // Connections set to "prévia antes de alterar" look first.
+        // Connections set to "preview before changing" look first.
         RunMode::Run if s.cfg.preview_writes && app::previewable(&sql) && !s.cfg.read_only => {
             return app::preview(tab, s, sql);
         }
@@ -749,7 +749,7 @@ pub(super) fn run_now(tab: &mut Tab, s: &Session, sql: String, mode: RunMode) {
     let risk = sql::script_risk(&sql);
     if s.cfg.read_only && risk.writes {
         tab.error =
-            Some("Conexão somente leitura: só consultas (SELECT, SHOW, EXPLAIN…) podem rodar.".into());
+            Some("Read-only connection: only queries (SELECT, SHOW, EXPLAIN…) can run.".into());
     } else if !risk.dangers.is_empty() {
         tab.confirm_run = Some(sql);
     } else {
@@ -757,7 +757,7 @@ pub(super) fn run_now(tab: &mut Tab, s: &Session, sql: String, mode: RunMode) {
     }
 }
 
-/// "Parâmetros": one field per `:name`, remembered per tab for the next run.
+/// "Parameters": one field per `:name`, remembered per tab for the next run.
 pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     let id = tab.id;
     let Some(ed) = tab.editor_mut() else { return };
@@ -770,10 +770,10 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             ui.set_width(420.0);
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::BRACKETS_CURLY).size(16.0).color(t.lime));
-                ui.label(egui::RichText::new("Parâmetros").size(15.0).color(t.foreground));
+                ui.label(egui::RichText::new("Parameters").size(15.0).color(t.foreground));
             });
             ui.label(
-                egui::RichText::new("Números e NULL entram como estão; o resto vira texto entre aspas.")
+                egui::RichText::new("Numbers and NULL go in as they are; anything else becomes quoted text.")
                     .size(11.0)
                     .color(t.subtle),
             );
@@ -808,14 +808,14 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let label = match p.mode {
-                    RunMode::Explain(_) => "Explicar",
-                    RunMode::Preview => "Prévia",
-                    RunMode::Run | RunMode::RunPreviewed => "Executar",
+                    RunMode::Explain(_) => "Explain",
+                    RunMode::Preview => "Preview",
+                    RunMode::Run | RunMode::RunPreviewed => "Run",
                 };
                 if ui.add(theme::primary_button(Some(icon::PLAY), label)).clicked() {
                     go = true;
                 }
-                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                if ui.add(theme::outline_button("Cancel")).clicked() {
                     cancel = true;
                 }
             });
@@ -829,7 +829,7 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     }
 }
 
-/// "Prévia": how many rows an UPDATE/DELETE would touch and some of them; run it from here or
+/// "Preview": how many rows an UPDATE/DELETE would touch and some of them; run it from here or
 /// give up.
 pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     let Some(p) = tab.editor().and_then(|ed| ed.preview.as_ref()) else {
@@ -844,9 +844,9 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             ui.set_width(720.0);
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::EYE).size(16.0).color(t.lime));
-                ui.label(egui::RichText::new("Prévia").size(15.0).color(t.foreground));
+                ui.label(egui::RichText::new("Preview").size(15.0).color(t.foreground));
                 ui.label(
-                    egui::RichText::new("nada foi alterado")
+                    egui::RichText::new("nothing was changed")
                         .size(11.0)
                         .color(t.subtle),
                 );
@@ -865,14 +865,14 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 None => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(egui::RichText::new("Contando…").color(t.muted_foreground));
+                        ui.label(egui::RichText::new("Counting…").color(t.muted_foreground));
                     });
                 }
                 Some(Err(e)) => {
                     ui.label(egui::RichText::new(e).color(t.destructive));
                 }
                 Some(Ok(d)) => {
-                    let verb = if delete { "excluídas" } else { "alteradas" };
+                    let verb = if delete { "deleted" } else { "changed" };
                     let color = if d.count == 0 {
                         t.muted_foreground
                     } else if delete {
@@ -882,7 +882,7 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                     };
                     ui.label(
                         egui::RichText::new(format!(
-                            "{} linha(s) seriam {verb}",
+                            "{} row(s) would be {verb}",
                             palette::format_count(d.count as i64)
                         ))
                         .size(18.0)
@@ -890,13 +890,13 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                     );
                     if !d.sample.rows.is_empty() {
                         let what = if d.after {
-                            "como ficariam (o comando rodou numa transação desfeita)"
+                            "as they would be (the statement ran in a rolled-back transaction)"
                         } else {
-                            "como estão agora"
+                            "as they are now"
                         };
                         let shown = d.sample.rows.len();
                         ui.label(
-                            egui::RichText::new(format!("{shown} primeira(s), {what}"))
+                            egui::RichText::new(format!("first {shown}, {what}"))
                                 .size(11.0)
                                 .color(t.subtle),
                         );
@@ -908,7 +908,7 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let ready = matches!(&p.data, Some(Ok(_)));
-                let label = if delete { "Excluir" } else { "Executar" };
+                let label = if delete { "Delete" } else { "Run" };
                 let button = if delete {
                     danger_button(label)
                 } else {
@@ -917,7 +917,7 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 if ui.add_enabled(ready && !s.cfg.read_only, button).clicked() {
                     run = true;
                 }
-                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                if ui.add(theme::outline_button("Cancel")).clicked() {
                     cancel = true;
                 }
             });
@@ -998,13 +998,13 @@ pub(super) fn confirm_run(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::WARNING).size(16.0).color(t.destructive));
                 ui.label(
-                    egui::RichText::new("Comando destrutivo")
+                    egui::RichText::new("Destructive statement")
                         .size(15.0)
                         .color(t.foreground),
                 );
             });
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(format!("Em {}:", s.cfg.name)).color(t.muted_foreground));
+            ui.label(egui::RichText::new(format!("On {}:", s.cfg.name)).color(t.muted_foreground));
             for d in &risk.dangers {
                 ui.label(
                     egui::RichText::new(format!("• {d}"))
@@ -1015,13 +1015,13 @@ pub(super) fn confirm_run(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             }
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new("Isso pode apagar ou alterar muitos dados e não dá para desfazer.")
+                egui::RichText::new("This may delete or change a lot of data and can't be undone.")
                     .color(t.muted_foreground),
             );
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                go = ui.add(danger_button("Executar mesmo assim")).clicked();
-                cancel = ui.add(theme::outline_button("Cancelar")).clicked();
+                go = ui.add(danger_button("Run anyway")).clicked();
+                cancel = ui.add(theme::outline_button("Cancel")).clicked();
             });
         });
     if go {
@@ -1038,7 +1038,7 @@ pub(super) enum FavAction {
     Delete(String),
 }
 
-/// "★ Favoritos" dropdown: save the current query, or load / delete a saved one.
+/// "★ Favorites" dropdown: save the current query, or load / delete a saved one.
 pub(super) fn favorites_menu(
     ui: &mut egui::Ui,
     favs: &[Favorite],
@@ -1048,10 +1048,10 @@ pub(super) fn favorites_menu(
 ) -> Option<FavAction> {
     let t = theme::tokens();
     let mut action = None;
-    let label = theme::tool(icon::STAR, "Favoritos", compact, t.warning, t.foreground);
+    let label = theme::tool(icon::STAR, "Favorites", compact, t.warning, t.foreground);
     ui.menu_button(label, |ui| {
         ui.set_width(380.0);
-        let save = theme::icon_text(icon::PLUS, "Salvar consulta atual…", t.lime, t.foreground);
+        let save = theme::icon_text(icon::PLUS, "Save current query…", t.lime, t.foreground);
         if ui
             .add_enabled(can_save, egui::Button::new(save).frame_when_inactive(false))
             .clicked()
@@ -1062,12 +1062,12 @@ pub(super) fn favorites_menu(
         ui.separator();
         let mine = favorites::for_conn(favs, conn);
         if mine.is_empty() {
-            ui.label(egui::RichText::new("Nenhuma consulta salva").color(t.subtle));
+            ui.label(egui::RichText::new("No saved queries").color(t.subtle));
         }
         egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
             for f in mine {
                 let scope = if f.conn.is_empty() {
-                    "todas as conexões"
+                    "all connections"
                 } else {
                     ""
                 };
@@ -1079,7 +1079,7 @@ pub(super) fn favorites_menu(
                         .right_text(egui::RichText::new(scope).size(11.0).color(t.subtle)),
                 );
                 r.context_menu(|ui| {
-                    if ui.button("Excluir").clicked() {
+                    if ui.button("Delete").clicked() {
                         action = Some(FavAction::Delete(f.id.clone()));
                         ui.close();
                     }
@@ -1091,7 +1091,7 @@ pub(super) fn favorites_menu(
             }
         });
         ui.label(
-            egui::RichText::new("Clique direito num item para excluir")
+            egui::RichText::new("Right-click an item to delete it")
                 .size(10.0)
                 .color(t.subtle),
         );
@@ -1099,7 +1099,7 @@ pub(super) fn favorites_menu(
     action
 }
 
-/// "Histórico" dropdown with this connection's recent queries; returns the one picked.
+/// "History" dropdown with this connection's recent queries; returns the one picked.
 pub(super) enum HistoryPick {
     Load(String),
     All,
@@ -1115,7 +1115,7 @@ pub(super) fn history_menu(
     let mut picked = None;
     let label = theme::tool(
         icon::CLOCK_COUNTER_CLOCKWISE,
-        "Histórico",
+        "History",
         compact,
         t.muted_foreground,
         t.foreground,
@@ -1126,7 +1126,7 @@ pub(super) fn history_menu(
         let mine: Vec<&Entry> = history.iter().rev().filter(|e| e.conn == conn).take(40).collect();
         let all = theme::icon_text(
             icon::LIST_MAGNIFYING_GLASS,
-            "Ver histórico completo…",
+            "View full history…",
             t.lime,
             t.foreground,
         );
@@ -1143,7 +1143,7 @@ pub(super) fn history_menu(
         }
         ui.separator();
         if mine.is_empty() {
-            ui.label(egui::RichText::new("Nenhuma consulta ainda").color(t.subtle));
+            ui.label(egui::RichText::new("No queries yet").color(t.subtle));
         }
         egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
             for e in mine {

@@ -14,9 +14,9 @@ impl App {
         let mut save = false;
         let mut cancel = false;
         let title = if form.editing.is_some() {
-            "Editar conexão"
+            "Edit connection"
         } else {
-            "Nova conexão"
+            "New connection"
         };
         let t = theme::tokens();
         let duplicate = config::name_taken(&self.saved, &form.cfg.name, form.editing.as_deref());
@@ -38,7 +38,7 @@ impl App {
                 ui.set_width(380.0);
                 ui.label(egui::RichText::new(title).size(15.0).color(t.foreground));
                 ui.label(
-                    egui::RichText::new("PostgreSQL, MySQL ou SQLite")
+                    egui::RichText::new("PostgreSQL, MySQL or SQLite")
                         .small()
                         .color(t.muted_foreground),
                 );
@@ -59,11 +59,11 @@ impl App {
                         ui.horizontal(|ui| {
                             let r = ui.add(
                                 TextEdit::singleline(&mut url)
-                                    .hint_text("postgres://usuário:senha@host:5432/banco")
+                                    .hint_text("postgres://user:password@host:5432/database")
                                     .desired_width(FIELD_WIDTH - 80.0),
                             );
                             let fill = ui
-                                .add_enabled(!url.trim().is_empty(), egui::Button::new("Preencher"))
+                                .add_enabled(!url.trim().is_empty(), egui::Button::new("Fill in"))
                                 .clicked()
                                 || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                             let error = if fill {
@@ -88,23 +88,23 @@ impl App {
                             ui.label(egui::RichText::new(e).size(11.0).color(t.destructive));
                             ui.end_row();
                         }
-                        ui.label("Nome");
+                        ui.label("Name");
                         ui.add(
                             TextEdit::singleline(&mut c.name)
-                                .hint_text("ex: produção")
+                                .hint_text("e.g. production")
                                 .desired_width(FIELD_WIDTH),
                         );
                         ui.end_row();
                         if duplicate {
                             ui.label("");
                             ui.label(
-                                egui::RichText::new("Já existe uma conexão com esse nome")
+                                egui::RichText::new("A connection with this name already exists")
                                     .size(11.0)
                                     .color(t.destructive),
                             );
                             ui.end_row();
                         }
-                        ui.label("Tipo");
+                        ui.label("Type");
                         ui.horizontal(|ui| {
                             for k in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
                                 if ui.radio(c.kind == k, k.label()).clicked() && c.kind != k {
@@ -138,13 +138,13 @@ impl App {
                                 c.ssl = !c.is_local();
                             }
                             ui.end_row();
-                            ui.label("Porta");
+                            ui.label("Port");
                             ui.add(egui::DragValue::new(&mut c.port).range(1..=65535));
                             ui.end_row();
-                            ui.label("Usuário");
+                            ui.label("User");
                             ui.add(TextEdit::singleline(&mut c.user).desired_width(FIELD_WIDTH));
                             ui.end_row();
-                            ui.label("Senha");
+                            ui.label("Password");
                             ui.add(
                                 TextEdit::singleline(&mut c.password)
                                     .password(true)
@@ -154,56 +154,56 @@ impl App {
                             ui.label("Database");
                             ui.add(
                                 TextEdit::singleline(&mut c.database)
-                                    .hint_text("opcional")
+                                    .hint_text("optional")
                                     .desired_width(FIELD_WIDTH),
                             );
                             ui.end_row();
                             ui.label("SSL/TLS");
-                            ui.checkbox(&mut c.ssl, "Conexão criptografada");
+                            ui.checkbox(&mut c.ssl, "Encrypted connection");
                             ui.end_row();
                             if c.ssl {
                                 ui.label("");
-                                ui.checkbox(&mut c.ssl_insecure, "Aceitar certificado inválido");
+                                ui.checkbox(&mut c.ssl_insecure, "Accept invalid certificate");
                                 ui.end_row();
                             }
                             // Through SSH the tunnel encrypts the way out.
                             if !c.ssl && !c.is_local() && c.ssh.is_none() {
                                 ui.label("");
                                 let msg = match c.kind {
-                                    Kind::Postgres => "Sem TLS: a senha pode ser interceptada na rede",
-                                    Kind::MySql => "Sem criptografia: senha e dados trafegam em texto puro",
+                                    Kind::Postgres => "No TLS: the password can be intercepted on the network",
+                                    Kind::MySql => "No encryption: password and data travel in plain text",
                                     Kind::Sqlite => "",
                                 };
                                 ui.label(egui::RichText::new(msg).size(11.0).color(theme::tokens().warning));
                                 ui.end_row();
                             }
                         }
-                        ui.label("Proteção");
-                        ui.checkbox(&mut c.read_only, "Somente leitura (produção)")
+                        ui.label("Protection");
+                        ui.checkbox(&mut c.read_only, "Read-only (production)")
                             .on_hover_text(
-                                "Bloqueia edições na grade e deixa a sessão read-only no próprio banco",
+                                "Blocks edits in the grid and makes the session read-only in the database itself",
                             );
                         ui.end_row();
                         ui.label("");
                         ui.add_enabled(
                             !c.read_only,
-                            egui::Checkbox::new(&mut c.manual_commit, "Commit manual"),
+                            egui::Checkbox::new(&mut c.manual_commit, "Manual commit"),
                         )
                         .on_hover_text(
-                            "Alterações (SQL, grade, importação) ficam numa transação até você clicar em \
-                                 Confirmar ou Desfazer",
+                            "Changes (SQL, grid, import) stay in a transaction until you click \
+                                 Commit or Roll back",
                         );
                         ui.end_row();
                         ui.label("");
                         ui.add_enabled(
                             !c.read_only,
-                            egui::Checkbox::new(&mut c.preview_writes, "Prévia antes de UPDATE/DELETE"),
+                            egui::Checkbox::new(&mut c.preview_writes, "Preview before UPDATE/DELETE"),
                         )
                         .on_hover_text(
-                            "No editor, mostra quantas e quais linhas seriam alteradas antes de executar",
+                            "In the editor, shows how many and which rows would change before running",
                         );
                         ui.end_row();
-                        ui.label("Cor");
+                        ui.label("Color");
                         color_picker(ui, &mut c.color);
                         ui.end_row();
                         if c.kind != Kind::Sqlite {
@@ -215,16 +215,16 @@ impl App {
                                         .suffix(" s"),
                                 );
                                 let hint = if c.timeout_secs == 0 {
-                                    "sem limite"
+                                    "no limit"
                                 } else {
-                                    "por consulta, no servidor"
+                                    "per query, on the server"
                                 };
                                 ui.label(egui::RichText::new(hint).size(11.0).color(t.subtle));
                             });
                             ui.end_row();
                             ui.label("SSH");
                             let mut tunnel = c.ssh.is_some();
-                            if ui.checkbox(&mut tunnel, "Conectar por túnel SSH").changed() {
+                            if ui.checkbox(&mut tunnel, "Connect through an SSH tunnel").changed() {
                                 c.ssh = tunnel.then(SshConfig::default);
                             }
                             ui.end_row();
@@ -233,13 +233,13 @@ impl App {
                                 ui.horizontal(|ui| {
                                     ui.add(
                                         TextEdit::singleline(&mut ssh.user)
-                                            .hint_text("usuário")
+                                            .hint_text("user")
                                             .desired_width(80.0),
                                     );
                                     ui.label("@");
                                     ui.add(
                                         TextEdit::singleline(&mut ssh.host)
-                                            .hint_text("servidor ssh")
+                                            .hint_text("ssh server")
                                             .desired_width(124.0),
                                     );
                                     ui.add(egui::DragValue::new(&mut ssh.port).range(1..=65535));
@@ -248,14 +248,14 @@ impl App {
                                 ui.label("");
                                 ui.add(
                                     TextEdit::singleline(&mut ssh.key_path)
-                                        .hint_text("chave privada (vazio = agente / chaves padrão)")
+                                        .hint_text("private key (empty = agent / default keys)")
                                         .desired_width(FIELD_WIDTH),
                                 );
                                 ui.end_row();
                                 ui.label("");
                                 ui.label(
                                     egui::RichText::new(
-                                        "Host e porta acima são vistos a partir do servidor SSH",
+                                        "Host and port above are seen from the SSH server",
                                     )
                                     .size(11.0)
                                     .color(t.subtle),
@@ -268,7 +268,7 @@ impl App {
                 // buttons, wrapped to the form's width).
                 if let Some(test) = &test {
                     let (glyph, text, color) = match &test.result {
-                        None => (icon::HOURGLASS, "Conectando…".to_string(), t.muted_foreground),
+                        None => (icon::HOURGLASS, "Connecting…".to_string(), t.muted_foreground),
                         Some(Ok(msg)) => (icon::CHECK_CIRCLE, msg.clone(), t.lime),
                         Some(Err(e)) => (icon::WARNING_CIRCLE, e.clone(), t.destructive),
                     };
@@ -291,29 +291,29 @@ impl App {
                             .is_none_or(|s| !s.host.trim().is_empty() && !s.user.trim().is_empty());
                         // Say what is missing instead of just greying the button out.
                         let missing = if form.cfg.name.trim().is_empty() {
-                            Some("Dê um nome à conexão")
+                            Some("Give the connection a name")
                         } else if form.cfg.kind == Kind::Sqlite && form.cfg.database.trim().is_empty() {
-                            Some("Escolha o arquivo do banco")
+                            Some("Choose the database file")
                         } else if duplicate {
                             // Already said next to the name.
                             Some("")
                         } else if !ssh_ok {
-                            Some("Preencha usuário e servidor do SSH")
+                            Some("Fill in the SSH user and server")
                         } else {
                             None
                         };
                         save = ui
-                            .add_enabled(missing.is_none(), theme::primary_button(None, "Salvar"))
+                            .add_enabled(missing.is_none(), theme::primary_button(None, "Save"))
                             .on_disabled_hover_text(match missing {
-                                Some("") => "Já existe uma conexão com esse nome",
+                                Some("") => "A connection with this name already exists",
                                 m => m.unwrap_or_default(),
                             })
                             .clicked();
-                        cancel = ui.add(theme::outline_button("Cancelar")).clicked();
+                        cancel = ui.add(theme::outline_button("Cancel")).clicked();
                         let testing = test.as_ref().is_some_and(|t| t.result.is_none());
                         if ui
-                            .add_enabled(!testing && ssh_ok, theme::outline_button("Testar conexão"))
-                            .on_hover_text("Conecta sem salvar, para conferir host, porta, usuário e senha")
+                            .add_enabled(!testing && ssh_ok, theme::outline_button("Test connection"))
+                            .on_hover_text("Connects without saving, to check host, port, user and password")
                             .clicked()
                         {
                             start_test = true;
@@ -363,15 +363,15 @@ impl App {
             ui.set_width(400.0);
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::LOCK_KEY).size(16.0).color(t.lime));
-                let title = if create { "Proteger senhas salvas" } else { "Desbloquear senhas" };
+                let title = if create { "Protect saved passwords" } else { "Unlock passwords" };
                 ui.label(egui::RichText::new(title).size(15.0).color(t.foreground));
             });
             ui.add_space(4.0);
             let text = if create {
-                "Este sistema não tem um chaveiro (por exemplo, WSL). Crie uma senha mestra: as senhas \
-                 das conexões ficam criptografadas em disco e só abrem com ela."
+                "This system has no keyring (WSL, for example). Create a master password: the connection \
+                 passwords are encrypted on disk and only open with it."
             } else {
-                "As senhas das conexões estão criptografadas. Digite a senha mestra para usá-las nesta sessão."
+                "The connection passwords are encrypted. Type the master password to use them in this session."
             };
             ui.add(egui::Label::new(egui::RichText::new(text).color(t.muted_foreground)).wrap());
             ui.add_space(12.0);
@@ -379,7 +379,7 @@ impl App {
                 let r = ui.add(
                     TextEdit::singleline(&mut p.password)
                         .password(true)
-                        .hint_text("Senha mestra")
+                        .hint_text("Master password")
                         .desired_width(f32::INFINITY),
                 );
                 if p.error.is_none() && p.password.is_empty() && !ui.ctx().memory(|m| m.has_focus(r.id)) {
@@ -391,7 +391,7 @@ impl App {
                     let r2 = ui.add(
                         TextEdit::singleline(&mut p.confirm)
                             .password(true)
-                            .hint_text("Repita a senha mestra")
+                            .hint_text("Repeat the master password")
                             .desired_width(f32::INFINITY),
                     );
                     if enter {
@@ -408,23 +408,23 @@ impl App {
             }
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new("Não há como recuperar a senha mestra se ela for esquecida.")
+                egui::RichText::new("There's no way to recover the master password if you forget it.")
                     .size(11.0)
                     .color(t.subtle),
             );
             ui.add_space(16.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(!working, |ui| {
-                    let label = if create { "Criar" } else { "Desbloquear" };
+                    let label = if create { "Create" } else { "Unlock" };
                     submit |= ui.add(theme::primary_button(Some(icon::LOCK_KEY_OPEN), label)).clicked();
                     skip = ui
-                        .add(theme::outline_button("Agora não"))
-                        .on_hover_text("As senhas ficam só na memória nesta sessão; não são gravadas em disco")
+                        .add(theme::outline_button("Not now"))
+                        .on_hover_text("Passwords stay in memory only for this session; they aren't written to disk")
                         .clicked();
                 });
                 if working {
                     ui.spinner();
-                    ui.label(egui::RichText::new("Verificando…").color(t.muted_foreground));
+                    ui.label(egui::RichText::new("Checking…").color(t.muted_foreground));
                 }
             });
         });
@@ -441,7 +441,7 @@ impl App {
         let Some(p) = &mut self.master else { return };
         let create = p.mode == MasterMode::Create;
         if create && p.password != p.confirm {
-            p.error = Some("As senhas não conferem".into());
+            p.error = Some("The passwords don't match".into());
             return;
         }
         let Some(vault) = self.secrets.vault_mut() else {
@@ -477,7 +477,7 @@ impl App {
             Ok(()) => {
                 let then = p.then.clone();
                 self.master = None;
-                self.notice = Notice::info(format!("Senhas protegidas pelo {}", self.secrets.describe()));
+                self.notice = Notice::info(format!("Passwords protected by the {}", self.secrets.describe()));
                 self.after_master(then);
             }
             Err(e) => {
@@ -494,7 +494,7 @@ fn color_picker(ui: &mut egui::Ui, color: &mut Option<Tag>) {
     let t = theme::tokens();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let none = egui::RichText::new("nenhuma")
+        let none = egui::RichText::new("none")
             .size(11.0)
             .color(if color.is_none() { t.foreground } else { t.subtle });
         if ui
@@ -523,7 +523,7 @@ fn color_picker(ui: &mut egui::Ui, color: &mut Option<Tag>) {
 }
 
 impl App {
-    /// "Salvar consulta": a name, and whether it shows on every connection.
+    /// "Save query": a name, and whether it shows on every connection.
     pub fn favorite_prompt(&mut self, ctx: &egui::Context) {
         let Some(Dialog::Favorite(p)) = &mut self.dialog else {
             return;
@@ -537,7 +537,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(theme::icon(icon::STAR).size(16.0).color(t.warning));
                     ui.label(
-                        egui::RichText::new("Salvar consulta")
+                        egui::RichText::new("Save query")
                             .size(15.0)
                             .color(t.foreground),
                     );
@@ -545,7 +545,7 @@ impl App {
                 ui.add_space(8.0);
                 let r = ui.add(
                     TextEdit::singleline(&mut p.name)
-                        .hint_text("Nome (ex: clientes ativos)")
+                        .hint_text("Name (e.g. active customers)")
                         .desired_width(f32::INFINITY),
                 );
                 if p.name.is_empty() && !r.has_focus() {
@@ -553,7 +553,7 @@ impl App {
                 }
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(4.0);
-                ui.checkbox(&mut p.shared, "Mostrar em todas as conexões");
+                ui.checkbox(&mut p.shared, "Show on every connection");
                 ui.add_space(4.0);
                 egui::Frame::new()
                     .fill(t.sidebar)
@@ -575,10 +575,10 @@ impl App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let valid = !p.name.trim().is_empty();
                     save = ui
-                        .add_enabled(valid, theme::primary_button(Some(icon::STAR), "Salvar"))
+                        .add_enabled(valid, theme::primary_button(Some(icon::STAR), "Save"))
                         .clicked()
                         || (enter && valid);
-                    cancel = ui.add(theme::outline_button("Cancelar")).clicked();
+                    cancel = ui.add(theme::outline_button("Cancel")).clicked();
                 });
             });
         if save {
@@ -595,10 +595,10 @@ impl App {
 fn sqlite_file_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
     let t = theme::tokens();
     let msg_id = egui::Id::new("sqlite_file_msg");
-    ui.label("Arquivo");
+    ui.label("File");
     ui.add(
         TextEdit::singleline(&mut c.database)
-            .hint_text(r"C:\dados\loja.db")
+            .hint_text(r"C:\data\shop.db")
             .desired_width(FIELD_WIDTH),
     );
     ui.end_row();
@@ -610,8 +610,8 @@ fn sqlite_file_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
             chosen = crate::files::pick_database();
         }
         let create = ui
-            .button("Criar arquivo novo…")
-            .on_hover_text("Um banco SQLite vazio, no arquivo escolhido (ou no caminho digitado acima)")
+            .button("Create new file…")
+            .on_hover_text("An empty SQLite database, in the chosen file (or at the path typed above)")
             .clicked();
         if create {
             let path = if crate::files::NATIVE_DIALOGS {
@@ -622,7 +622,7 @@ fn sqlite_file_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
             if let Some(p) = path {
                 match crate::sqlite::create(&p.display().to_string()) {
                     Ok(()) => {
-                        msg = Some((false, "Arquivo criado".into()));
+                        msg = Some((false, "File created".into()));
                         chosen = Some(p);
                     }
                     Err(e) => msg = Some((true, e.to_string())),

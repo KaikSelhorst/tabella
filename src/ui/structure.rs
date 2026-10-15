@@ -1,4 +1,4 @@
-//! The "Estrutura" tab and the "new row" form.
+//! The "Structure" tab and the "new row" form.
 
 use eframe::egui::{self, Align, Layout, RichText, TextEdit};
 
@@ -11,7 +11,7 @@ pub enum StructAction {
     OpenData,
     /// A view: its definition in an editor.
     ViewSource,
-    /// "Editar estrutura": open the table designer.
+    /// "Edit structure": open the table designer.
     Edit,
 }
 
@@ -41,7 +41,7 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: b
                     if ui
                         .button(theme::icon_text(
                             icon::TABLE,
-                            "Abrir dados",
+                            "Open data",
                             t.muted_foreground,
                             t.foreground,
                         ))
@@ -51,7 +51,7 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: b
                     }
                     if is_view {
                         let code =
-                            theme::icon_text(icon::CODE, "Código da view", t.muted_foreground, t.foreground);
+                            theme::icon_text(icon::CODE, "View code", t.muted_foreground, t.foreground);
                         if ui.button(code).clicked() {
                             action = Some(StructAction::ViewSource);
                         }
@@ -61,7 +61,7 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: b
                         && ui
                             .button(theme::icon_text(
                                 icon::PENCIL_SIMPLE,
-                                "Editar estrutura",
+                                "Edit structure",
                                 t.muted_foreground,
                                 t.foreground,
                             ))
@@ -72,7 +72,7 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: b
                     if let Some(d) = st.data.as_ref().filter(|_| !is_view) {
                         let open = theme::icon_text(
                             icon::CODE,
-                            "Abrir DDL no editor",
+                            "Open DDL in editor",
                             t.muted_foreground,
                             t.foreground,
                         );
@@ -82,7 +82,7 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: b
                         if ui
                             .button(theme::icon_text(
                                 icon::COPY,
-                                "Copiar DDL",
+                                "Copy DDL",
                                 t.muted_foreground,
                                 t.foreground,
                             ))
@@ -102,27 +102,27 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: b
             egui::Frame::new()
                 .inner_margin(egui::Margin::symmetric(12, 4))
                 .show(ui, |ui| {
-                    section(ui, &format!("Colunas  {}", d.columns.len()));
+                    section(ui, &format!("Columns  {}", d.columns.len()));
                     egui::Grid::new("struct_cols")
                         .num_columns(5)
                         .spacing([16.0, 6.0])
                         .striped(false)
                         .show(ui, |ui| {
-                            for h in ["", "Nome", "Tipo", "Nulo", "Padrão"] {
+                            for h in ["", "Name", "Type", "Null", "Default"] {
                                 ui.label(RichText::new(h).size(11.0).color(t.subtle));
                             }
                             ui.end_row();
                             for c in &d.columns {
                                 if c.pk {
                                     ui.label(theme::icon(icon::KEY).size(12.0).color(t.warning))
-                                        .on_hover_text("Chave primária");
+                                        .on_hover_text("Primary key");
                                 } else {
                                     ui.label("");
                                 }
                                 ui.label(RichText::new(&c.name).color(t.foreground));
                                 ui.label(RichText::new(&c.data_type).monospace().size(12.0).color(t.number));
                                 ui.label(
-                                    RichText::new(if c.nullable { "sim" } else { "não" })
+                                    RichText::new(if c.nullable { "yes" } else { "no" })
                                         .color(t.muted_foreground),
                                 );
                                 match &c.default {
@@ -135,10 +135,10 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: b
                             }
                         });
 
-                    section(ui, &format!("Índices  {}", d.indexes.len()));
-                    named_list(ui, &d.indexes, "Nenhum índice");
-                    section(ui, &format!("Chaves estrangeiras  {}", d.foreign_keys.len()));
-                    named_list(ui, &d.foreign_keys, "Nenhuma chave estrangeira");
+                    section(ui, &format!("Indexes  {}", d.indexes.len()));
+                    named_list(ui, &d.indexes, "No indexes");
+                    section(ui, &format!("Foreign keys  {}", d.foreign_keys.len()));
+                    named_list(ui, &d.foreign_keys, "No foreign keys");
 
                     // A view's "DDL" would be a CREATE TABLE made from its columns: misleading.
                     if is_view {
@@ -192,7 +192,7 @@ pub enum InsertAction {
     PickFk(usize),
 }
 
-/// Modal "Nova linha": each column is left to its default, set to NULL, or given a value.
+/// Modal "New row": each column is left to its default, set to NULL, or given a value.
 pub fn insert_form(
     ctx: &egui::Context,
     tab_id: u64,
@@ -208,13 +208,13 @@ pub fn insert_form(
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::PLUS).size(16.0).color(t.lime));
                 ui.label(
-                    RichText::new(format!("Nova linha em {table}"))
+                    RichText::new(format!("New row in {table}"))
                         .size(15.0)
                         .color(t.foreground),
                 );
             });
             ui.label(
-                RichText::new("\"Padrão\" deixa o banco preencher (DEFAULT, sequência, auto_increment).")
+                RichText::new("\"Default\" lets the database fill it in (DEFAULT, sequence, auto_increment).")
                     .size(11.0)
                     .color(t.subtle),
             );
@@ -237,12 +237,12 @@ pub fn insert_form(
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
-                    .add(theme::primary_button(Some(icon::PLUS), "Inserir"))
+                    .add(theme::primary_button(Some(icon::PLUS), "Insert"))
                     .clicked()
                 {
                     action = Some(InsertAction::Submit);
                 }
-                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                if ui.add(theme::outline_button("Cancel")).clicked() {
                     action = Some(InsertAction::Cancel);
                 }
             });
@@ -281,9 +281,9 @@ fn insert_rows(ui: &mut egui::Ui, tab_id: u64, fields: &mut [InsertField]) -> Op
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (mode, label) in [
-                        (FieldMode::Default, "Padrão"),
+                        (FieldMode::Default, "Default"),
                         (FieldMode::Null, "NULL"),
-                        (FieldMode::Value, "Valor"),
+                        (FieldMode::Value, "Value"),
                     ] {
                         let enabled = mode != FieldMode::Null || f.nullable;
                         let b = egui::Button::new(RichText::new(label).size(11.0)).selected(f.mode == mode);
@@ -301,7 +301,7 @@ fn insert_rows(ui: &mut egui::Ui, tab_id: u64, fields: &mut [InsertField]) -> Op
                             );
                             if ui
                                 .add(b)
-                                .on_hover_text(format!("Escolher em {}", fk.table))
+                                .on_hover_text(format!("Pick from {}", fk.table))
                                 .clicked()
                             {
                                 pick = Some(i);
@@ -351,7 +351,7 @@ mod tests {
     fn fields(n: usize) -> Vec<InsertField> {
         (0..n)
             .map(|i| InsertField {
-                name: format!("coluna_{i}"),
+                name: format!("column_{i}"),
                 references: None,
                 data_type: "text".into(),
                 kind: ValueKind::Text,

@@ -51,9 +51,9 @@ impl App {
                     self.max_fps = !self.max_fps;
                 }
                 r.on_hover_text(if self.max_fps {
-                    "Redesenhando na taxa do monitor. Clique para economizar CPU."
+                    "Repainting at the monitor's rate. Click to save CPU."
                 } else {
-                    "Redesenho sob demanda. Clique para usar a taxa máxima."
+                    "Repainting on demand. Click to use the maximum rate."
                 });
             });
     }
@@ -67,7 +67,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Nowhere left to show it: the window is closing.
         if let Err(e) = crate::session::save(&self.snapshot()) {
-            eprintln!("dblite: não foi possível salvar a sessão: {e}");
+            eprintln!("dblite: couldn't save the session: {e}");
         }
     }
 
@@ -130,7 +130,7 @@ impl App {
 }
 
 impl App {
-    /// "Transação aberta" across the window while a manual transaction has uncommitted work.
+    /// "Open transaction" across the window while a manual transaction has uncommitted work.
     fn tx_band(&mut self, ui: &mut egui::Ui) {
         let Some(txn) = self.session.as_ref().map(|s| s.txn).filter(|t| t.open) else {
             return;
@@ -149,27 +149,27 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(theme::icon(icon::WARNING).color(accent));
                     let text = if txn.failed {
-                        "Transação aberta com erro: um comando falhou, só é possível desfazer".to_string()
+                        "Open transaction with an error: a statement failed, it can only be rolled back".to_string()
                     } else if txn.writes == 0 {
-                        "Transação aberta: nada foi gravado ainda".to_string()
+                        "Open transaction: nothing was written yet".to_string()
                     } else {
                         format!(
-                            "Transação aberta · {} comando(s) de escrita ainda não confirmados",
+                            "Open transaction · {} write statement(s) not committed yet",
                             txn.writes
                         )
                     };
                     ui.label(egui::RichText::new(text).color(t.foreground));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add_enabled(!txn.failed, theme::primary_button(Some(icon::CHECK), "Confirmar"))
-                            .on_hover_text("COMMIT: grava tudo")
+                            .add_enabled(!txn.failed, theme::primary_button(Some(icon::CHECK), "Commit"))
+                            .on_hover_text("COMMIT: writes everything")
                             .clicked()
                         {
                             end = Some(true);
                         }
                         if ui
-                            .add(theme::outline_button("Desfazer"))
-                            .on_hover_text("ROLLBACK: descarta tudo desde o início da transação")
+                            .add(theme::outline_button("Roll back"))
+                            .on_hover_text("ROLLBACK: discards everything since the transaction started")
                             .clicked()
                         {
                             end = Some(false);
@@ -199,14 +199,14 @@ impl App {
             .iter()
             .find(|x| x.schema == p.schema && x.name == p.table)
             .and_then(|x| x.estimate)
-            .map(|n| format!("~{} linhas", palette::format_count(n)))
-            .unwrap_or_else(|| "linhas".into());
+            .map(|n| format!("~{} rows", palette::format_count(n)))
+            .unwrap_or_else(|| "rows".into());
         let destructive = matches!(p.action, TableAction::Truncate | TableAction::Drop);
         let (title, verb) = match p.action {
-            TableAction::Rename => ("Renomear tabela", "Renomear"),
-            TableAction::Duplicate(_) => ("Duplicar tabela", "Duplicar"),
-            TableAction::Truncate => ("Esvaziar tabela", "Esvaziar"),
-            TableAction::Drop => ("Excluir tabela", "Excluir"),
+            TableAction::Rename => ("Rename table", "Rename"),
+            TableAction::Duplicate(_) => ("Duplicate table", "Duplicate"),
+            TableAction::Truncate => ("Truncate table", "Truncate"),
+            TableAction::Drop => ("Drop table", "Drop"),
         };
         let ready = match p.action {
             TableAction::Rename | TableAction::Duplicate(_) => {
@@ -228,14 +228,14 @@ impl App {
                 });
                 ui.add_space(8.0);
                 let hint = match p.action {
-                    TableAction::Rename => "Novo nome:".to_string(),
-                    TableAction::Duplicate(_) => "Nome da cópia (mesmas colunas, índices e padrões):".to_string(),
+                    TableAction::Rename => "New name:".to_string(),
+                    TableAction::Duplicate(_) => "Name of the copy (same columns, indexes and defaults):".to_string(),
                     TableAction::Truncate => format!(
-                        "Apaga todas as {rows} de {}. A estrutura fica. Não dá para desfazer (a não ser em commit manual).",
+                        "Deletes all {rows} of {}. The structure stays. It can't be undone (except in manual commit).",
                         p.table
                     ),
                     TableAction::Drop => format!(
-                        "Apaga {} inteira: estrutura, índices e todas as {rows}. Não dá para desfazer (a não ser em commit manual).",
+                        "Deletes all of {}: structure, indexes and all {rows}. It can't be undone (except in manual commit).",
                         p.table
                     ),
                 };
@@ -243,7 +243,7 @@ impl App {
                 ui.add(egui::Label::new(egui::RichText::new(hint).color(hint_color)).wrap());
                 if destructive {
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new(format!("Digite {} para confirmar:", p.table)).size(12.0).color(t.subtle));
+                    ui.label(egui::RichText::new(format!("Type {} to confirm:", p.table)).size(12.0).color(t.subtle));
                 }
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut p.input)
@@ -252,7 +252,7 @@ impl App {
                 );
                 r.request_focus();
                 if let TableAction::Duplicate(with_data) = &mut p.action {
-                    ui.checkbox(with_data, format!("copiar as linhas também ({rows})"));
+                    ui.checkbox(with_data, format!("copy the rows too ({rows})"));
                 }
                 ui.add_space(8.0);
                 egui::Frame::new()
@@ -273,7 +273,7 @@ impl App {
                     if ui.add_enabled(ready, button).clicked() {
                         go = true;
                     }
-                    if ui.add(theme::outline_button("Cancelar")).clicked() {
+                    if ui.add(theme::outline_button("Cancel")).clicked() {
                         cancel = true;
                     }
                 });
@@ -301,9 +301,9 @@ impl App {
                 ui.set_width(480.0);
                 ui.label(
                     egui::RichText::new(if saving {
-                        "Salvar como"
+                        "Save as"
                     } else {
-                        "Abrir arquivo SQL"
+                        "Open SQL file"
                     })
                     .size(15.0)
                     .color(t.foreground),
@@ -311,7 +311,7 @@ impl App {
                 ui.add_space(8.0);
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut p.path)
-                        .hint_text("/caminho/do/arquivo.sql")
+                        .hint_text("/path/to/file.sql")
                         .font(egui::FontId::monospace(12.5))
                         .desired_width(f32::INFINITY),
                 );
@@ -324,13 +324,13 @@ impl App {
                     if ui
                         .add(theme::primary_button(
                             None,
-                            if saving { "Salvar" } else { "Abrir" },
+                            if saving { "Save" } else { "Open" },
                         ))
                         .clicked()
                     {
                         ok = true;
                     }
-                    if ui.add(theme::outline_button("Cancelar")).clicked() {
+                    if ui.add(theme::outline_button("Cancel")).clicked() {
                         cancel = true;
                     }
                 });
@@ -372,7 +372,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(theme::icon(icon::WARNING).size(16.0).color(t.warning));
                     ui.label(
-                        egui::RichText::new("Transação aberta")
+                        egui::RichText::new("Open transaction")
                             .size(15.0)
                             .color(t.foreground),
                     );
@@ -380,22 +380,22 @@ impl App {
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(
-                        "Há alterações não confirmadas. Fechar sem decidir desfaz todas elas.",
+                        "There are uncommitted changes. Closing without deciding rolls them all back.",
                     )
                     .color(t.muted_foreground),
                 );
                 ui.add_space(16.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add(theme::primary_button(Some(icon::CHECK), "Confirmar e sair"))
+                        .add(theme::primary_button(Some(icon::CHECK), "Commit and quit"))
                         .clicked()
                     {
                         choice = Some(Some(true));
                     }
-                    if ui.add(theme::outline_button("Desfazer e sair")).clicked() {
+                    if ui.add(theme::outline_button("Roll back and quit")).clicked() {
                         choice = Some(Some(false));
                     }
-                    if ui.add(theme::outline_button("Voltar")).clicked() {
+                    if ui.add(theme::outline_button("Back")).clicked() {
                         choice = Some(None);
                     }
                 });
@@ -719,7 +719,7 @@ pub(crate) mod screenshots {
                 table: "clientes".into(),
                 data: Some(data),
             };
-            let tab = Tab::new(3, "clientes · estrutura".into(), TabKind::Structure(Box::new(st)));
+            let tab = Tab::new(3, "clientes · structure".into(), TabKind::Structure(Box::new(st)));
             harness.state_mut().tabs.push(tab);
             harness.state_mut().active = 2;
             harness.run();
@@ -767,7 +767,7 @@ pub(crate) mod screenshots {
             harness.render().unwrap().save(format!("{dir}/help.png")).unwrap();
             harness.state_mut().dialog = None;
 
-            // "Duplicar linha": the insert form filled from row 3.
+            // "Duplicate row": the insert form filled from row 3.
             crate::app::open_duplicate_form(&mut harness.state_mut().tabs[0], 2);
             harness.run();
             harness
@@ -796,7 +796,7 @@ pub(crate) mod screenshots {
         // Activity monitor (auto refresh off: the fake session never answers) + sidebar by size.
         {
             let cols = [
-                "pid", "usuario", "banco", "estado", "duracao", "espera", "cliente", "consulta",
+                "pid", "username", "db", "state", "duration", "wait", "client", "query",
             ];
             let row = |pid: &str, st: &str, dur: &str, q: &str| {
                 [pid, "postgres", "dev", st, dur, "", "172.18.0.1", q]
@@ -833,7 +833,7 @@ pub(crate) mod screenshots {
                 confirm_kill: None,
                 kill_error: None,
             };
-            let mut tab = Tab::new(4, "Atividade".into(), TabKind::Activity(Box::new(st)));
+            let mut tab = Tab::new(4, "Activity".into(), TabKind::Activity(Box::new(st)));
             tab.result = Some(res);
             tab.selected = Some((1, 0));
             let state = harness.state_mut();
@@ -860,7 +860,7 @@ pub(crate) mod screenshots {
                 st.view = crate::db::ActivityView::Slow;
             }
             let slow = QueryResult {
-                columns: ["chamadas", "total_ms", "media_ms", "linhas", "consulta"].map(String::from).to_vec(),
+                columns: ["calls", "total_ms", "mean_ms", "row_count", "query"].map(String::from).to_vec(),
                 rows: [
                     ["1240", "98213.4", "79.20", "1240", "SELECT count(*) FROM pedidos p JOIN clientes c ON c.id = p.cliente_id WHERE p.status = $1"],
                     ["58201", "41022.8", "0.70", "58201", "SELECT * FROM clientes WHERE email = $1"],
@@ -1010,7 +1010,7 @@ pub(crate) mod screenshots {
             };
             state.tabs[0].col_stats = Some(crate::app::StatsView {
                 column: "cidade".into(),
-                scope: "tabela inteira".into(),
+                scope: "whole table".into(),
                 data: Some(Ok(crate::values::ColumnStats {
                     total: 1_000_000,
                     nulls: 0,
@@ -1298,17 +1298,17 @@ pub(crate) mod screenshots {
 
             let info = crate::db::ServerInfo {
                 facts: [
-                    ("Versão", "16.4"),
-                    ("No ar há", "3 days 04:12:09"),
-                    ("Tamanho do banco", "1873 MB"),
-                    ("Conexões", "7 de 100"),
-                    ("Acerto do cache", "99.21%"),
+                    ("Version", "16.4"),
+                    ("Uptime", "3 days 04:12:09"),
+                    ("Database size", "1873 MB"),
+                    ("Connections", "7 of 100"),
+                    ("Cache hit rate", "99.21%"),
                 ]
                 .iter()
                 .map(|(a, b)| (a.to_string(), b.to_string()))
                 .collect(),
                 largest: QueryResult {
-                    columns: ["tabela", "total", "dados", "indices", "linhas_est"]
+                    columns: ["table_name", "total", "data_size", "index_size", "est_rows"]
                         .map(String::from)
                         .to_vec(),
                     rows: [
@@ -1322,12 +1322,12 @@ pub(crate) mod screenshots {
                     ..Default::default()
                 },
                 indexes: QueryResult {
-                    columns: ["tabela", "indice", "usos", "tamanho", "apoia_chave_estrangeira"]
+                    columns: ["table_name", "index_name", "scans", "size", "backs_foreign_key"]
                         .map(String::from)
                         .to_vec(),
                     rows: [
                         ["public.pedidos", "pedidos_criado_idx", "0", "107 MB", ""],
-                        ["public.pedidos", "pedidos_cliente_idx", "1", "107 MB", "sim"],
+                        ["public.pedidos", "pedidos_cliente_idx", "1", "107 MB", "yes"],
                     ]
                     .iter()
                     .map(|r| r.iter().map(|v| Some(v.to_string())).collect())
@@ -1346,7 +1346,7 @@ pub(crate) mod screenshots {
             let state = harness.state_mut();
             state
                 .tabs
-                .push(Tab::new(9, "Atividade".into(), TabKind::Activity(Box::new(st))));
+                .push(Tab::new(9, "Activity".into(), TabKind::Activity(Box::new(st))));
             state.active = 2;
             harness.run();
             harness
@@ -1481,7 +1481,7 @@ pub(crate) mod screenshots {
             state.tabs.pop();
             state.active = 1;
         }
-        // "Buscar valor" with a finished search.
+        // "Search value" with a finished search.
         {
             let state = harness.state_mut();
             state.open_search();
@@ -1599,7 +1599,7 @@ pub(crate) mod screenshots {
             harness.state_mut().active = 1;
         }
 
-        // Sidebar with functions, triggers and sequences; then "definir valor" on a selection.
+        // Sidebar with functions, triggers and sequences; then "set value" on a selection.
         {
             let obj = |name: &str, kind: crate::db::ObjKind, table: &str| crate::db::DbObject {
                 schema: "public".into(),
@@ -1724,7 +1724,7 @@ pub(crate) mod screenshots {
 
         harness.state_mut().active = 1;
         harness.state_mut().dialog = Some(crate::app::Dialog::Favorite(crate::app::FavPrompt {
-            name: "Clientes com mais saldo".into(),
+            name: "Customers with the highest balance".into(),
             sql: "SELECT id, nome, saldo\nFROM public.clientes\nWHERE ativo\nORDER BY saldo DESC;".into(),
             shared: false,
         }));
@@ -1762,7 +1762,7 @@ pub(crate) mod screenshots {
             mode: crate::app::MasterMode::Unlock,
             password: String::new(),
             confirm: String::new(),
-            error: Some("Senha mestra incorreta".into()),
+            error: Some("Wrong master password".into()),
             then: crate::app::AfterMaster::Nothing,
             working: None,
         });
@@ -1881,7 +1881,7 @@ pub(crate) mod screenshots {
         {
             let s = harness.state_mut().session.as_mut().unwrap();
             s.cfg.kind = Kind::Sqlite;
-            s.cfg.database = r"C:\Users\voce\Documents\estoque.db".into();
+            s.cfg.database = r"C:\Users\you\Documents\inventory.db".into();
             harness.run();
             harness
                 .render()
@@ -1895,7 +1895,7 @@ pub(crate) mod screenshots {
 
         // Notices: an error stays (with copy and close), information fades.
         harness.state_mut().notice =
-            crate::app::Notice::error("Não foi possível: relation \"clientes_antigos\" already exists");
+            crate::app::Notice::error("Couldn't do it: relation \"clientes_antigos\" already exists");
         harness.run();
         harness
             .render()
@@ -1903,7 +1903,7 @@ pub(crate) mod screenshots {
             .save(format!("{dir}/toast-error.png"))
             .unwrap();
         harness.state_mut().notice =
-            crate::app::Notice::info("Salvo em C:\\Users\\voce\\Downloads\\consulta.sql");
+            crate::app::Notice::info("Saved to C:\\Users\\you\\Downloads\\query.sql");
         harness.run();
         harness
             .render()
@@ -1925,7 +1925,7 @@ pub(crate) mod screenshots {
             let app = harness.state_mut();
             app.tabs.pop();
             app.active = 0;
-            // Its Estrutura: no designer, no CREATE TABLE "DDL"; the view's code instead.
+            // Its Structure tab: no designer, no CREATE TABLE "DDL"; the view's code instead.
             app.open_structure("public", "vendas_mensais");
             if let Some(crate::app::Tab {
                 kind: TabKind::Structure(st),
@@ -1977,7 +1977,7 @@ pub(crate) mod screenshots {
             app.active = 0;
         }
 
-        // "Comparar estrutura" against another connection, with differences.
+        // "Compare structure" against another connection, with differences.
         {
             harness.state_mut().open_compare(None);
             let app = harness.state_mut();
@@ -2003,28 +2003,28 @@ pub(crate) mod screenshots {
                         status: Status::Changed,
                         items: vec![
                             it(
-                                "coluna email: text → character varying(120)",
+                                "column email: text → character varying(120)",
                                 "ALTER TABLE …",
                                 false,
                             ),
-                            it("coluna ativo nova", "ALTER TABLE …", false),
+                            it("new column ativo", "ALTER TABLE …", false),
                             it(
-                                "coluna fax só existe no destino (os dados dela se perdem)",
+                                "column fax only exists in the target (its data is lost)",
                                 "ALTER TABLE …",
                                 true,
                             ),
-                            it("índice clientes_email_idx (novo)", "CREATE INDEX …", false),
+                            it("index clientes_email_idx (new)", "CREATE INDEX …", false),
                         ],
                     },
                     TableDiff {
                         table: "cupons".into(),
                         status: Status::New,
-                        items: vec![it("tabela nova", "CREATE TABLE …", false)],
+                        items: vec![it("new table", "CREATE TABLE …", false)],
                     },
                     TableDiff {
                         table: "log_antigo".into(),
                         status: Status::Extra,
-                        items: vec![it("só existe no destino", "-- DROP TABLE …", true)],
+                        items: vec![it("only in the target", "-- DROP TABLE …", true)],
                     },
                 ]));
             }
@@ -2039,7 +2039,7 @@ pub(crate) mod screenshots {
             app.active = 0;
         }
 
-        // "Exportar .sql" of a schema, finished.
+        // "Export .sql" of a schema, finished.
         {
             harness
                 .state_mut()
@@ -2066,7 +2066,7 @@ pub(crate) mod screenshots {
             app.active = 0;
         }
 
-        // "Filtrar valores" on a table column, with a funnel on a column already filtered.
+        // "Filter values" on a table column, with a funnel on a column already filtered.
         {
             let state = harness.state_mut();
             state.active = 0;
@@ -2117,7 +2117,7 @@ pub(crate) mod screenshots {
                 "SELECT id, nome, emial\nFROM clientes\nWHERE ativo;".into(),
             );
             ed.error_at = Some((17, 22));
-            tab.error = Some("column \"emial\" does not exist (dica: Perhaps you meant to reference the column \"clientes.email\".) (linha 1, coluna 18)".into());
+            tab.error = Some("column \"emial\" does not exist (hint: Perhaps you meant to reference the column \"clientes.email\".) (line 1, column 18)".into());
             harness.run();
             harness
                 .render()
@@ -2201,7 +2201,7 @@ pub(crate) mod screenshots {
         harness.state_mut().session = None;
         let mut my = ConnConfig::new(Kind::MySql);
         my.name = "loja-producao".into();
-        my.host = "db.exemplo.com".into();
+        my.host = "db.example.com".into();
         my.database = "loja".into();
         harness.state_mut().saved.push(my);
         harness.run();
@@ -2212,12 +2212,12 @@ pub(crate) mod screenshots {
             .unwrap();
 
         let mut remote = ConnConfig::new(Kind::MySql);
-        remote.host = "db.exemplo.com".into();
+        remote.host = "db.example.com".into();
         remote.read_only = true;
         remote.color = Some(crate::db::Tag::Red);
         remote.timeout_secs = 30;
         remote.ssh = Some(crate::db::SshConfig {
-            host: "bastion.exemplo.com".into(),
+            host: "bastion.example.com".into(),
             user: "deploy".into(),
             ..Default::default()
         });
@@ -2254,7 +2254,7 @@ pub(crate) mod screenshots {
             let form = harness.state_mut().form.as_mut().unwrap();
             form.cfg.kind = Kind::Sqlite;
             form.cfg.name = "estoque".into();
-            form.cfg.database = r"C:\Users\voce\Documents\estoque.db".into();
+            form.cfg.database = r"C:\Users\you\Documents\inventory.db".into();
         }
         harness.run();
         harness

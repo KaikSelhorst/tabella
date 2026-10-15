@@ -47,13 +47,13 @@ impl App {
                                 let copy =
                                     egui::Button::new(theme::icon(icon::COPY).color(t.muted_foreground))
                                         .frame(false);
-                                if ui.add(copy).on_hover_text("Copiar a mensagem").clicked() {
+                                if ui.add(copy).on_hover_text("Copy the message").clicked() {
                                     ui.ctx().copy_text(n.text.clone());
                                 }
                             }
                             let x = egui::Button::new(theme::icon(icon::X).color(t.muted_foreground))
                                 .frame(false);
-                            close = ui.add(x).on_hover_text("Fechar").clicked();
+                            close = ui.add(x).on_hover_text("Close").clicked();
                         });
                     });
             });
@@ -83,13 +83,13 @@ mod tests {
                 .textures_delta
                 .clear();
         };
-        app.notice = Notice::info("pronto");
+        app.notice = Notice::info("done");
         frame(&mut app);
         assert!(app.notice.is_some(), "a fresh one shows");
         app.notice.as_mut().unwrap().at = old;
         frame(&mut app);
         assert!(app.notice.is_none(), "information goes away by itself");
-        app.notice = Notice::error("falhou");
+        app.notice = Notice::error("failed");
         app.notice.as_mut().unwrap().at = old;
         frame(&mut app);
         assert!(app.notice.is_some(), "an error stays until closed");

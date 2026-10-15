@@ -112,7 +112,7 @@ pub fn find_bar(ui: &mut egui::Ui, st: &mut FindState, matches: usize) -> Option
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let r = ui.add(
                     TextEdit::singleline(&mut st.query)
-                        .hint_text("Buscar")
+                        .hint_text("Find")
                         .font(egui::FontId::monospace(12.5))
                         .desired_width(220.0),
                 );
@@ -132,8 +132,8 @@ pub fn find_bar(ui: &mut egui::Ui, st: &mut FindState, matches: usize) -> Option
                 }
                 let count = match matches {
                     0 if st.query.is_empty() => String::new(),
-                    0 => "nenhum".to_string(),
-                    n => format!("{} de {n}", st.current.min(n - 1) + 1),
+                    0 => "none".to_string(),
+                    n => format!("{} of {n}", st.current.min(n - 1) + 1),
                 };
                 let color = if matches == 0 && !st.query.is_empty() {
                     t.destructive
@@ -149,11 +149,11 @@ pub fn find_bar(ui: &mut egui::Ui, st: &mut FindState, matches: usize) -> Option
                     .on_hover_text(tip)
                     .clicked()
                 };
-                if arrow(ui, icon::ARROW_UP, "Anterior (Shift+Enter)") {
+                if arrow(ui, icon::ARROW_UP, "Previous (Shift+Enter)") {
                     step(st, matches, true);
                     action = Some(FindAction::Goto);
                 }
-                if arrow(ui, icon::ARROW_DOWN, "Próximo (Enter)") {
+                if arrow(ui, icon::ARROW_DOWN, "Next (Enter)") {
                     step(st, matches, false);
                     action = Some(FindAction::Goto);
                 }
@@ -164,7 +164,7 @@ pub fn find_bar(ui: &mut egui::Ui, st: &mut FindState, matches: usize) -> Option
                 };
                 if ui
                     .add(egui::Button::new(RichText::new("Aa").size(12.0).color(case_color)).frame(false))
-                    .on_hover_text("Diferenciar maiúsculas")
+                    .on_hover_text("Match case")
                     .clicked()
                 {
                     st.case_sensitive = !st.case_sensitive;
@@ -174,24 +174,24 @@ pub fn find_bar(ui: &mut egui::Ui, st: &mut FindState, matches: usize) -> Option
                     ui.add_space(8.0);
                     ui.add(
                         TextEdit::singleline(&mut st.replace)
-                            .hint_text("Substituir por")
+                            .hint_text("Replace with")
                             .font(egui::FontId::monospace(12.5))
                             .desired_width(180.0),
                     );
                     if ui
-                        .add_enabled(matches > 0, egui::Button::new("Substituir"))
+                        .add_enabled(matches > 0, egui::Button::new("Replace"))
                         .clicked()
                     {
                         action = Some(FindAction::ReplaceOne);
                     }
-                    if ui.add_enabled(matches > 0, egui::Button::new("Todos")).clicked() {
+                    if ui.add_enabled(matches > 0, egui::Button::new("All")).clicked() {
                         action = Some(FindAction::ReplaceAll);
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add(egui::Button::new(theme::icon(icon::X).color(t.muted_foreground)).frame(false))
-                        .on_hover_text("Fechar (Esc)")
+                        .on_hover_text("Close (Esc)")
                         .clicked()
                     {
                         action = Some(FindAction::Close);

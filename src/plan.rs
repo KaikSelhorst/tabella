@@ -61,9 +61,9 @@ impl Node {
 
 /// Postgres `EXPLAIN (FORMAT JSON[, ANALYZE])` output: `[{"Plan": {...}, "Execution Time": ...}]`.
 pub fn from_pg_json(text: &str) -> Result<Plan, String> {
-    let v: Value = serde_json::from_str(text).map_err(|e| format!("plano inválido: {e}"))?;
-    let top = v.get(0).ok_or("plano vazio")?;
-    let root = pg_node(top.get("Plan").ok_or("plano sem \"Plan\"")?);
+    let v: Value = serde_json::from_str(text).map_err(|e| format!("invalid plan: {e}"))?;
+    let top = v.get(0).ok_or("empty plan")?;
+    let root = pg_node(top.get("Plan").ok_or("plan without \"Plan\"")?);
     let ms = |k: &str| top.get(k).and_then(Value::as_f64);
     Ok(Plan {
         analyzed: root.actual_ms.is_some(),
@@ -117,7 +117,7 @@ fn pg_node(v: &Value) -> Node {
         }
     }
     if let Some(r) = n("Rows Removed by Filter").filter(|r| *r > 0.0) {
-        details.push(format!("Linhas descartadas pelo filtro: {r}"));
+        details.push(format!("Rows removed by filter: {r}"));
     }
     let loops = n("Actual Loops").unwrap_or(1.0);
     Node {
@@ -158,10 +158,10 @@ pub fn from_mysql_tree(text: &str) -> Result<Plan, String> {
         attach(&mut stack, &mut roots, done);
     }
     let root = match roots.len() {
-        0 => return Err("plano vazio".into()),
+        0 => return Err("empty plan".into()),
         1 => roots.pop().unwrap(),
         _ => Node {
-            label: "Plano".into(),
+            label: "Plan".into(),
             children: roots,
             ..Default::default()
         },
@@ -425,7 +425,7 @@ mod tests {
         };
         assert_eq!(scan.label, "Seq Scan on pedidos p");
         assert!(scan.is_full_scan());
-        assert_eq!(scan.details[1], "Linhas descartadas pelo filtro: 12");
+        assert_eq!(scan.details[1], "Rows removed by filter: 12");
         assert_eq!(idx.label, "Index Scan using clientes_pkey on clientes");
         // Loops multiply time and rows.
         assert_eq!((idx.actual_ms, idx.actual_rows), (Some(0.5), Some(2.0)));

@@ -93,14 +93,14 @@ fn insert(list: &mut Vec<Entry>, entry: Entry) {
     }
 }
 
-/// "agora", "há 5 min", "há 3 h", "há 2 d".
+/// "now", "5 min ago", "3 h ago", "2 d ago".
 pub fn ago(at: u64, now: u64) -> String {
     let s = now.saturating_sub(at);
     match s {
-        0..60 => "agora".into(),
-        60..3600 => format!("há {} min", s / 60),
-        3600..86400 => format!("há {} h", s / 3600),
-        _ => format!("há {} d", s / 86400),
+        0..60 => "now".into(),
+        60..3600 => format!("{} min ago", s / 60),
+        3600..86400 => format!("{} h ago", s / 3600),
+        _ => format!("{} d ago", s / 86400),
     }
 }
 
@@ -132,9 +132,9 @@ mod tests {
 
     #[test]
     fn relative_time() {
-        assert_eq!(ago(100, 130), "agora");
-        assert_eq!(ago(0, 300), "há 5 min");
-        assert_eq!(ago(0, 7200), "há 2 h");
-        assert_eq!(ago(0, 3 * 86400), "há 3 d");
+        assert_eq!(ago(100, 130), "now");
+        assert_eq!(ago(0, 300), "5 min ago");
+        assert_eq!(ago(0, 7200), "2 h ago");
+        assert_eq!(ago(0, 3 * 86400), "3 d ago");
     }
 }

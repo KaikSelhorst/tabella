@@ -9,7 +9,7 @@ use crate::values::{ResultDiff, RowDiff};
 const ROW_HEIGHT: f32 = 22.0;
 const STATUS_WIDTH: f32 = 84.0;
 
-/// Draws the comparison. Returns `true` when "Voltar ao resultado" was clicked.
+/// Draws the comparison. Returns `true` when "Back to result" was clicked.
 pub(super) fn diff_view(
     ui: &mut egui::Ui,
     tab_id: u64,
@@ -34,7 +34,7 @@ pub(super) fn diff_view(
                 ui.label(theme::icon(icon::GIT_DIFF).color(t.lime));
                 let when = crate::history::ago(pinned.at, crate::history::now());
                 ui.label(
-                    egui::RichText::new(format!("Comparando com o resultado fixado {when}"))
+                    egui::RichText::new(format!("Comparing with the result pinned {when}"))
                         .color(t.foreground),
                 );
                 let first = pinned
@@ -48,39 +48,39 @@ pub(super) fn diff_view(
                 ui.label(egui::RichText::new(first).monospace().size(11.0).color(t.subtle))
                     .on_hover_text(egui::RichText::new(&pinned.sql).monospace());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    back = ui.add(theme::outline_button("Voltar ao resultado")).clicked();
+                    back = ui.add(theme::outline_button("Back to result")).clicked();
                 });
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("Casar linhas por")
+                    egui::RichText::new("Match rows by")
                         .size(12.0)
                         .color(t.muted_foreground),
                 );
                 egui::ComboBox::from_id_salt(("diff_key", tab_id))
-                    .selected_text(key.as_deref().unwrap_or("posição"))
+                    .selected_text(key.as_deref().unwrap_or("position"))
                     .width(140.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(key, None, "posição");
+                        ui.selectable_value(key, None, "position");
                         for c in &shared {
                             ui.selectable_value(key, Some((*c).clone()), c.as_str());
                         }
                     })
                     .response
                     .on_hover_text(
-                        "A coluna que identifica a linha nos dois resultados (ex.: a chave primária)",
+                        "The column that identifies the row in both results (e.g. the primary key)",
                     );
-                ui.checkbox(hide_equal, "esconder iguais");
+                ui.checkbox(hide_equal, "hide equal");
                 ui.add_space(8.0);
                 let chip = |ui: &mut egui::Ui, n: usize, text: &str, color: egui::Color32| {
                     let c = if n == 0 { t.subtle } else { color };
                     ui.label(egui::RichText::new(format!("{n} {text}")).size(12.0).color(c));
                 };
-                chip(ui, d.removed, "só no fixado", t.destructive);
-                chip(ui, d.added, "só no atual", t.lime);
-                chip(ui, d.changed, "alteradas", t.warning);
-                chip(ui, d.same, "iguais", t.muted_foreground);
+                chip(ui, d.removed, "only in pinned", t.destructive);
+                chip(ui, d.added, "only in current", t.lime);
+                chip(ui, d.changed, "changed", t.warning);
+                chip(ui, d.same, "equal", t.muted_foreground);
             });
         });
     let rows: Vec<&RowDiff> = d
@@ -92,9 +92,9 @@ pub(super) fn diff_view(
         ui.add_space(32.0);
         ui.vertical_centered(|ui| {
             let text = if d.rows.is_empty() {
-                "Os dois resultados estão vazios"
+                "Both results are empty"
             } else {
-                "Nenhuma diferença"
+                "No differences"
             };
             ui.label(egui::RichText::new(text).color(t.subtle));
         });
@@ -116,8 +116,8 @@ pub(super) fn diff_view(
                             text = text.italics().color(t.muted_foreground);
                         }
                         cell(ui, widths[c], text.into()).on_hover_text(match (d.in_a[c], d.in_b[c]) {
-                            (None, _) => "Coluna nova (só no atual)",
-                            (_, None) => "Coluna só no fixado",
+                            (None, _) => "New column (only in current)",
+                            (_, None) => "Column only in pinned",
                             _ => "",
                         });
                     }
@@ -205,9 +205,9 @@ fn cell(ui: &mut egui::Ui, width: f32, text: egui::WidgetText) -> egui::Response
 fn row_ui(ui: &mut egui::Ui, d: &ResultDiff, a: &QueryResult, b: &QueryResult, r: &RowDiff, widths: &[f32]) {
     let t = theme::tokens();
     let (status, color) = match r {
-        RowDiff::Removed(_) => ("removida", t.destructive),
-        RowDiff::Added(_) => ("nova", t.lime),
-        RowDiff::Changed(..) => ("alterada", t.warning),
+        RowDiff::Removed(_) => ("removed", t.destructive),
+        RowDiff::Added(_) => ("new", t.lime),
+        RowDiff::Changed(..) => ("changed", t.warning),
         RowDiff::Same(..) => ("igual", t.subtle),
     };
     cell(

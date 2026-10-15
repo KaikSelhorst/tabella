@@ -38,7 +38,7 @@ impl App {
             ui.label(theme::icon(icon::DATABASE).size(36.0).color(t.lime));
             ui.add_space(4.0);
             ui.label(RichText::new("dblite").size(22.0).color(t.foreground));
-            ui.label(RichText::new("Cliente leve para PostgreSQL, MySQL e SQLite").color(t.muted_foreground));
+            ui.label(RichText::new("Lightweight client for PostgreSQL, MySQL and SQLite").color(t.muted_foreground));
             ui.add_space(24.0);
 
             match &self.session {
@@ -51,7 +51,7 @@ impl App {
                     }
                     ui.add_space(8.0);
                     new_conn = ui
-                        .add(theme::primary_button(Some(icon::PLUS), "Nova conexão"))
+                        .add(theme::primary_button(Some(icon::PLUS), "New connection"))
                         .clicked();
                 }
                 Some(s) if !s.ready => {
@@ -59,7 +59,7 @@ impl App {
                         ui.add_space((ui.available_width() - 160.0) / 2.0);
                         ui.spinner();
                         ui.label(
-                            RichText::new(format!("Conectando a {}…", s.cfg.name)).color(t.muted_foreground),
+                            RichText::new(format!("Connecting to {}…", s.cfg.name)).color(t.muted_foreground),
                         );
                     });
                 }
@@ -67,7 +67,7 @@ impl App {
                     let tables = s.tables.iter().filter(|t| !t.is_view).count();
                     ui.label(
                         RichText::new(format!(
-                            "Conectado a {} · {} tabelas",
+                            "Connected to {} · {} tables",
                             s.cfg.name,
                             format_count(tables as i64)
                         ))
@@ -78,11 +78,11 @@ impl App {
                         ui.add_space((ui.available_width() - 260.0) / 2.0);
                         egui::Grid::new("shortcuts").spacing([12.0, 6.0]).show(ui, |ui| {
                             for (keys, what) in [
-                                ("Ctrl+P", "Abrir tabela ou comando"),
-                                ("Ctrl+T", "Novo editor SQL"),
-                                ("Ctrl+W", "Fechar aba"),
-                                ("Ctrl+Tab", "Próxima aba"),
-                                ("F5", "Executar / recarregar"),
+                                ("Ctrl+P", "Open table or command"),
+                                ("Ctrl+T", "New SQL editor"),
+                                ("Ctrl+W", "Close tab"),
+                                ("Ctrl+Tab", "Next tab"),
+                                ("F5", "Run / reload"),
                             ] {
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     keycap(ui, keys)
@@ -98,10 +98,10 @@ impl App {
                         open_palette = ui
                             .add(theme::primary_button(
                                 Some(icon::MAGNIFYING_GLASS),
-                                "Abrir tabela",
+                                "Open table",
                             ))
                             .clicked();
-                        new_sql = ui.add(theme::outline_button("Novo SQL")).clicked();
+                        new_sql = ui.add(theme::outline_button("New SQL")).clicked();
                     });
                 }
             }

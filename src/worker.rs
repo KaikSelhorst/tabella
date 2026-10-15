@@ -102,11 +102,11 @@ pub enum Job {
         tab: u64,
         object: DbObject,
     },
-    /// The "Servidor" panel.
+    /// The "Server" panel.
     ServerInfo {
         tab: u64,
     },
-    /// Clear the "consultas lentas" counters, then show them again.
+    /// Clear the "slow queries" counters, then show them again.
     ResetQueryStats {
         tab: u64,
     },
@@ -132,7 +132,7 @@ pub enum Job {
         summary: String,
         top: String,
     },
-    /// "Filtrar valores": a column's distinct values with their counts.
+    /// "Filter values": a column's distinct values with their counts.
     Distinct {
         tab: u64,
         sql: String,
@@ -144,14 +144,14 @@ pub enum Job {
         /// The search text they are for (a newer one may already be typed).
         search: String,
     },
-    /// "Comparar estrutura": `target: None` is another schema of this connection.
+    /// "Compare structure": `target: None` is another schema of this connection.
     Compare {
         tab: u64,
         source_schema: String,
         target: Option<Box<ConnConfig>>,
         target_schema: String,
     },
-    /// "Exportar .sql".
+    /// "Export .sql".
     Dump {
         tab: u64,
         spec: crate::dump::DumpSpec,
@@ -414,7 +414,7 @@ pub(crate) fn run_script(
         Err(e) => {
             return (
                 p,
-                Some(fail(format!("não foi possível abrir: {e}"), 0, "", false)),
+                Some(fail(format!("couldn't open: {e}"), 0, "", false)),
             );
         }
     };
@@ -446,7 +446,7 @@ pub(crate) fn run_script(
         p.line = reader.line;
         let item = match item {
             Ok(i) => i,
-            Err(e) => break Some(fail(format!("erro lendo o arquivo: {e}"), p.line, "", false)),
+            Err(e) => break Some(fail(format!("error reading the file: {e}"), p.line, "", false)),
         };
         let outcome = match &item {
             Item::Skipped { .. } => {
@@ -520,13 +520,13 @@ fn capped_read(conn: &mut Conn, pg: bool, in_tx: bool, sql: &str) -> DbResult<Qu
     conn.query(close)?;
     res.map_err(|e| match e.to_string() {
         m if m.contains("statement timeout") => {
-            DbError::Other("a busca passou de 2 s: digite mais do nome, ou o número da chave".into())
+            DbError::Other("the search took over 2 s: type more of the name, or the key number".into())
         }
         _ => e,
     })
 }
 
-/// "Testar conexão": connects (through the SSH tunnel, if any) on its own thread and says
+/// "Test connection": connects (through the SSH tunnel, if any) on its own thread and says
 /// which server answered and how fast, without touching the open session.
 pub fn test_connection(cfg: ConnConfig, ctx: eframe::egui::Context) -> Receiver<Result<String, String>> {
     let (tx, rx) = channel();
@@ -535,7 +535,7 @@ pub fn test_connection(cfg: ConnConfig, ctx: eframe::egui::Context) -> Receiver<
         let res = (|| {
             let tunnel = match &cfg.ssh {
                 Some(ssh) => {
-                    Some(Tunnel::open(ssh, &cfg.host, cfg.port).map_err(|e| format!("túnel SSH: {e}"))?)
+                    Some(Tunnel::open(ssh, &cfg.host, cfg.port).map_err(|e| format!("SSH tunnel: {e}"))?)
                 }
                 None => None,
             };
@@ -553,7 +553,7 @@ pub fn test_connection(cfg: ConnConfig, ctx: eframe::egui::Context) -> Receiver<
                 .and_then(|r| r.into_iter().next().flatten())
                 .map(|v| server_name(cfg.kind, &v))
                 .unwrap_or_default();
-            Ok(format!("Conectou em {ms} ms · {version}"))
+            Ok(format!("Connected in {ms} ms · {version}"))
         })();
         let _ = tx.send(res);
         ctx.request_repaint();
@@ -570,7 +570,7 @@ fn server_name(kind: crate::db::Kind, version: &str) -> String {
     }
 }
 
-/// Both sides of "Comparar estrutura": the target on this connection, or on its own one
+/// Both sides of "Compare structure": the target on this connection, or on its own one
 /// (through its SSH tunnel), closed when done.
 fn compare_with(
     conn: &mut Conn,
@@ -584,22 +584,22 @@ fn compare_with(
         None => crate::compare::snapshot(conn, target_schema),
         Some(cfg) => {
             if cfg.kind != kind {
-                return Err("os dois lados precisam ser do mesmo tipo de banco".into());
+                return Err("both sides must be the same kind of database".into());
             }
             let tunnel = match &cfg.ssh {
                 Some(ssh) => {
-                    Some(Tunnel::open(ssh, &cfg.host, cfg.port).map_err(|e| format!("túnel SSH: {e}"))?)
+                    Some(Tunnel::open(ssh, &cfg.host, cfg.port).map_err(|e| format!("SSH tunnel: {e}"))?)
                 }
                 None => None,
             };
             let mut other = Conn::connect(cfg, tunnel.as_ref().map(|t| t.local_port))
-                .map_err(|e| format!("não foi possível conectar no destino: {e}"))?;
+                .map_err(|e| format!("couldn't connect to the target: {e}"))?;
             crate::compare::snapshot(&mut other, target_schema)
         }
     }
     .map_err(|e| e.to_string())?;
     if dest.tables.is_empty() && source.tables.is_empty() {
-        return Err("nenhuma tabela nos dois lados: confira os nomes".into());
+        return Err("no tables on either side: check the names".into());
     }
     Ok(crate::compare::diff(kind, &source, &dest))
 }
@@ -921,8 +921,8 @@ impl<S: Fn(Reply)> Worker<'_, S> {
             // Postgres refuses COMMIT after a failed statement anyway; say why nothing was kept.
             let rolled_back = self.conn.query("ROLLBACK");
             Err(DbError::Other(match rolled_back {
-                Ok(_) => "um comando da transação falhou, então ela foi desfeita: nada foi confirmado".into(),
-                Err(e) => format!("um comando da transação falhou e o ROLLBACK também: {e}"),
+                Ok(_) => "a statement in the transaction failed, so it was rolled back: nothing was committed".into(),
+                Err(e) => format!("a statement in the transaction failed and so did the ROLLBACK: {e}"),
             }))
         } else {
             self.conn
@@ -944,8 +944,8 @@ impl<S: Fn(Reply)> Worker<'_, S> {
         let res = ran.and_then(|done| {
             if expect_one && done.affected == Some(0) {
                 notice = Some(
-                    "Nenhuma linha foi alterada: ela mudou ou foi excluída em outra sessão. \
-                     A página foi recarregada."
+                    "No rows were changed: the row changed or was deleted in another session. \
+                     The page was reloaded."
                         .to_string(),
                 );
             }
@@ -1014,7 +1014,7 @@ impl<S: Fn(Reply)> Worker<'_, S> {
 }
 
 fn export(conn: &mut Conn, spec: ExportSpec) -> DbResult<(PathBuf, u64)> {
-    let io = |e: std::io::Error| DbError::Other(format!("erro ao gravar {}: {e}", spec.path.display()));
+    let io = |e: std::io::Error| DbError::Other(format!("error writing {}: {e}", spec.path.display()));
     let kind = conn.kind();
     let rows = match spec.source {
         ExportSource::Rows(res) => {
@@ -1107,7 +1107,7 @@ mod tests {
                 "INSERT INTO dbl_export WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 12000) \
                  SELECT n, CONCAT('v', n) FROM s"
             }
-            Kind::Sqlite => unreachable!("teste de servidor"),
+            Kind::Sqlite => unreachable!("server test"),
         };
         c.query(fill).unwrap();
         let path = std::env::temp_dir().join(format!("dblite-export-{kind:?}-{}.csv", std::process::id()));
@@ -1233,7 +1233,7 @@ mod tests {
             refresh: "SELECT 1".into(),
         })
         .unwrap();
-        assert!(wait(&saved).contains("Nada foi salvo"));
+        assert!(wait(&saved).contains("Nothing was saved"));
         jobs.send(Job::EndTx { commit: false }).unwrap();
         assert_eq!(wait(&ended), "ok", "{kind:?}");
         assert_eq!(seen(&mut other), "a", "{kind:?}: undo reverts SQL and grid edits");
@@ -1248,7 +1248,7 @@ mod tests {
         assert_eq!(seen(&mut other), "d", "{kind:?}: committed");
 
         if kind == Kind::Postgres {
-            // After an error Postgres only accepts ROLLBACK: "Confirmar" says so instead of
+            // After an error Postgres only accepts ROLLBACK: "Commit" says so instead of
             // pretending it worked.
             assert_eq!(wait(&tx_state), "false:0:false", "closed after the commit");
             jobs.send(Job::Query {
@@ -1264,7 +1264,7 @@ mod tests {
             assert_eq!(wait(&tx_state), "true:1:false");
             assert_eq!(wait(&tx_state), "true:1:true");
             jobs.send(Job::EndTx { commit: true }).unwrap();
-            assert!(wait(&ended).contains("desfeita"));
+            assert!(wait(&ended).contains("rolled back"));
             assert_eq!(seen(&mut other), "d");
         }
         drop(jobs);
@@ -1477,7 +1477,7 @@ mod tests {
         let ctx = eframe::egui::Context::default();
         let ok = test_connection(cfg.clone(), ctx.clone()).recv().unwrap().unwrap();
         assert!(
-            ok.starts_with("Conectou em ") && ok.contains("PostgreSQL 1"),
+            ok.starts_with("Connected in ") && ok.contains("PostgreSQL 1"),
             "{ok}"
         );
         cfg.password = "errada".into();
@@ -1582,7 +1582,7 @@ mod tests {
             },
         )
         .unwrap();
-        eprintln!("{rows} linhas em {:?}", started.elapsed());
+        eprintln!("{rows} rows in {:?}", started.elapsed());
         let _ = std::fs::remove_file(path);
     }
 

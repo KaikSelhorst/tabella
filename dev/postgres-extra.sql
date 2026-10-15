@@ -1,4 +1,4 @@
--- A second schema and a second database for trying "trocar banco/schema" (on top of
+-- A second schema and a second database for trying "switch database/schema" (on top of
 -- dev/postgres.sql). Names repeat on purpose: `clientes` exists in public and in financeiro
 -- with different rows, so an unqualified SELECT shows which one the editor is pointing at.
 -- Rerunnable.
@@ -7,7 +7,7 @@
 
 SET client_min_messages = warning;
 
--- Schema financeiro (banco postgres) -------------------------------------------------------
+-- Schema financeiro (database postgres) ---------------------------------------------------
 
 CREATE SCHEMA IF NOT EXISTS financeiro;
 DROP TABLE IF EXISTS financeiro.lancamentos, financeiro.contas, financeiro.clientes;
@@ -57,7 +57,7 @@ SELECT 1 + g % 3,
        g < 70
 FROM generate_series(1, 100) g;
 
--- Banco rh (outro banco no mesmo servidor) -------------------------------------------------
+-- Database rh (another database on the same server) ---------------------------------------
 
 SELECT 'CREATE DATABASE rh' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'rh')\gexec
 \connect rh

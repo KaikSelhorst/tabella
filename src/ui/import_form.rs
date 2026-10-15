@@ -1,4 +1,4 @@
-//! "Importar CSV" dialog: pick the file, check the preview, map file columns to table columns.
+//! "Import CSV" dialog: pick the file, check the preview, map file columns to table columns.
 
 use eframe::egui::{self, Align, Layout, RichText, TextEdit};
 
@@ -30,44 +30,44 @@ pub fn import_form(
             ui.set_width(720.0);
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::UPLOAD_SIMPLE).size(16.0).color(t.lime));
-                ui.label(RichText::new(format!("Importar CSV ou Excel em {table}")).size(15.0).color(t.foreground));
+                ui.label(RichText::new(format!("Import CSV or Excel into {table}")).size(15.0).color(t.foreground));
             });
             ui.label(
-                RichText::new("Tudo numa transação: se uma linha falhar, nada é importado. Números como 1.520,30 e booleanos como sim/não são convertidos.")
+                RichText::new("All in one transaction: if a row fails, nothing is imported. Numbers like 1,520.30 or 1.520,30 and booleans like yes/no are converted.")
                     .size(11.0)
                     .color(t.subtle),
             );
             ui.add_space(8.0);
             ui.add(
                 TextEdit::singleline(&mut form.path)
-                    .hint_text("Caminho do arquivo .csv, .xlsx, .xls ou .ods (ou arraste o arquivo para a janela)")
+                    .hint_text("Path of the .csv, .xlsx, .xls or .ods file (or drag the file onto the window)")
                     .font(egui::FontId::monospace(12.5))
                     .desired_width(f32::INFINITY),
             );
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.checkbox(&mut form.has_header, "Primeira linha é o cabeçalho");
-                ui.checkbox(&mut form.empty_is_null, "Célula vazia vira NULL");
+                ui.checkbox(&mut form.has_header, "First row is the header");
+                ui.checkbox(&mut form.empty_is_null, "Empty cell becomes NULL");
             });
             ui.add_space(8.0);
 
             match &form.preview {
                 None => {
-                    ui.label(RichText::new("Escolha um arquivo para ver a prévia.").color(t.subtle));
+                    ui.label(RichText::new("Choose a file to see the preview.").color(t.subtle));
                 }
                 Some((_, _, Err(e))) => {
                     ui.label(RichText::new(e).color(t.destructive));
                 }
                 Some((_, _, Ok(pv))) => {
                     let source = match (&pv.sheet, pv.delimiter) {
-                        (Some(sheet), _) => format!("aba {sheet}"),
-                        (None, b';') => "separador: ponto e vírgula".into(),
-                        (None, b'\t') => "separador: tab".into(),
-                        (None, _) => "separador: vírgula".into(),
+                        (Some(sheet), _) => format!("sheet {sheet}"),
+                        (None, b';') => "separator: semicolon".into(),
+                        (None, b'\t') => "separator: tab".into(),
+                        (None, _) => "separator: comma".into(),
                     };
                     ui.label(
                         RichText::new(format!(
-                            "{} coluna(s) · {source} · prévia das primeiras {PREVIEW_ROWS} linhas",
+                            "{} column(s) · {source} · preview of the first {PREVIEW_ROWS} rows",
                             pv.headers.len()
                         ))
                         .size(11.0)
@@ -90,13 +90,13 @@ pub fn import_form(
                                     ui.end_row();
                                     // Where each file column goes.
                                     for (i, target) in form.mapping.iter_mut().enumerate() {
-                                        let shown = target.as_deref().unwrap_or("(ignorar)");
+                                        let shown = target.as_deref().unwrap_or("(ignore)");
                                         let color = if target.is_some() { t.lime } else { t.subtle };
                                         egui::ComboBox::from_id_salt(("import_map", tab_id, i))
                                             .width(COL_WIDTH)
                                             .selected_text(RichText::new(shown).color(color))
                                             .show_ui(ui, |ui| {
-                                                ui.selectable_value(target, None, "(ignorar)");
+                                                ui.selectable_value(target, None, "(ignore)");
                                                 for c in columns {
                                                     ui.selectable_value(target, Some(c.clone()), c);
                                                 }
@@ -126,17 +126,17 @@ pub fn import_form(
                     && matches!(&form.preview, Some((_, _, Ok(_))))
                     && form.mapping.iter().any(Option::is_some);
                 if ui
-                    .add_enabled(ready, theme::primary_button(Some(icon::UPLOAD_SIMPLE), "Importar"))
+                    .add_enabled(ready, theme::primary_button(Some(icon::UPLOAD_SIMPLE), "Import"))
                     .clicked()
                 {
                     action = Some(ImportAction::Submit);
                 }
-                if ui.add(theme::outline_button("Cancelar")).clicked() {
+                if ui.add(theme::outline_button("Cancel")).clicked() {
                     action = Some(ImportAction::Cancel);
                 }
                 if busy {
                     ui.spinner();
-                    ui.label(RichText::new("Importando…").color(t.muted_foreground));
+                    ui.label(RichText::new("Importing…").color(t.muted_foreground));
                 }
             });
         });

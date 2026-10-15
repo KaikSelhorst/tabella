@@ -1,4 +1,4 @@
-//! "Executar arquivo .sql": a file run statement by statement, with progress.
+//! "Run .sql file": a file run statement by statement, with progress.
 
 use super::*;
 use std::fmt::Write as _;
@@ -21,7 +21,7 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(theme::icon(icon::PLAY).size(15.0).color(t.muted_foreground));
-                        ui.label(egui::RichText::new("Executar arquivo .sql").size(15.0).color(t.foreground));
+                        ui.label(egui::RichText::new("Run .sql file").size(15.0).color(t.foreground));
                     });
                     ui.add_space(8.0);
                     ui.label(
@@ -35,7 +35,7 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     };
                     ui.label(
                         egui::RichText::new(format!(
-                            "{} · em {} ({})",
+                            "{} · on {} ({})",
                             super::palette::format_bytes(st.size as i64),
                             here,
                             s.cfg.name
@@ -47,31 +47,31 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().interact_size.y = 28.0;
                         if st.running {
-                            if ui.add(theme::outline_button("Cancelar")).clicked() {
+                            if ui.add(theme::outline_button("Cancel")).clicked() {
                                 cancel = true;
                             }
                         } else {
-                            let label = if st.outcome.is_some() { "Executar de novo" } else { "Executar" };
+                            let label = if st.outcome.is_some() { "Run again" } else { "Run" };
                             if ui.add(theme::primary_button(Some(icon::PLAY), label)).clicked() {
                                 start = true;
                             }
                         }
                         let hint = match s.cfg.kind {
                             crate::db::Kind::Postgres | crate::db::Kind::Sqlite => {
-                                "Tudo ou nada: no primeiro erro (ou ao cancelar) nada do arquivo fica no banco"
+                                "All or nothing: on the first error (or on cancel) nothing from the file stays in the database"
                             }
                             crate::db::Kind::MySql => {
-                                "No MySQL, cada CREATE/ALTER/DROP confirma o que veio antes: num erro, só volta \
-                                 atrás o que rodou depois do último deles"
+                                "In MySQL, each CREATE/ALTER/DROP commits what came before it: on an error, only what ran \
+                                 after the last of them is rolled back"
                             }
                         };
-                        ui.add_enabled(!st.running, egui::Checkbox::new(&mut st.transaction, "numa transação"))
+                        ui.add_enabled(!st.running, egui::Checkbox::new(&mut st.transaction, "in a transaction"))
                             .on_hover_text(hint);
                     });
                     ui.label(
                         egui::RichText::new(
-                            "Lê o arquivo aos poucos e para no primeiro erro. Entende DELIMITER (MySQL), blocos \
-                             $$ e COPY … FROM stdin do pg_dump; comandos do psql (\\connect…) são pulados.",
+                            "Reads the file bit by bit and stops at the first error. Understands DELIMITER (MySQL), \
+                             $$ blocks and pg_dump's COPY … FROM stdin; psql commands (\\connect…) are skipped.",
                         )
                         .size(11.0)
                         .color(t.subtle),
@@ -91,17 +91,17 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         let took = st.took.or_else(|| st.started.map(|at| at.elapsed())).unwrap_or_default();
                         let plural = |n: u64, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
                         let mut text = format!(
-                            "{:.0}% · {} · linha {} · {:.1}s",
+                            "{:.0}% · {} · line {} · {:.1}s",
                             frac * 100.0,
-                            plural(p.statements, "comando", "comandos"),
+                            plural(p.statements, "statement", "statements"),
                             p.line,
                             took.as_secs_f32()
                         );
                         if p.copied > 0 {
-                            let _ = write!(text, " · {} via COPY", plural(p.copied, "linha", "linhas"));
+                            let _ = write!(text, " · {} via COPY", plural(p.copied, "row", "rows"));
                         }
                         if p.skipped > 0 {
-                            let skipped = plural(p.skipped, "comando do psql pulado", "comandos do psql pulados");
+                            let skipped = plural(p.skipped, "psql command skipped", "psql commands skipped");
                             let _ = write!(text, " · {skipped}");
                         }
                         ui.label(egui::RichText::new(text).size(12.0).color(t.muted_foreground));
@@ -116,20 +116,20 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         Some(None) => {
                             ui.horizontal(|ui| {
                                 ui.label(theme::icon(icon::CHECK).size(16.0).color(t.lime));
-                                let done = if st.transaction { "Arquivo executado e confirmado" } else { "Arquivo executado" };
+                                let done = if st.transaction { "File run and committed" } else { "File run" };
                                 ui.label(egui::RichText::new(done).color(t.foreground));
                             });
                         }
                         Some(Some(e)) => {
                             let undone = if st.transaction {
-                                " Nada do arquivo ficou no banco (transação desfeita)."
+                                " Nothing from the file stayed in the database (transaction rolled back)."
                             } else {
-                                " O que rodou antes disso continua no banco."
+                                " What ran before that stays in the database."
                             };
                             let title = if e.cancelled {
-                                format!("Cancelado na linha {}.{undone}", e.line)
+                                format!("Cancelled at line {}.{undone}", e.line)
                             } else {
-                                format!("Erro na linha {}.{undone}", e.line)
+                                format!("Error at line {}.{undone}", e.line)
                             };
                             ui.horizontal(|ui| {
                                 ui.label(theme::icon(icon::WARNING).size(16.0).color(t.destructive));

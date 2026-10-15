@@ -323,7 +323,7 @@ pub fn local_column_stats(res: &QueryResult, ci: usize, kind: ValueKind) -> Colu
 
 /// Reads the answers to `sql::column_stats` (summary row, then the top values).
 pub fn stats_from_queries(summary: &QueryResult, top: &QueryResult) -> Result<ColumnStats, String> {
-    let row = summary.rows.first().ok_or("resposta vazia")?;
+    let row = summary.rows.first().ok_or("empty response")?;
     let num = |i: usize| -> i64 {
         row.get(i)
             .and_then(|v| v.as_deref())

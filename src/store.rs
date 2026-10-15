@@ -10,7 +10,7 @@ use serde::de::DeserializeOwned;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("diretório de configuração não encontrado")]
+    #[error("configuration directory not found")]
     NoDir,
     #[error("{0}")]
     Io(#[from] std::io::Error),
@@ -72,11 +72,11 @@ pub fn load_at<T: DeserializeOwned + Default>(path: &Path) -> Loaded<T> {
     let bak = backup_path(path);
     let warning = match std::fs::copy(path, &bak) {
         Ok(_) => format!(
-            "{name} não pôde ser lido ({problem}); uma cópia foi guardada em {}",
+            "{name} couldn't be read ({problem}); a copy was saved to {}",
             bak.display()
         ),
         Err(e) => format!(
-            "{name} não pôde ser lido ({problem}) nem copiado para {} ({e})",
+            "{name} couldn't be read ({problem}) or copied to {} ({e})",
             bak.display()
         ),
     };
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn missing_file_is_default_without_warning() {
         let dir = temp_dir("missing");
-        let l: Loaded<Vec<String>> = load_at(&dir.join("nada.json"));
+        let l: Loaded<Vec<String>> = load_at(&dir.join("nothing.json"));
         assert!(l.value.is_empty());
         assert!(l.warning.is_none());
         let _ = std::fs::remove_dir_all(&dir);
@@ -165,14 +165,14 @@ mod tests {
     fn unreadable_file_is_backed_up_and_reported() {
         let dir = temp_dir("corrupt");
         let file = dir.join("favorites.json");
-        std::fs::write(&file, "[{\"meio arquivo").unwrap();
+        std::fs::write(&file, "[{\"half a file").unwrap();
         let l: Loaded<Vec<String>> = load_at(&file);
         assert!(l.value.is_empty());
         let w = l.warning.expect("reported");
         assert!(w.contains("favorites.json"), "{w}");
         assert_eq!(
             std::fs::read_to_string(dir.join("favorites.json.bak")).unwrap(),
-            "[{\"meio arquivo"
+            "[{\"half a file"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -181,10 +181,10 @@ mod tests {
     fn save_replaces_whole_file_and_leaves_no_temp() {
         let dir = temp_dir("save");
         let file = dir.join("x.json");
-        save_at(&file, &vec!["um".to_string(), "dois".into()]).unwrap();
-        save_at(&file, &vec!["três".to_string()]).unwrap();
+        save_at(&file, &vec!["one".to_string(), "two".into()]).unwrap();
+        save_at(&file, &vec!["three".to_string()]).unwrap();
         let l: Loaded<Vec<String>> = load_at(&file);
-        assert_eq!(l.value, vec!["três".to_string()]);
+        assert_eq!(l.value, vec!["three".to_string()]);
         assert!(!dir.join("x.json.tmp").exists());
         #[cfg(unix)]
         {

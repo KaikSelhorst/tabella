@@ -33,7 +33,7 @@ pub fn diagram_tab(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::GRAPH).size(15.0).color(t.muted_foreground));
-                ui.label(RichText::new("Diagrama ER").size(15.0).color(t.foreground));
+                ui.label(RichText::new("ER diagram").size(15.0).color(t.foreground));
                 egui::ComboBox::from_id_salt(("diagram_schema", tab_id))
                     .selected_text(RichText::new(&d.schema).monospace())
                     .show_ui(ui, |ui| {
@@ -48,7 +48,7 @@ pub fn diagram_tab(
                             }
                         }
                     });
-                if ui.checkbox(&mut d.show_all, "mostrar tabelas sem relação").changed() {
+                if ui.checkbox(&mut d.show_all, "show unrelated tables").changed() {
                     d.build(&s.tables, &s.schema_cols);
                     d.fit = true;
                 }
@@ -57,15 +57,15 @@ pub fn diagram_tab(
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button(theme::icon_text(icon::ARROWS_OUT, "Ajustar", t.muted_foreground, t.foreground))
-                        .on_hover_text("Mostrar todas as tabelas na tela")
+                        .button(theme::icon_text(icon::ARROWS_OUT, "Fit", t.muted_foreground, t.foreground))
+                        .on_hover_text("Fit all tables on screen")
                         .clicked()
                     {
                         d.fit = true;
                     }
                     if ui
-                        .button(theme::icon_text(icon::SHUFFLE, "Reorganizar", t.muted_foreground, t.foreground))
-                        .on_hover_text("Desfaz o que foi arrastado e organiza de novo")
+                        .button(theme::icon_text(icon::SHUFFLE, "Rearrange", t.muted_foreground, t.foreground))
+                        .on_hover_text("Undo dragging and lay out again")
                         .clicked()
                     {
                         d.positions.clear();
@@ -76,8 +76,8 @@ pub fn diagram_tab(
             });
             ui.label(
                 RichText::new(format!(
-                    "{} tabelas · {edge_count} ligações · {:.0}%  ·  roda: zoom · arraste o fundo ou o título · \
-                     duplo clique abre a tabela",
+                    "{} tables · {edge_count} links · {:.0}%  ·  wheel: zoom · drag the background or the title · \
+                     double-click opens the table",
                     d.tables.len(),
                     d.zoom * 100.0
                 ))
@@ -100,11 +100,11 @@ pub fn diagram_tab(
             ui.add_space(48.0);
             ui.vertical_centered(|ui| {
                 ui.label(
-                    RichText::new("Nenhuma chave estrangeira entre as tabelas deste schema.")
+                    RichText::new("No foreign keys between the tables of this schema.")
                         .color(t.muted_foreground),
                 );
                 ui.label(
-                    RichText::new("Marque \"mostrar tabelas sem relação\" para ver todas.")
+                    RichText::new("Check \"show unrelated tables\" to see them all.")
                         .size(12.0)
                         .color(t.subtle),
                 );
@@ -310,7 +310,7 @@ pub fn diagram_tab(
             clip.text(
                 Pos2::new(r.left() + 8.0 * zoom, y),
                 Align2::LEFT_CENTER,
-                format!("… mais {}", tb.columns.len() - MAX_COLS),
+                format!("… {} more", tb.columns.len() - MAX_COLS),
                 FontId::proportional(11.0 * zoom),
                 t.subtle,
             );

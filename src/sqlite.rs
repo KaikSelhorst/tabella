@@ -14,10 +14,10 @@ use crate::error::{DbError, DbResult};
 pub fn open(cfg: &ConnConfig) -> DbResult<Connection> {
     let path = cfg.database.trim();
     if path.is_empty() {
-        return Err(DbError::Other("escolha o arquivo do banco SQLite".into()));
+        return Err(DbError::Other("choose the SQLite database file".into()));
     }
     if !std::path::Path::new(path).is_file() {
-        return Err(DbError::Other(format!("arquivo não encontrado: {path}")));
+        return Err(DbError::Other(format!("file not found: {path}")));
     }
     let flags = if cfg.read_only {
         OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -35,14 +35,14 @@ pub fn open(cfg: &ConnConfig) -> DbResult<Connection> {
     c.execute_batch("PRAGMA foreign_keys = ON")?;
     // A quick check that it is a database at all (any file opens).
     c.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-        .map_err(|_| DbError::Other(format!("{path} não é um banco SQLite")))?;
+        .map_err(|_| DbError::Other(format!("{path} is not a SQLite database")))?;
     Ok(c)
 }
 
-/// Creates an empty database file (the form's "Criar arquivo novo").
+/// Creates an empty database file (the form's "Create new file").
 pub fn create(path: &str) -> DbResult<()> {
     if std::path::Path::new(path).exists() {
-        return Err(DbError::Other(format!("já existe um arquivo em {path}")));
+        return Err(DbError::Other(format!("a file already exists at {path}")));
     }
     let c = Connection::open(path)?;
     // SQLite writes nothing until there is something to write.
@@ -184,7 +184,7 @@ pub const FILE: &str = "SELECT file FROM pragma_database_list WHERE name = 'main
 /// What has no meaning without a server.
 pub fn no_server(what: &str) -> DbError {
     DbError::Other(format!(
-        "{what} não existe no SQLite: é um arquivo, sem servidor nem sessões"
+        "{what} doesn't exist in SQLite: it's a file, with no server or sessions"
     ))
 }
 
@@ -463,7 +463,7 @@ pub(crate) mod tests {
         assert!(r.query("DELETE FROM cliente").is_err());
         // A missing file or one that isn't a database: clear errors, nothing created.
         let missing = crate::db::ConnConfig {
-            database: format!("{}.nao-existe", cfg.database),
+            database: format!("{}.does-not-exist", cfg.database),
             ..cfg.clone()
         };
         assert!(
@@ -471,7 +471,7 @@ pub(crate) mod tests {
                 .err()
                 .unwrap()
                 .to_string()
-                .contains("não encontrado")
+                .contains("not found")
         );
         assert!(!std::path::Path::new(&missing.database).exists());
         let _ = std::fs::remove_file(&cfg.database);

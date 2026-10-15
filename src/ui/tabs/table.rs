@@ -39,7 +39,7 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let TabKind::Table(ts) = &mut tab.kind else {
         return;
     };
-    // A view has rows to read, not to insert into (most refuse it): no "Registro" or import.
+    // A view has rows to read, not to insert into (most refuse it): no "Record" or import.
     let is_view = s.is_view(&ts.schema, &ts.table);
     let mut view_source = false;
 
@@ -67,9 +67,9 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     };
                     // Exact total when we have it, the planner's estimate otherwise.
                     let of = match (ts.total, ts.estimate) {
-                        (Some(n), _) => format!(" de {}", palette::format_count(n)),
+                        (Some(n), _) => format!(" of {}", palette::format_count(n)),
                         (None, Some(n)) if ts.filter.trim().is_empty() => {
-                            format!(" de ~{}", palette::format_count(n))
+                            format!(" of ~{}", palette::format_count(n))
                         }
                         _ => String::new(),
                     };
@@ -107,9 +107,9 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     TextEdit::singleline(&mut ts.search)
                         .id(search_id)
                         .hint_text(if compact {
-                            "Buscar  (Ctrl+F)"
+                            "Find  (Ctrl+F)"
                         } else {
-                            "Buscar em todas as colunas  (Ctrl+F)"
+                            "Find in all columns  (Ctrl+F)"
                         })
                         .margin(egui::Margin::symmetric(8, 6))
                         .desired_width(if compact { 130.0 } else { 200.0 }),
@@ -148,7 +148,7 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 let w = (ui.available_width() - right_w - 8.0).max(120.0);
                 let r = ui.add(
                     TextEdit::singleline(&mut ts.filter)
-                        .hint_text("id > 10 AND nome LIKE 'a%'   (Enter aplica)")
+                        .hint_text("id > 10 AND name LIKE 'a%'   (Enter applies)")
                         .font(egui::FontId::monospace(13.0))
                         .margin(egui::Margin::symmetric(8, 6))
                         .layouter(&mut syntax::sql_line_layouter(13.0))
@@ -165,14 +165,14 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     if is_view {
                         let code = theme::tool(
                             icon::CODE,
-                            "Código da view",
+                            "View code",
                             compact,
                             t.muted_foreground,
                             t.foreground,
                         );
                         view_source = ui
                             .button(code)
-                            .on_hover_text("A definição da view, no editor")
+                            .on_hover_text("The view's definition, in the editor")
                             .clicked();
                     } else {
                         add_record = ui
@@ -180,16 +180,16 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                                 !s.cfg.read_only,
                                 theme::primary_button(
                                     Some(icon::PLUS),
-                                    if compact { "" } else { "Registro" },
+                                    if compact { "" } else { "Record" },
                                 ),
                             )
-                            .on_hover_text("Novo registro")
-                            .on_disabled_hover_text("Conexão somente leitura")
+                            .on_hover_text("New record")
+                            .on_disabled_hover_text("Read-only connection")
                             .clicked();
                     }
                     if ui
                         .button(theme::icon(icon::ARROWS_CLOCKWISE))
-                        .on_hover_text("Recarregar (F5)")
+                        .on_hover_text("Reload (F5)")
                         .clicked()
                     {
                         reload_now = true;
@@ -202,19 +202,19 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                                 !s.cfg.read_only,
                                 egui::Button::new(theme::icon(icon::UPLOAD_SIMPLE).color(t.muted_foreground)),
                             )
-                            .on_hover_text("Importar CSV ou Excel (ou arraste o arquivo para a janela)")
-                            .on_disabled_hover_text("Conexão somente leitura")
+                            .on_hover_text("Import CSV or Excel (or drag the file onto the window)")
+                            .on_disabled_hover_text("Read-only connection")
                             .clicked();
                     let structure = theme::tool(
                         icon::TREE_STRUCTURE,
-                        "Estrutura",
+                        "Structure",
                         compact,
                         t.muted_foreground,
                         t.foreground,
                     );
                     show_structure = ui
                         .button(structure)
-                        .on_hover_text("Estrutura · colunas, índices e DDL")
+                        .on_hover_text("Structure · columns, indexes and DDL")
                         .clicked();
                     let used = start - ui.cursor().right();
                     ui.data_mut(|d| d.insert_temp(right_id, used));
@@ -309,7 +309,7 @@ pub(super) fn insert_form(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     }
 }
 
-/// "N alterações pendentes · Desfazer · Descartar · Salvar" while there are unsaved edits.
+/// "N pending changes · Undo · Discard · Save" while there are unsaved edits.
 pub(super) fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab) {
     let Some(ts) = app::editable_mut(&mut tab.kind) else {
         return;
@@ -329,25 +329,25 @@ pub(super) fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab) {
                 ui.label(theme::icon(icon::PENCIL_SIMPLE).color(t.warning));
                 let mut parts = Vec::new();
                 if edits > 0 {
-                    parts.push(format!("{edits} edição(ões)"));
+                    parts.push(format!("{edits} edit(s)"));
                 }
                 if deletes > 0 {
-                    parts.push(format!("{deletes} exclusão(ões)"));
+                    parts.push(format!("{deletes} deletion(s)"));
                 }
                 ui.label(
-                    egui::RichText::new(format!("{} pendente(s), ainda não salvas", parts.join(" e ")))
+                    egui::RichText::new(format!("{} pending, not saved yet", parts.join(" and ")))
                         .color(t.foreground),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     save = ui
-                        .add(theme::primary_button(Some(icon::FLOPPY_DISK), "Salvar"))
+                        .add(theme::primary_button(Some(icon::FLOPPY_DISK), "Save"))
                         .on_hover_text("Ctrl+S")
                         .clicked();
-                    discard = ui.add(theme::outline_button("Descartar")).clicked();
+                    discard = ui.add(theme::outline_button("Discard")).clicked();
                     undo = ui
                         .button(theme::icon_text(
                             icon::ARROW_COUNTER_CLOCKWISE,
-                            "Desfazer",
+                            "Undo",
                             t.muted_foreground,
                             t.foreground,
                         ))
@@ -387,12 +387,12 @@ pub(super) fn confirm_save(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
         ui.set_width(520.0);
         ui.horizontal(|ui| {
             ui.label(theme::icon(icon::FLOPPY_DISK).size(16.0).color(if deletes > 0 { t.destructive } else { t.lime }));
-            ui.label(egui::RichText::new(format!("Salvar {} alteração(ões)?", stmts.len())).size(15.0).color(t.foreground));
+            ui.label(egui::RichText::new(format!("Save {} change(s)?", stmts.len())).size(15.0).color(t.foreground));
         });
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(format!(
-                "Em {}.{}: {edits} edição(ões), {deletes} exclusão(ões). Tudo numa transação: se uma falhar, nada é salvo.",
+                "In {}.{}: {edits} edit(s), {deletes} deletion(s). All in one transaction: if one fails, nothing is saved.",
                 ts.schema, ts.table
             ))
             .color(t.muted_foreground),
@@ -410,11 +410,11 @@ pub(super) fn confirm_save(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
         ui.add_space(16.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             go = if deletes > 0 {
-                ui.add(danger_button("Salvar e excluir")).clicked()
+                ui.add(danger_button("Save and delete")).clicked()
             } else {
-                ui.add(theme::primary_button(Some(icon::FLOPPY_DISK), "Salvar")).clicked()
+                ui.add(theme::primary_button(Some(icon::FLOPPY_DISK), "Save")).clicked()
             };
-            cancel = ui.add(theme::outline_button("Voltar")).clicked();
+            cancel = ui.add(theme::outline_button("Back")).clicked();
         });
     });
     if go {
@@ -449,9 +449,9 @@ pub(super) fn filters_menu(
     let name_id = egui::Id::new(("filter_name", tab_id));
     ui.menu_button(theme::icon(icon::FUNNEL).size(15.0).color(color), |ui| {
         ui.set_width(340.0);
-        ui.label(egui::RichText::new("FILTROS SALVOS").size(11.0).color(t.subtle));
+        ui.label(egui::RichText::new("SAVED FILTERS").size(11.0).color(t.subtle));
         if mine.is_empty() {
-            ui.label(egui::RichText::new("Nenhum filtro salvo para esta tabela").color(t.subtle));
+            ui.label(egui::RichText::new("No saved filters for this table").color(t.subtle));
         }
         for f in &mine {
             ui.horizontal(|ui| {
@@ -470,7 +470,7 @@ pub(super) fn filters_menu(
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
                         .add(egui::Button::new(theme::icon(icon::X).size(11.0).color(t.subtle)).frame(false))
-                        .on_hover_text("Excluir filtro")
+                        .on_hover_text("Delete filter")
                         .clicked()
                     {
                         action = Some(FilterAction::Delete(f.id.clone()));
@@ -486,15 +486,15 @@ pub(super) fn filters_menu(
                 can_save,
                 TextEdit::singleline(&mut name)
                     .hint_text(if can_save {
-                        "Nome do filtro atual"
+                        "Name of the current filter"
                     } else {
-                        "Escreva um WHERE para salvar"
+                        "Write a WHERE to save it"
                     })
                     .desired_width(220.0),
             );
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             let ok = can_save && !name.trim().is_empty();
-            if (ui.add_enabled(ok, egui::Button::new("Salvar")).clicked() || (enter && ok))
+            if (ui.add_enabled(ok, egui::Button::new("Save")).clicked() || (enter && ok))
                 && action.is_none()
             {
                 action = Some(FilterAction::Save(name.trim().to_string()));
@@ -505,6 +505,6 @@ pub(super) fn filters_menu(
         ui.data_mut(|d| d.insert_temp(name_id, name));
     })
     .response
-    .on_hover_text("Filtros salvos");
+    .on_hover_text("Saved filters");
     action
 }

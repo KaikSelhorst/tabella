@@ -230,7 +230,7 @@ impl Conn {
             Kind::Postgres => format!("SET search_path TO {}, public", k.quote_ident(name)),
             Kind::Sqlite => {
                 return Err(DbError::Other(
-                    "SQLite não tem outros bancos ou schemas para trocar".into(),
+                    "SQLite has no other databases or schemas to switch to".into(),
                 ));
             }
         };
@@ -319,7 +319,7 @@ impl Conn {
                 .into_iter()
                 .next()
                 .and_then(|row| row.into_iter().nth(col).flatten())
-                .ok_or_else(|| DbError::Other(format!("não encontrei a definição de {}", o.name)))
+                .ok_or_else(|| DbError::Other(format!("couldn't find the definition of {}", o.name)))
         };
         let k = self.kind();
         match k {
@@ -335,7 +335,7 @@ impl Conn {
                     "TRIGGER"
                 };
                 Ok(format!(
-                    "-- Para recriar: descomente o DROP e execute tudo (F5).\n-- DROP {what} IF EXISTS {};\n{body};",
+                    "-- To recreate: uncomment the DROP and run everything (F5).\n-- DROP {what} IF EXISTS {};\n{body};",
                     k.quote_ident(&o.name)
                 ))
             }
@@ -371,7 +371,7 @@ impl Conn {
                         "SELECT 'CREATE SEQUENCE ' || quote_ident(schemaname) || '.' || quote_ident(sequencename) \
                          || E'\\n  INCREMENT BY ' || increment_by || E'\\n  MINVALUE ' || min_value \
                          || E'\\n  MAXVALUE ' || max_value || E'\\n  START WITH ' || start_value \
-                         || E';\\n-- valor atual: ' || coalesce(last_value::text, 'ainda não usada') \
+                         || E';\\n-- current value: ' || coalesce(last_value::text, 'not used yet') \
                          FROM pg_sequences WHERE schemaname = ",
                     )
                     .value(Some(&o.schema))
@@ -386,7 +386,7 @@ impl Conn {
                     ObjKind::Procedure => "PROCEDURE",
                     ObjKind::Trigger => "TRIGGER",
                     ObjKind::View => "VIEW",
-                    ObjKind::Sequence => return Err(DbError::Other("MySQL não tem sequences".into())),
+                    ObjKind::Sequence => return Err(DbError::Other("MySQL has no sequences".into())),
                 };
                 let r = self.query(&format!("SHOW CREATE {what} {}", k.qualified(&o.schema, &o.name)))?;
                 // The definition column: 2nd for views, 3rd for routines and triggers.
@@ -398,7 +398,7 @@ impl Conn {
                 Ok(match o.kind {
                     ObjKind::View => format!("{};", body.replacen("CREATE ", "CREATE OR REPLACE ", 1)),
                     _ => format!(
-                        "-- Para recriar: descomente o DROP e execute tudo (F5).\n-- DROP {what} IF EXISTS {};\n{body}",
+                        "-- To recreate: uncomment the DROP and run everything (F5).\n-- DROP {what} IF EXISTS {};\n{body}",
                         k.qualified(&o.schema, &o.name)
                     ),
                 })
@@ -449,7 +449,7 @@ impl Conn {
             .collect()
     }
 
-    /// Single-column foreign keys in other tables that point at this one ("quem aponta para cá").
+    /// Single-column foreign keys in other tables that point at this one ("who points here").
     pub fn incoming_fks(&mut self, schema: &str, table: &str) -> DbResult<Vec<IncomingFk>> {
         let stmt = match self.kind() {
             Kind::Sqlite => crate::sqlite::incoming_fks(table),

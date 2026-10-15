@@ -1,4 +1,4 @@
--- A second database for trying "trocar banco" on the "dev-mysql" connection (on top of
+-- A second database for trying "switch database" on the "dev-mysql" connection (on top of
 -- dev/mysql.sql). `produtos` exists in loja and in rh with different rows, so an unqualified
 -- SELECT shows which database the editor is pointing at. Rerunnable.
 --

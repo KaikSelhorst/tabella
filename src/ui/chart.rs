@@ -71,7 +71,7 @@ fn axis_label(v: f64) -> String {
     if v.abs() >= 10_000.0 {
         palette::compact_count(v.round() as i64)
     } else {
-        values::format_number(v).replace('.', ",")
+        values::format_number(v)
     }
 }
 
@@ -100,11 +100,11 @@ pub fn chart(
                     }
                 });
         };
-        pick(ui, "chart_x", "rótulo", &mut spec.x, false);
-        pick(ui, "chart_y", "valor", &mut spec.y, true);
+        pick(ui, "chart_x", "label", &mut spec.x, false);
+        pick(ui, "chart_y", "value", &mut spec.y, true);
         ui.add_space(8.0);
         ui.spacing_mut().item_spacing.x = 0.0;
-        for (k, label) in [(ChartKind::Bars, "Barras"), (ChartKind::Line, "Linha")] {
+        for (k, label) in [(ChartKind::Bars, "Bars"), (ChartKind::Line, "Line")] {
             if ui
                 .add(egui::Button::new(label).selected(spec.kind == k))
                 .clicked()
@@ -115,7 +115,7 @@ pub fn chart(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add(egui::Button::new(theme::icon(super::icon::X).color(t.muted_foreground)).frame(false))
-                .on_hover_text("Fechar gráfico")
+                .on_hover_text("Close chart")
                 .clicked()
             {
                 open = false;
@@ -153,7 +153,7 @@ pub fn chart(
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
-            "Nenhum valor numérico para mostrar",
+            "No numeric value to show",
             FontId::proportional(13.0),
             t.subtle,
         );
@@ -286,7 +286,7 @@ pub fn chart(
         let tip = format!(
             "{x}\n{}: {}",
             res.columns[spec.y],
-            values::format_number(*v).replace('.', ",")
+            values::format_number(*v)
         );
         let galley = painter.layout_no_wrap(tip, FontId::proportional(12.0), t.foreground);
         let size = galley.size() + vec2(16.0, 10.0);
@@ -307,7 +307,7 @@ pub fn chart(
         painter.text(
             rect.right_top() + vec2(-RIGHT, 0.0),
             Align2::RIGHT_TOP,
-            format!("primeiras {MAX_BARS} barras · {left_out} fora do gráfico"),
+            format!("first {MAX_BARS} bars · {left_out} left out of the chart"),
             label_font,
             t.subtle,
         );

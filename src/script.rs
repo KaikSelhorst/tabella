@@ -314,17 +314,17 @@ mod tests {
 
     #[test]
     fn splits_like_a_database_client() {
-        let pg = "SET x = 1;\nINSERT INTO t VALUES ('a;b', 'it''s');\n-- nada; aqui\nCREATE FUNCTION f() RETURNS int AS $$\nBEGIN\n  RETURN 1;\nEND;\n$$ LANGUAGE plpgsql;\nSELECT 'c:\\temp';\n/* um; dois */ SELECT 2\n";
+        let pg = "SET x = 1;\nINSERT INTO t VALUES ('a;b', 'it''s');\n-- nothing; here\nCREATE FUNCTION f() RETURNS int AS $$\nBEGIN\n  RETURN 1;\nEND;\n$$ LANGUAGE plpgsql;\nSELECT 'c:\\temp';\n/* one; two */ SELECT 2\n";
         let items = read(Kind::Postgres, pg);
         assert_eq!(
             stmts(&items),
             [
                 "SET x = 1",
                 "INSERT INTO t VALUES ('a;b', 'it''s')",
-                "-- nada; aqui\nCREATE FUNCTION f() RETURNS int AS $$\nBEGIN\n  RETURN 1;\nEND;\n$$ LANGUAGE plpgsql",
+                "-- nothing; here\nCREATE FUNCTION f() RETURNS int AS $$\nBEGIN\n  RETURN 1;\nEND;\n$$ LANGUAGE plpgsql",
                 // Standard strings: the backslash doesn't escape the closing quote.
                 "SELECT 'c:\\temp'",
-                "/* um; dois */ SELECT 2",
+                "/* one; two */ SELECT 2",
             ]
         );
         // Its first line of code, past the comment.
@@ -333,12 +333,12 @@ mod tests {
 
     #[test]
     fn mysql_delimiters_and_escapes() {
-        let my = "INSERT INTO t VALUES ('a\\';b');\n# comentário; ok\nDELIMITER ;;\nCREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END ;;\nDELIMITER ;\nSELECT 3;\n";
+        let my = "INSERT INTO t VALUES ('a\\';b');\n# comment; ok\nDELIMITER ;;\nCREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END ;;\nDELIMITER ;\nSELECT 3;\n";
         assert_eq!(
             stmts(&read(Kind::MySql, my)),
             [
                 "INSERT INTO t VALUES ('a\\';b')",
-                "# comentário; ok\nCREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END",
+                "# comment; ok\nCREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END",
                 "SELECT 3",
             ]
         );

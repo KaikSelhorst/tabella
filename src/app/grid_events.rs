@@ -43,7 +43,7 @@ fn any_result_event(
                 TabKind::Table(ts) => k.qualified(&ts.schema, &ts.table),
                 // An editable editor result knows its table too.
                 TabKind::Sql(ed) if let Some(src) = &ed.source => k.qualified(&src.schema, &src.table),
-                _ => "tabela".to_string(),
+                _ => "table".to_string(),
             };
             Some(Effect::Copy(match how {
                 CopyAs::Json => values::row_json(res, cols, *row),
@@ -209,9 +209,9 @@ fn start_column_stats(tab: &mut Tab, s: &Session, col: usize) {
             let ordered = matches!(kind, ValueKind::Number | ValueKind::Date);
             let (summary, top) = sql::column_stats(k, &ts.schema, &ts.table, &name, &filter, ordered);
             let scope = if filter.is_empty() {
-                "tabela inteira"
+                "whole table"
             } else {
-                "linhas que passam no filtro"
+                "rows matching the filter"
             };
             tab.col_stats = Some(StatsView {
                 column: name,
@@ -229,7 +229,7 @@ fn start_column_stats(tab: &mut Tab, s: &Session, col: usize) {
             let data = values::local_column_stats(res, col, kind);
             tab.col_stats = Some(StatsView {
                 column: name,
-                scope: format!("{} linha(s) carregadas", res.rows.len()),
+                scope: format!("{} loaded row(s)", res.rows.len()),
                 data: Some(Ok(data)),
             });
         }
@@ -268,7 +268,7 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
         // Expressions and aliases in an editor's SELECT aren't columns of the table.
         GridEvent::StartEdit(_, col) if !ts.cols.iter().any(|c| c.name == res.columns[col]) => {
             tab.error = Some(format!(
-                "\"{}\" não é uma coluna de {}: não dá para editar",
+                "\"{}\" is not a column of {}: it can't be edited",
                 res.columns[col], ts.table
             ));
         }
@@ -318,7 +318,7 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
                     }
                     tab.error = (p.skipped > 0).then(|| {
                         format!(
-                            "{} célula(s) coladas ficaram fora da página e foram ignoradas.",
+                            "{} pasted cell(s) fell outside the page and were ignored.",
                             p.skipped
                         )
                     });
