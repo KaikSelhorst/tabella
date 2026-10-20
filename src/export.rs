@@ -169,6 +169,46 @@ impl Writer {
     }
 }
 
+/// The result as text in memory, byte for byte what `Writer` would put in a file. `None` for
+/// Excel, which is a binary file.
+pub fn render(
+    format: Format,
+    kind: Kind,
+    table: &str,
+    res: &QueryResult,
+    cols: &[ColumnInfo],
+) -> Option<String> {
+    let mut out = String::new();
+    match format {
+        Format::Csv => {
+            out.push_str(&csv_line(res.columns.iter().map(|c| Some(c.as_str()))));
+            out.push('\n');
+            for row in &res.rows {
+                out.push_str(&csv_line(row.iter().map(|v| v.as_deref())));
+                out.push('\n');
+            }
+        }
+        Format::Json => {
+            let kinds = values::column_kinds(res, cols);
+            out.push('[');
+            for (i, row) in res.rows.iter().enumerate() {
+                out.push_str(if i == 0 { "\n  " } else { ",\n  " });
+                let obj = values::json_object(&res.columns, &kinds, row);
+                out.push_str(&serde_json::to_string(&obj).unwrap_or_default());
+            }
+            out.push_str(if res.rows.is_empty() { "]\n" } else { "\n]\n" });
+        }
+        Format::Sql => {
+            for row in &res.rows {
+                out.push_str(&crate::sql::insert_row(kind, table, &res.columns, row));
+                out.push('\n');
+            }
+        }
+        Format::Xlsx => return None,
+    }
+    Some(out)
+}
+
 /// One spreadsheet row (`r`, 0 is the header). Numbers and booleans as such, so Excel can sum
 /// and filter them.
 fn xlsx_row(
@@ -279,6 +319,31 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    /// What goes to the clipboard is exactly what the file would hold.
+    #[test]
+    fn rendering_in_memory_matches_the_file_writer() {
+        let res = result();
+        for (format, ext) in [(Format::Csv, "csv"), (Format::Json, "json"), (Format::Sql, "sql")] {
+            let path = std::env::temp_dir().join(format!("tabella-render-{}.{ext}", std::process::id()));
+            let mut w = Writer::create(&path, format, Kind::Postgres, "\"public\".\"t\"", &res, &[]).unwrap();
+            w.rows(&res.rows).unwrap();
+            w.finish().unwrap();
+            let file = std::fs::read_to_string(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            let text = render(format, Kind::Postgres, "\"public\".\"t\"", &res, &[]).unwrap();
+            assert_eq!(text, file, "{format:?}");
+        }
+        let empty = QueryResult {
+            columns: vec!["a".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            render(Format::Json, Kind::Postgres, "t", &empty, &[]).unwrap(),
+            "[]\n"
+        );
+        assert!(render(Format::Xlsx, Kind::Postgres, "t", &res, &[]).is_none());
     }
 
     fn export(format: Format) -> String {

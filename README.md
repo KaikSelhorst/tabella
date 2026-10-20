@@ -140,6 +140,8 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
   creating an index
 - Star tables in the sidebar (right-click → "Star this table"): they are listed first; selecting a
   cell lights the same value elsewhere in its column
+- Export → "Copy to clipboard" (CSV, JSON or SQL INSERT): the rows on screen as text, ready to
+  paste, without a file; the same text the file export writes. Up to 20 MB
 - Column widths dragged in a table are remembered for that table (per connection), across tabs
   and runs
 - Functions, procedures, triggers and sequences in the sidebar (views along with the tables):

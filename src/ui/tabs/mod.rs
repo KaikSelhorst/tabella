@@ -688,6 +688,26 @@ pub(super) fn error_banner(ui: &mut egui::Ui, e: &str) {
         });
 }
 
+/// What the "Export" dropdown asked for.
+pub(super) enum ExportChoice {
+    /// A file; `true`: the whole table, not just what is on screen.
+    File(Format, bool),
+    /// The result on screen, as text on the clipboard.
+    Copy(Format),
+}
+
+/// Runs an "Export" choice on the tab.
+pub(super) fn do_export(ui: &egui::Ui, tab: &mut Tab, s: &Session, choice: ExportChoice) {
+    match choice {
+        ExportChoice::File(format, whole) => app::start_export(tab, s, format, whole),
+        ExportChoice::Copy(format) => {
+            if let Some(text) = app::copy_result(tab, s, format) {
+                ui.ctx().copy_text(text);
+            }
+        }
+    }
+}
+
 /// "Export" dropdown: what is on screen, or (table tabs) the whole table. Returns the choice;
 /// the caller starts the export once it can borrow the tab again.
 pub(super) fn export_menu(
@@ -695,7 +715,7 @@ pub(super) fn export_menu(
     is_table: bool,
     enabled: bool,
     compact: bool,
-) -> Option<(Format, bool)> {
+) -> Option<ExportChoice> {
     let t = theme::tokens();
     let label = theme::tool(
         icon::DOWNLOAD_SIMPLE,
@@ -714,7 +734,19 @@ pub(super) fn export_menu(
             heading(ui, if is_table { "CURRENT PAGE" } else { "RESULT" });
             for f in Format::ALL {
                 if ui.button(f.label()).clicked() {
-                    chosen = Some((f, false));
+                    chosen = Some(ExportChoice::File(f, false));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            heading(ui, "COPY TO CLIPBOARD");
+            for f in [Format::Csv, Format::Json, Format::Sql] {
+                if ui
+                    .button(f.label())
+                    .on_hover_text("The rows on screen as text, ready to paste")
+                    .clicked()
+                {
+                    chosen = Some(ExportChoice::Copy(f));
                     ui.close();
                 }
             }
@@ -723,7 +755,7 @@ pub(super) fn export_menu(
                 heading(ui, "WHOLE TABLE (WITH FILTER)");
                 for f in Format::ALL {
                     if ui.button(f.label()).clicked() {
-                        chosen = Some((f, true));
+                        chosen = Some(ExportChoice::File(f, true));
                         ui.close();
                     }
                 }
@@ -743,6 +775,38 @@ pub(super) fn export_menu(
 
 /// "Exported N rows to file · Open folder · ×" after an export finishes.
 pub(super) fn export_banner(ui: &mut egui::Ui, tab: &mut Tab) {
+    if let Some((format, rows)) = tab.copied {
+        let t = theme::tokens();
+        let mut dismiss = false;
+        egui::Frame::new()
+            .fill(theme::mix(t.lime, 0.10, t.background))
+            .inner_margin(egui::Margin::symmetric(8, 4))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(theme::icon(icon::CHECK).color(t.lime));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} row(s) copied as {format}",
+                            palette::format_count(rows as i64)
+                        ))
+                        .color(t.foreground),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        dismiss = ui
+                            .add(
+                                egui::Button::new(theme::icon(icon::X).size(11.0).color(t.subtle))
+                                    .frame(false),
+                            )
+                            .clicked();
+                    });
+                });
+            });
+        if dismiss {
+            tab.copied = None;
+        }
+        return;
+    }
     let Some((path, rows)) = &tab.exported else { return };
     let t = theme::tokens();
     let mut dismiss = false;

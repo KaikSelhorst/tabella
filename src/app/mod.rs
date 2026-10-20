@@ -677,6 +677,8 @@ pub struct Tab {
     pub fk_picker: Option<FkPicker>,
     /// Last export of this tab: file and row count, shown until dismissed.
     pub exported: Option<(PathBuf, u64)>,
+    /// Last "copy to clipboard" of the result: the format and the row count, shown until dismissed.
+    pub copied: Option<(&'static str, u64)>,
     /// A script's result sets when it returned more than one, in order. The one on screen lives
     /// in `result`; its slot here is an empty placeholder.
     pub sets: Vec<QueryResult>,
@@ -751,6 +753,7 @@ impl Tab {
             value_editor: None,
             fk_picker: None,
             exported: None,
+            copied: None,
             sets: Vec::new(),
             set_shown: 0,
             fill_prompt: None,
@@ -2911,6 +2914,50 @@ impl App {
 
 /// Writes the tab's rows to a file in the Downloads folder. `whole_table` reads the entire table
 /// (with the tab's filter) in chunks; otherwise only what is on screen.
+/// What the rows on screen are called when exported: a file base name, the table name for
+/// INSERT statements and the table's columns. An editor result from one table (a plain
+/// `SELECT … FROM t`) keeps that table's name; any other is just "table".
+fn result_target(tab: &Tab, k: Kind) -> (String, String, Vec<ColumnInfo>) {
+    let from = |ts: &TableState| {
+        (
+            ts.table.clone(),
+            k.qualified(&ts.schema, &ts.table),
+            ts.cols.clone(),
+        )
+    };
+    match &tab.kind {
+        TabKind::Table(ts) => from(ts),
+        TabKind::Sql(ed) => match ed.source.as_deref().filter(|s| !s.cols.is_empty()) {
+            Some(ts) => from(ts),
+            None => ("query".to_string(), "table".to_string(), vec![]),
+        },
+        _ => ("query".to_string(), "table".to_string(), vec![]),
+    }
+}
+
+/// Largest text put on the clipboard: beyond it a file is the right place for the result.
+const MAX_COPY_BYTES: usize = 20 * 1024 * 1024;
+
+/// The result as CSV, JSON or INSERTs, ready for the clipboard. `None` (with the reason on the
+/// tab) when there is nothing to copy or it is too big.
+pub fn copy_result(tab: &mut Tab, s: &Session, format: Format) -> Option<String> {
+    let k = s.cfg.kind;
+    let (_, name, cols) = result_target(tab, k);
+    let res = tab.result.as_ref()?;
+    let rows = res.rows.len() as u64;
+    let text = export::render(format, k, &name, res, &cols)?;
+    if text.len() > MAX_COPY_BYTES {
+        tab.error = Some(format!(
+            "The result is too big for the clipboard ({} MB): use Export to a file",
+            text.len() / (1024 * 1024)
+        ));
+        return None;
+    }
+    tab.exported = None;
+    tab.copied = Some((format.label(), rows));
+    Some(text)
+}
+
 pub fn start_export(tab: &mut Tab, s: &Session, format: Format, whole_table: bool) {
     let k = s.cfg.kind;
     let (base, table_name, cols, source) = match &tab.kind {
@@ -2935,19 +2982,13 @@ pub fn start_export(tab: &mut Tab, s: &Session, format: Format, whole_table: boo
         }
         _ => {
             let Some(res) = &tab.result else { return };
-            let (base, name, cols) = match &tab.kind {
-                TabKind::Table(ts) => (
-                    ts.table.clone(),
-                    k.qualified(&ts.schema, &ts.table),
-                    ts.cols.clone(),
-                ),
-                _ => ("query".to_string(), "table".to_string(), vec![]),
-            };
+            let (base, name, cols) = result_target(tab, k);
             (base, name, cols, ExportSource::Rows(res.clone()))
         }
     };
     let path = export::target_path(&base, format);
     tab.exported = None;
+    tab.copied = None;
     let spec = ExportSpec {
         format,
         path,
@@ -4322,6 +4363,31 @@ pub mod tests {
             panic!()
         };
         assert!(matches!(spec.source, ExportSource::Rows(ref r) if r.rows.len() == 1));
+    }
+
+    /// "Copy to clipboard" gives the result as CSV, JSON or INSERTs named after its table, and
+    /// leaves a note on the tab.
+    #[test]
+    fn the_result_can_be_copied_in_three_formats() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut tab = table_tab();
+        let csv = copy_result(&mut tab, &s, Format::Csv).unwrap();
+        assert_eq!(csv, "id,active,name\n7,f,anna\n");
+        assert_eq!(tab.copied, Some(("CSV", 1)));
+        let json = copy_result(&mut tab, &s, Format::Json).unwrap();
+        assert!(json.contains("\"name\":\"anna\""), "{json}");
+        let sql = copy_result(&mut tab, &s, Format::Sql).unwrap();
+        assert!(sql.starts_with("INSERT INTO \"public\".\"t\""), "{sql}");
+        // Excel is a file, not text.
+        assert!(copy_result(&mut tab, &s, Format::Xlsx).is_none());
+        // An editor result from nowhere in particular is just "table".
+        let mut sql_tab = Tab::new(2, "q".into(), TabKind::Sql(Box::new(Editor::new(String::new()))));
+        sql_tab.result = tab.result.clone();
+        assert!(
+            copy_result(&mut sql_tab, &s, Format::Sql)
+                .unwrap()
+                .starts_with("INSERT INTO table")
+        );
     }
 
     #[test]

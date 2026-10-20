@@ -222,8 +222,8 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let r = toolbar.response.rect;
     ui.painter()
         .hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, t.border));
-    if let Some((format, whole)) = export {
-        app::start_export(tab, s, format, whole);
+    if let Some(choice) = export {
+        do_export(ui, tab, s, choice);
     }
     // A .csv or spreadsheet dropped on the window opens the import dialog with it.
     let dropped = ui.ctx().input(|i| {

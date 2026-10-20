@@ -819,6 +819,41 @@ pub(crate) mod screenshots {
         assert_eq!(harness.state().tabs[0].col_widths["name"], after["name"]);
     }
 
+    /// `TABELLA_SHOTS=<dir> cargo test copy_menu_shot -- --ignored`: the Export menu and the copied note.
+    #[test]
+    #[ignore]
+    fn copy_menu_shot() {
+        let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .with_max_steps(8)
+            .wgpu()
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        let at = egui::pos2(1075.0, 57.0);
+        harness.hover_at(at);
+        harness.step();
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            harness.step();
+        }
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/copy-menu.png"))
+            .unwrap();
+    }
+
     /// `TABELLA_SHOTS=<dir> cargo test bulk_dialog_shot -- --ignored`: "Set with an expression".
     #[test]
     #[ignore]

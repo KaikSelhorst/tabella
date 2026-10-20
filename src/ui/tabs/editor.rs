@@ -373,8 +373,8 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     }
     params_prompt(ui.ctx(), tab, s);
     preview_dialog(ui.ctx(), tab, s);
-    if let Some((format, _)) = export {
-        app::start_export(tab, s, format, false);
+    if let Some(choice) = export {
+        do_export(ui, tab, s, choice);
     }
     confirm_run(ui.ctx(), tab, s);
     export_banner(ui, tab);
