@@ -2,7 +2,7 @@ name: Release
 
 # Publishing a release on GitHub (with a tag matching Cargo.toml's version, e.g. v0.2.0) builds
 # tabella and attaches to that release:
-#   Windows: the .exe, and a .zip with it and the README
+#   Windows: an installer (per user, no admin), the portable .exe, and a .zip with it and the README
 #   Linux:   an AppImage, a .deb and a .tar.gz with the binary and the README
 # each with a SHA-256 checksum next to it.
 #
@@ -58,6 +58,9 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/tabella.exe "dist/$name.exe"
           Compress-Archive -Path target/release/tabella.exe, README.md -DestinationPath "dist/$name.zip"
+          cargo install cargo-packager --version 0.11.8 --locked
+          cargo packager --release --formats nsis
+          Move-Item (Get-ChildItem target/packages/*-setup.exe).FullName "dist/$name-setup.exe"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'

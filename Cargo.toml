@@ -55,16 +55,21 @@ dev-conn = []
 [build-dependencies]
 winresource = "0.1"
 
-# Linux packages (AppImage, .deb) for releases: `cargo packager --release` after a release build.
+# Installers for releases: `cargo packager --release` after a release build (AppImage and .deb on
+# Linux, NSIS on Windows via `--formats nsis`).
 [package.metadata.packager]
 product-name = "tabella"
 identifier = "dev.tabella.app"
 description = "Lightweight client for PostgreSQL, MySQL and SQLite"
 category = "DeveloperTool"
-icons = ["assets/icon.png"]
+icons = ["assets/icon.png", "assets/icon.ico"]
 out-dir = "target/packages"
 formats = ["appimage", "deb"]
 
 # What a desktop session already has: the window toolkit loads these at runtime.
 [package.metadata.packager.deb]
 depends = ["libc6", "libgl1", "libegl1", "libxkbcommon-x11-0", "libxcursor1", "libxrandr2", "libxi6"]
+
+# Installs for the current user only, so it needs no administrator rights.
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"
