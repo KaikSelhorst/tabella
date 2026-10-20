@@ -9,6 +9,13 @@ use crate::store::{self, Loaded, StoreError};
 pub struct Saved {
     /// Id of the connection that was open.
     pub conn: Option<String>,
+    /// The database that was in use (Postgres connects to one; MySQL switches with USE), and
+    /// the Postgres schema first in the search path: a connection may have been moved off the
+    /// ones it was saved with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
     pub tabs: Vec<SavedTab>,
     pub active: usize,
     /// Inner window size in points.
@@ -73,6 +80,8 @@ mod tests {
     fn round_trips_and_tolerates_garbage() {
         let s = Saved {
             conn: Some("abc".into()),
+            database: Some("b".into()),
+            schema: None,
             tabs: vec![
                 SavedTab::Sql {
                     text: "select 1".into(),

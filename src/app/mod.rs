@@ -1367,8 +1367,22 @@ impl App {
             .get(self.active)
             .and_then(|a| kept.iter().position(|(t, _)| t.id == a.id))
             .unwrap_or(0);
+        let in_use = |s: &Session| match s.cfg.kind {
+            Kind::Postgres => Some(s.cfg.database.clone()),
+            Kind::MySql => Some(s.current_db.clone()),
+            Kind::Sqlite => None,
+        };
+        let database = self.session.as_ref().and_then(in_use).filter(|d| !d.is_empty());
+        let schema = self
+            .session
+            .as_ref()
+            .filter(|s| s.cfg.kind == Kind::Postgres)
+            .map(|s| s.current_schema.clone())
+            .filter(|c| !c.is_empty());
         session::Saved {
             conn: self.session.as_ref().map(|s| s.cfg.id.clone()),
+            database,
+            schema,
             tabs: kept.into_iter().map(|(_, s)| s).collect(),
             active,
             window: self.window,
@@ -1377,6 +1391,15 @@ impl App {
     }
 
     fn restore_tabs(&mut self, saved: session::Saved) {
+        // Postgres reconnected to the database it was in (see `connect_saved_now`); the rest
+        // of the location is session state of the new connection. Before the tabs' queries.
+        if let Some(s) = &self.session {
+            match (s.cfg.kind, &saved.database, &saved.schema) {
+                (Kind::MySql, Some(db), _) if *db != s.current_db => s.send(Job::UseSchema(db.clone())),
+                (Kind::Postgres, _, Some(sc)) if sc != "public" => s.send(Job::UseSchema(sc.clone())),
+                _ => {}
+            }
+        }
         let count = saved.tabs.len();
         for t in saved.tabs {
             self.restore_tab(t);
@@ -1813,9 +1836,17 @@ impl App {
     }
 
     fn connect_saved_now(&mut self, id: &str) {
-        let Some(cfg) = self.find_saved(id).cloned() else {
+        let Some(mut cfg) = self.find_saved(id).cloned() else {
             return;
         };
+        // Resuming a session: the Postgres database it was in, not the one the connection was
+        // saved with. Once: if that fails, the next try uses the saved one.
+        if cfg.kind == Kind::Postgres
+            && let Some(r) = self.restore.as_mut().filter(|r| r.conn.as_deref() == Some(id))
+            && let Some(db) = r.database.take()
+        {
+            cfg.database = db;
+        }
         self.connect_cfg(cfg);
     }
 
@@ -4207,6 +4238,33 @@ mod poll_tests {
         assert!(app.session.is_none());
         assert!(app.notice.as_ref().is_some_and(|n| n.error));
         assert!(!app.tabs[0].busy(), "nothing stays stuck on Loading…");
+    }
+
+    /// Resuming a Postgres session goes back to the database it was in, once.
+    #[test]
+    fn a_resumed_postgres_session_returns_to_its_database() {
+        let (mut s, _jobs, _replies) = fake_session(Kind::Postgres);
+        s.cfg.database = "b".into();
+        let mut app = app_with(s);
+        let mut saved_cfg = ConnConfig::new(Kind::Postgres);
+        saved_cfg.id = "x".into();
+        saved_cfg.name = "x".into();
+        saved_cfg.database = "a".into();
+        app.saved = vec![saved_cfg];
+        let mut snap = app.snapshot();
+        assert_eq!(snap.database.as_deref(), Some("b"));
+        snap.conn = Some("x".into());
+        app.session = None;
+        app.restore = Some(snap);
+        app.connect_saved_now("x");
+        assert_eq!(app.session.as_ref().unwrap().cfg.database, "b");
+        assert!(app.restore.as_ref().unwrap().database.is_none(), "used once");
+        app.connect_saved_now("x");
+        assert_eq!(
+            app.session.as_ref().unwrap().cfg.database,
+            "a",
+            "then the saved one"
+        );
     }
 
     /// `--conn` with a name that isn't saved says so instead of connecting somewhere else.
