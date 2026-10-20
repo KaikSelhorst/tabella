@@ -34,7 +34,7 @@ fn any_result_event(
             tab.anchor = None;
             tab.detail_hidden = None;
             if let TabKind::Table(ts) = &mut tab.kind {
-                ts.bool_pick = None;
+                ts.option_pick = None;
             }
             None
         }
@@ -281,10 +281,13 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
             ts.page = 0;
             reload(tab, s);
         }
-        // Booleans open a true/false/NULL dropdown; nothing is written until a value is picked.
-        GridEvent::StartEdit(row, col) if kinds[col] == ValueKind::Bool => {
+        // Booleans open a true/false/NULL dropdown and ENUMs one with their values; nothing is
+        // written until a value is picked.
+        GridEvent::StartEdit(row, col)
+            if kinds[col] == ValueKind::Bool || !enum_values(&ts.cols, res, col).is_empty() =>
+        {
             tab.selected = Some((row, col));
-            ts.bool_pick = Some((row, col));
+            ts.option_pick = Some((row, col));
         }
         GridEvent::StartEdit(row, col) => {
             let text = res.rows[row][col].clone().unwrap_or_default();
@@ -299,11 +302,11 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
         }
         GridEvent::CancelEdit => {
             ts.edit = None;
-            ts.bool_pick = None;
+            ts.option_pick = None;
         }
         GridEvent::Commit(row, col, val) => {
             ts.edit = None;
-            ts.bool_pick = None;
+            ts.option_pick = None;
             if let Err(e) = set_cell(ts, res, &kinds, k, (row, col), val) {
                 tab.error = Some(e);
             }
@@ -453,4 +456,11 @@ fn paste(
     let selected =
         (rows > 0 && cols > 0).then(|| ((top, view[start]), (top + rows - 1, view[start + cols - 1])));
     Ok(Pasted { selected, skipped })
+}
+
+/// The values of the ENUM column shown in result column `col` (empty when it isn't one).
+pub fn enum_values<'a>(cols: &'a [ColumnInfo], res: &QueryResult, col: usize) -> &'a [String] {
+    cols.iter()
+        .find(|c| c.name == res.columns[col])
+        .map_or(&[], |c| &c.enum_values)
 }

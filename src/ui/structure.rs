@@ -335,6 +335,20 @@ fn value_editor(ui: &mut egui::Ui, f: &mut InsertField) {
                 }
             }
         });
+    } else if !f.enum_values.is_empty() {
+        let shown = if f.text.is_empty() {
+            "choose…"
+        } else {
+            f.text.as_str()
+        };
+        egui::ComboBox::from_id_salt(("enum_field", &f.name))
+            .selected_text(RichText::new(shown).monospace().size(12.5))
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                for v in &f.enum_values {
+                    ui.selectable_value(&mut f.text, v.clone(), RichText::new(v).monospace());
+                }
+            });
     } else {
         ui.add(
             TextEdit::singleline(&mut f.text)
@@ -357,6 +371,7 @@ mod tests {
                 references: None,
                 data_type: "text".into(),
                 kind: ValueKind::Text,
+                enum_values: Vec::new(),
                 nullable: true,
                 mode: if i % 3 == 0 {
                     FieldMode::Value

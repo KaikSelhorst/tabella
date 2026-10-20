@@ -253,9 +253,14 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                         {
                             action = Some(DetailAction::Open(ci));
                         }
-                        // Booleans have NULL inside their own selector below.
+                        // Booleans and ENUMs have NULL inside their own selector below.
                         let nullable = c.is_none_or(|c| c.nullable);
-                        if can_edit && nullable && value.is_some() && kinds[ci] != ValueKind::Bool {
+                        if can_edit
+                            && nullable
+                            && value.is_some()
+                            && kinds[ci] != ValueKind::Bool
+                            && c.is_none_or(|c| c.enum_values.is_empty())
+                        {
                             let null = egui::Button::new(RichText::new("NULL").size(10.0).color(t.subtle))
                                 .frame(false);
                             if ui.add(null).on_hover_text("Set NULL").clicked() {
@@ -321,6 +326,31 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                             }
                         }
                     });
+                } else if can_edit && let Some(c) = c.filter(|c| !c.enum_values.is_empty()) {
+                    // An ENUM: pick one of its values (NULL when the column allows it).
+                    let mut chosen: Option<Option<String>> = None;
+                    let shown = value.as_deref().unwrap_or("NULL");
+                    egui::ComboBox::from_id_salt(("enum", tab_id, row, ci))
+                        .selected_text(RichText::new(shown).monospace().size(12.0))
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for v in &c.enum_values {
+                                let on = value.as_deref() == Some(v.as_str());
+                                if ui.selectable_label(on, RichText::new(v).monospace()).clicked() && !on {
+                                    chosen = Some(Some(v.clone()));
+                                }
+                            }
+                            if c.nullable {
+                                let on = value.is_none();
+                                let null = RichText::new("NULL").monospace().italics().color(t.subtle);
+                                if ui.selectable_label(on, null).clicked() && !on {
+                                    chosen = Some(None);
+                                }
+                            }
+                        });
+                    if let Some(v) = chosen {
+                        action = Some(DetailAction::Commit(ci, v));
+                    }
                 } else if can_edit {
                     // The buffer is keyed by the current value, so it resets after the row is refreshed.
                     let id = egui::Id::new(("detail", tab_id, row, ci, value));

@@ -89,26 +89,55 @@ fn row_background(ui: &egui::Ui, table_rect: egui::Rect, t: &theme::Tokens) {
     }
 }
 
-/// Dropdown under a boolean cell to pick true / false / NULL. Writes nothing by itself:
+/// One line of an `option_picker`: the value it writes (`None` is NULL), its label and color.
+type PickOption = (Option<String>, String, egui::Color32);
+
+/// The lines of the picker of a boolean cell: true, false and, when the column allows it, NULL.
+fn bool_options(nullable: bool) -> Vec<PickOption> {
+    let t = theme::tokens();
+    let mut options = vec![
+        (Some("true".to_string()), "true".to_string(), t.boolean),
+        (Some("false".to_string()), "false".to_string(), t.foreground),
+    ];
+    if nullable {
+        options.push((None, "NULL".into(), t.subtle));
+    }
+    options
+}
+
+/// The lines of the picker of an ENUM cell: its values, in the type's order, and NULL when the
+/// column allows it.
+fn enum_options(values: &[String], nullable: bool) -> Vec<PickOption> {
+    let t = theme::tokens();
+    let mut options: Vec<PickOption> = values
+        .iter()
+        .map(|v| (Some(v.clone()), v.clone(), t.foreground))
+        .collect();
+    if nullable {
+        options.push((None, "NULL".into(), t.subtle));
+    }
+    options
+}
+
+/// Dropdown under a boolean or ENUM cell to pick one of `options`. Writes nothing by itself:
 /// returns `Commit` for the chosen value (or `CancelEdit` for Esc, a click outside, or the
 /// value the cell already has).
-fn bool_picker(
+fn option_picker(
     ui: &egui::Ui,
     key: (u64, usize, usize),
     cell: egui::Rect,
-    current: Option<bool>,
-    nullable: bool,
+    current: Option<&str>,
+    options: &[PickOption],
 ) -> Option<GridEvent> {
     let t = theme::tokens();
     let (_, ri, ci) = key;
-    let mut options: Vec<(Option<bool>, &str)> = vec![(Some(true), "true"), (Some(false), "false")];
-    if nullable {
-        options.push((None, "NULL"));
-    }
-    let hl_id = egui::Id::new(("bool_pick", key));
-    let mut hl: usize = ui
-        .data(|d| d.get_temp(hl_id))
-        .unwrap_or_else(|| options.iter().position(|(v, _)| *v == current).unwrap_or(0));
+    let hl_id = egui::Id::new(("option_pick", key));
+    let mut hl: usize = ui.data(|d| d.get_temp(hl_id)).unwrap_or_else(|| {
+        options
+            .iter()
+            .position(|(v, ..)| v.as_deref() == current)
+            .unwrap_or(0)
+    });
     let (up, down, enter, esc) = ui.ctx().input_mut(|i| {
         (
             i.consume_key(egui::Modifiers::NONE, Key::ArrowUp),
@@ -124,11 +153,11 @@ fn bool_picker(
         hl = (hl + 1).min(options.len() - 1);
     }
     let choose = |i: usize| {
-        let (v, _) = options[i];
-        if v == current {
+        let (v, ..) = &options[i];
+        if v.as_deref() == current {
             GridEvent::CancelEdit
         } else {
-            GridEvent::Commit(ri, ci, v.map(|b| b.to_string()))
+            GridEvent::Commit(ri, ci, v.clone())
         }
     };
     let mut event = if esc {
@@ -150,7 +179,7 @@ fn bool_picker(
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let width = cell.width().max(160.0);
-                    for (i, (v, label)) in options.iter().enumerate() {
+                    for (i, (v, label, color)) in options.iter().enumerate() {
                         let (rect, r) = ui.allocate_exact_size(egui::vec2(width, 24.0), Sense::click());
                         if r.hovered() {
                             hl = i;
@@ -162,7 +191,7 @@ fn bool_picker(
                         if i == hl {
                             p.rect_filled(rect, 0.0, t.selection);
                         }
-                        if *v == current {
+                        if v.as_deref() == current {
                             p.text(
                                 rect.left_center() + egui::vec2(8.0, 0.0),
                                 egui::Align2::LEFT_CENTER,
@@ -171,17 +200,12 @@ fn bool_picker(
                                 t.lime,
                             );
                         }
-                        let color = match v {
-                            Some(true) => t.boolean,
-                            Some(false) => t.foreground,
-                            None => t.subtle,
-                        };
                         p.text(
                             rect.left_center() + egui::vec2(28.0, 0.0),
                             egui::Align2::LEFT_CENTER,
                             label,
                             FontId::monospace(12.0),
-                            color,
+                            *color,
                         );
                     }
                     ui.add_space(4.0);
@@ -211,8 +235,8 @@ pub struct GridOpts<'a> {
     pub order: &'a Option<(String, bool)>,
     /// Index of the first shown row in the full table (page * page size).
     pub row_offset: usize,
-    /// Boolean cell with its value dropdown open.
-    pub bool_pick: Option<(usize, usize)>,
+    /// Boolean or ENUM cell with its value dropdown open.
+    pub option_pick: Option<(usize, usize)>,
     /// Kind of each column (computed once per frame by the caller).
     pub kinds: &'a [ValueKind],
     /// Cells with an unsaved edit, and rows marked for deletion.
@@ -267,7 +291,7 @@ pub fn grid(
         scroll_to,
         order,
         row_offset,
-        bool_pick,
+        option_pick,
         kinds,
         changed,
         deleted,
@@ -612,11 +636,21 @@ pub fn grid(
                                 r = r.on_hover_text(egui::RichText::new(v.as_str()).monospace());
                             }
                         }
-                        if bool_pick == Some((ri, ci)) {
-                            let current = val.as_deref().and_then(crate::sql::parse_bool);
+                        if option_pick == Some((ri, ci)) {
                             let nullable = info[ci].is_none_or(|c| c.nullable);
                             let cell = full_cell(ui);
-                            if let Some(e) = bool_picker(ui, (id, ri, ci), cell, current, nullable) {
+                            let (options, current) = match info[ci] {
+                                Some(c) if !c.enum_values.is_empty() => {
+                                    (enum_options(&c.enum_values, nullable), val.as_deref())
+                                }
+                                _ => (
+                                    bool_options(nullable),
+                                    val.as_deref()
+                                        .and_then(crate::sql::parse_bool)
+                                        .map(|b| if b { "true" } else { "false" }),
+                                ),
+                            };
+                            if let Some(e) = option_picker(ui, (id, ri, ci), cell, current, &options) {
                                 event = Some(e);
                             }
                         }
@@ -991,7 +1025,7 @@ mod tests {
                     scroll_to: None,
                     order: &None,
                     row_offset: 0,
-                    bool_pick: None,
+                    option_pick: None,
                     kinds: &[ValueKind::Number, ValueKind::Text],
                     changed: None,
                     deleted: None,
@@ -1029,7 +1063,7 @@ mod tests {
                     scroll_to: None,
                     order: &None,
                     row_offset: 0,
-                    bool_pick: None,
+                    option_pick: None,
                     kinds: &[ValueKind::Number, ValueKind::Text],
                     changed: None,
                     deleted: None,

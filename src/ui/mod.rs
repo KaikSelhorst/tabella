@@ -557,6 +557,7 @@ pub(crate) mod screenshots {
             entry("SELECT * FROM orders WHERE customer_id = 3", 600),
         ];
         let col = |name: &str, ty: &str, pk| ColumnInfo {
+            enum_values: Vec::new(),
             name: name.into(),
             data_type: ty.into(),
             pk,
@@ -1308,6 +1309,7 @@ pub(crate) mod screenshots {
             });
             let mut src = crate::app::TableState::new("public", "customers", None);
             let col = |name: &str, ty: &str, pk| ColumnInfo {
+                enum_values: Vec::new(),
                 name: name.into(),
                 data_type: ty.into(),
                 pk,
@@ -1722,7 +1724,7 @@ pub(crate) mod screenshots {
 
         harness.state_mut().active = 0;
         if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
-            ts.bool_pick = Some((2, 3));
+            ts.option_pick = Some((2, 3));
         }
         harness.run();
         let img = harness.render().unwrap();
@@ -1732,8 +1734,33 @@ pub(crate) mod screenshots {
             .save(format!("{dir}/boolpick-zoom.png"))
             .unwrap();
         if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
-            ts.bool_pick = None;
+            ts.option_pick = None;
         }
+        // An ENUM column: the picker with its values, and the combo in the detail panel.
+        if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
+            ts.cols[1].enum_values = [
+                "consumer",
+                "small_business",
+                "mid_market",
+                "enterprise",
+                "government",
+            ]
+            .map(String::from)
+            .to_vec();
+            ts.option_pick = Some((2, 1));
+        }
+        harness.state_mut().tabs[0].selected = Some((2, 1));
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/enumpick.png"))
+            .unwrap();
+        if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
+            ts.option_pick = None;
+            ts.cols[1].enum_values.clear();
+        }
+        harness.state_mut().tabs[0].selected = Some((2, 2));
         // Range selection with its totals.
         {
             let tab = &mut harness.state_mut().tabs[0];

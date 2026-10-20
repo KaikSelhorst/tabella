@@ -369,6 +369,8 @@ pub struct ColumnInfo {
     pub has_default: bool,
     /// The row this column points to, for single-column foreign keys.
     pub references: Option<FkRef>,
+    /// The allowed values of an ENUM column, in the type's order (empty for any other column).
+    pub enum_values: Vec<String>,
 }
 
 /// Outcome of `Conn::server_info`.
@@ -955,6 +957,53 @@ mod tests {
         assert!(!cols[0].nullable && cols[1].nullable, "{cols:?}");
         assert!(!cols[0].has_default && !cols[1].has_default, "{cols:?}");
         c.query("DROP TABLE dbl_b").unwrap();
+
+        // ENUM columns: their values come with the columns (arrays and SETs of them don't), and
+        // a value with a quote or a comma goes in and out unchanged.
+        c.query("DROP TABLE IF EXISTS dbl_e").unwrap();
+        let ddl = match kind {
+            Kind::Postgres => {
+                c.query("DROP TYPE IF EXISTS dbl_mood").unwrap();
+                c.query("CREATE TYPE dbl_mood AS ENUM ('sad', 'it''s ok', 'happy, really')")
+                    .unwrap();
+                "CREATE TABLE dbl_e (id INT PRIMARY KEY, mood dbl_mood, moods dbl_mood[], note text)"
+            }
+            _ => {
+                "CREATE TABLE dbl_e (id INT PRIMARY KEY, mood ENUM('sad', 'it''s ok', 'happy, really'), \
+                 moods SET('a', 'b'), note text)"
+            }
+        };
+        c.query(ddl).unwrap();
+        c.query("INSERT INTO dbl_e (id) VALUES (1)").unwrap();
+        let cols = c.columns(s, "dbl_e").unwrap();
+        assert_eq!(
+            cols[1].enum_values,
+            ["sad", "it's ok", "happy, really"],
+            "{kind:?}: {cols:?}"
+        );
+        assert!(cols[0].enum_values.is_empty() && cols[2].enum_values.is_empty());
+        assert!(cols[3].enum_values.is_empty());
+        for v in &cols[1].enum_values {
+            let wh = crate::sql::Stmt::new("id = 1");
+            c.execute(&crate::sql::update_cell(kind, s, "dbl_e", "mood", Some(v), wh))
+                .unwrap();
+            let r = c.query("SELECT mood FROM dbl_e").unwrap();
+            assert_eq!(r.rows[0][0].as_deref(), Some(v.as_str()), "{kind:?}");
+        }
+        if kind == Kind::Postgres {
+            // The real type names, not information_schema's "USER-DEFINED" / "ARRAY".
+            assert_eq!(cols[1].data_type, "dbl_mood");
+            assert_eq!(cols[2].data_type, "dbl_mood[]");
+            c.query("CREATE EXTENSION IF NOT EXISTS citext").unwrap();
+            c.query("ALTER TABLE dbl_e ADD COLUMN email citext").unwrap();
+            let cols = c.columns(s, "dbl_e").unwrap();
+            assert_eq!(cols[4].data_type, "citext");
+            assert!(cols[4].enum_values.is_empty());
+        }
+        c.query("DROP TABLE dbl_e").unwrap();
+        if kind == Kind::Postgres {
+            c.query("DROP TYPE dbl_mood").unwrap();
+        }
 
         // Generated statements must store tricky values verbatim, even with the server settings
         // that break naive escaping.

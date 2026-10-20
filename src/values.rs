@@ -21,6 +21,10 @@ pub fn value_kind<'a>(data_type: Option<&str>, samples: impl Iterator<Item = Opt
         if ty.starts_with("bool") || ty == "tinyint(1)" {
             return ValueKind::Bool;
         }
+        // Arrays are text like `{1,2}`, whatever their elements are.
+        if ty.ends_with("[]") || ty == "array" {
+            return ValueKind::Text;
+        }
         if [
             "int", "numeric", "decimal", "float", "double", "real", "serial", "money",
         ]
@@ -60,6 +64,10 @@ pub fn column_kinds(res: &QueryResult, cols: &[ColumnInfo]) -> Vec<ValueKind> {
     let sample = &res.rows[..res.rows.len().min(SAMPLE_ROWS)];
     (0..res.columns.len())
         .map(|ci| {
+            // An enum's type name says nothing about its values (`time_off_status` isn't a time).
+            if info[ci].is_some_and(|c| !c.enum_values.is_empty()) {
+                return ValueKind::Text;
+            }
             value_kind(
                 info[ci].map(|c| c.data_type.as_str()),
                 sample.iter().map(|r| r[ci].as_deref()),
@@ -698,6 +706,8 @@ mod tests {
             ValueKind::Date
         );
         assert_eq!(value_kind(Some("boolean"), std::iter::empty()), ValueKind::Bool);
+        // Arrays of numbers aren't numbers.
+        assert_eq!(value_kind(Some("int4[]"), std::iter::empty()), ValueKind::Text);
         assert_eq!(value_kind(Some("text"), std::iter::empty()), ValueKind::Text);
         assert_eq!(
             value_kind(None, [Some("1"), None, Some("2.5")].into_iter()),
@@ -722,6 +732,7 @@ mod tests {
         };
         let cols = [
             ColumnInfo {
+                enum_values: Vec::new(),
                 name: "id".into(),
                 data_type: "integer".into(),
                 pk: true,
@@ -730,6 +741,7 @@ mod tests {
                 references: None,
             },
             ColumnInfo {
+                enum_values: Vec::new(),
                 name: "active".into(),
                 data_type: "boolean".into(),
                 pk: false,
@@ -738,6 +750,7 @@ mod tests {
                 references: None,
             },
             ColumnInfo {
+                enum_values: Vec::new(),
                 name: "name".into(),
                 data_type: "text".into(),
                 pk: false,

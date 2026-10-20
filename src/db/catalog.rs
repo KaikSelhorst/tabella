@@ -51,7 +51,7 @@ impl Conn {
         };
         let sql = match self {
             Conn::Pg(_) => format!(
-                "SELECT c.table_schema, c.table_name, c.column_name, c.data_type, \
+                "SELECT c.table_schema, c.table_name, c.column_name, CASE c.data_type WHEN 'USER-DEFINED' THEN c.udt_name WHEN 'ARRAY' THEN substr(c.udt_name, 2) || '[]' ELSE c.data_type END, \
                  CASE WHEN pk.col IS NULL THEN '0' ELSE '1' END \
                  FROM information_schema.columns c \
                  LEFT JOIN (SELECT n.nspname AS s, cl.relname AS t, a.attname AS col \
@@ -85,11 +85,13 @@ impl Conn {
             .collect()
     }
 
+    /// Postgres reports `USER-DEFINED` (enums, citext…) and `ARRAY` as `data_type`: the real name
+    /// is in `udt_name`.
     pub fn columns(&mut self, schema: &str, table: &str) -> DbResult<Vec<ColumnInfo>> {
         let stmt = match self.kind() {
             Kind::Sqlite => return self.column_rows(crate::sqlite::columns(table)),
             Kind::Postgres => Stmt::new(
-                "SELECT c.column_name, c.data_type, EXISTS (\
+                "SELECT c.column_name, CASE c.data_type WHEN 'USER-DEFINED' THEN c.udt_name WHEN 'ARRAY' THEN substr(c.udt_name, 2) || '[]' ELSE c.data_type END, EXISTS (\
                    SELECT 1 FROM information_schema.table_constraints tc \
                    JOIN information_schema.key_column_usage u \
                      USING (constraint_schema, constraint_name, table_schema, table_name) \
@@ -114,7 +116,37 @@ impl Conn {
             .sql(table_col)
             .value(Some(table))
             .sql(order);
-        self.column_rows(stmt)
+        let mut cols = self.column_rows(stmt)?;
+        if self.kind() == Kind::Postgres {
+            self.fill_enum_values(schema, table, &mut cols)?;
+        }
+        Ok(cols)
+    }
+
+    /// Fills `enum_values` of the columns whose type is a Postgres enum (not arrays or domains
+    /// of one: those are written as text).
+    fn fill_enum_values(&mut self, schema: &str, table: &str, cols: &mut [ColumnInfo]) -> DbResult<()> {
+        let stmt = Stmt::new(
+            "SELECT a.attname, json_agg(e.enumlabel ORDER BY e.enumsortorder)::text \
+             FROM pg_attribute a \
+             JOIN pg_class c ON c.oid = a.attrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_enum e ON e.enumtypid = a.atttypid \
+             WHERE a.attnum > 0 AND NOT a.attisdropped AND n.nspname = ",
+        )
+        .value(Some(schema))
+        .sql(" AND c.relname = ")
+        .value(Some(table))
+        .sql(" GROUP BY a.attname");
+        for row in self.execute(&stmt)?.rows {
+            let [name, labels] = cells(row)?;
+            let labels: Vec<String> = serde_json::from_str(&labels)
+                .map_err(|e| DbError::Other(format!("unreadable enum values of {name}: {e}")))?;
+            if let Some(c) = cols.iter_mut().find(|c| c.name == name) {
+                c.enum_values = labels;
+            }
+        }
+        Ok(())
     }
 
     /// `(name, type, pk, nullable YES/NO, has default)` rows as columns.
@@ -126,6 +158,7 @@ impl Conn {
                 let [name, data_type, pk, nullable, has_default] = cells(row)?;
                 let yes = |v: &str| matches!(v, "t" | "1" | "true");
                 Ok(ColumnInfo {
+                    enum_values: parse_mysql_enum(&data_type),
                     name,
                     data_type,
                     pk: yes(&pk),
@@ -493,5 +526,62 @@ impl Conn {
                 })
             })
             .collect()
+    }
+}
+
+/// The values of a MySQL `enum('a','b')` column type (`''` is a quote inside a value); empty for
+/// any other type, or one that doesn't parse.
+pub(super) fn parse_mysql_enum(ty: &str) -> Vec<String> {
+    let Some(rest) = ty
+        .get(..5)
+        .filter(|p| p.eq_ignore_ascii_case("enum("))
+        .map(|_| &ty[5..])
+    else {
+        return Vec::new();
+    };
+    let mut values = Vec::new();
+    let mut chars = rest.chars().peekable();
+    loop {
+        if chars.next() != Some('\'') {
+            return Vec::new();
+        }
+        let mut value = String::new();
+        loop {
+            match chars.next() {
+                Some('\'') if chars.peek() == Some(&'\'') => {
+                    chars.next();
+                    value.push('\'');
+                }
+                Some('\'') => break,
+                Some('\\') => value.extend(chars.next()),
+                Some(c) => value.push(c),
+                None => return Vec::new(),
+            }
+        }
+        values.push(value);
+        match chars.next() {
+            Some(',') => {}
+            Some(')') => return values,
+            _ => return Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mysql_enum;
+
+    #[test]
+    fn mysql_enum_types_give_their_values() {
+        assert_eq!(parse_mysql_enum("enum('a','b','c')"), ["a", "b", "c"]);
+        assert_eq!(parse_mysql_enum("ENUM('x')"), ["x"]);
+        // Commas, parentheses and doubled quotes live inside values.
+        assert_eq!(
+            parse_mysql_enum("enum('a,b','c)','it''s','')"),
+            ["a,b", "c)", "it's", ""]
+        );
+        for not_enum in ["varchar(20)", "set('a','b')", "int", "enum('a'", "enum(a)", ""] {
+            assert!(parse_mysql_enum(not_enum).is_empty(), "{not_enum}");
+        }
     }
 }

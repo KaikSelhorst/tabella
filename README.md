@@ -63,6 +63,9 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
   the row
 - Activity monitor with three views: sessions, locks (who blocks whom) and slow queries
   (`pg_stat_statements` / `performance_schema`), with "Reset statistics"
+- ENUM columns (PostgreSQL and MySQL): double-click opens a list of the type's values (and NULL when
+  allowed) instead of a text box; the row detail panel and the new-row form use a drop-down. Pasted
+  or typed values that aren't in the type are refused before saving
 - Quick chart of the editor's result: bars or line, value on hover
 - The result of a simple single-table SELECT (with the primary key in the SELECT) is editable in
   the editor itself: double-click, paste, delete, `Ctrl+S` saves and the query runs again

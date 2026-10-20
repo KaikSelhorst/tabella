@@ -290,6 +290,7 @@ mod tests {
         let res = result();
         let cols = [
             ColumnInfo {
+                enum_values: Vec::new(),
                 name: "id".into(),
                 data_type: "integer".into(),
                 pk: true,
@@ -298,6 +299,7 @@ mod tests {
                 references: None,
             },
             ColumnInfo {
+                enum_values: Vec::new(),
                 name: "name".into(),
                 data_type: "text".into(),
                 pk: false,
@@ -306,6 +308,7 @@ mod tests {
                 references: None,
             },
             ColumnInfo {
+                enum_values: Vec::new(),
                 name: "ok".into(),
                 data_type: "boolean".into(),
                 pk: false,

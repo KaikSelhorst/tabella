@@ -276,30 +276,30 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         TabKind::Table(ts) => ts.value_conds.iter().map(|v| v.column.clone()).collect(),
         _ => Vec::new(),
     };
-    let (cols, edit, order, bool_pick, row_offset, has_pk, incoming) = match app::editable_mut(&mut tab.kind)
-    {
-        Some(ts) => {
-            // Rows are addressed by their key: every key column must be in the result.
-            let pk = ts.pk_names();
-            let has_pk = !pk.is_empty() && pk.iter().all(|p| res.columns.contains(p));
-            (
-                &ts.cols,
-                ts.edit.as_mut(),
-                ts.order.clone(),
-                ts.bool_pick,
-                if table_tab { ts.page * page_size() } else { 0 },
-                has_pk,
-                &ts.incoming,
-            )
-        }
-        None => (&no_cols, None, None, None, 0, false, &no_incoming),
-    };
+    let (cols, edit, order, option_pick, row_offset, has_pk, incoming) =
+        match app::editable_mut(&mut tab.kind) {
+            Some(ts) => {
+                // Rows are addressed by their key: every key column must be in the result.
+                let pk = ts.pk_names();
+                let has_pk = !pk.is_empty() && pk.iter().all(|p| res.columns.contains(p));
+                (
+                    &ts.cols,
+                    ts.edit.as_mut(),
+                    ts.order.clone(),
+                    ts.option_pick,
+                    if table_tab { ts.page * page_size() } else { 0 },
+                    has_pk,
+                    &ts.incoming,
+                )
+            }
+            None => (&no_cols, None, None, None, 0, false, &no_incoming),
+        };
     let can_edit = has_pk && !s.cfg.read_only;
     let kinds = values::column_kinds(res, cols);
     let selected = tab
         .selected
         .filter(|(r, c)| *r < res.rows.len() && *c < res.columns.len());
-    let editing = edit.is_some() || bool_pick.is_some();
+    let editing = edit.is_some() || option_pick.is_some();
 
     // Row detail on the right, for the selected row.
     let mut detail_event = None;
@@ -396,7 +396,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         scroll_to,
         order: &order,
         row_offset,
-        bool_pick,
+        option_pick,
         kinds: &kinds,
         changed: overlay.as_ref().map(|o| &o.changed),
         deleted: overlay.as_ref().map(|o| &o.deleted),

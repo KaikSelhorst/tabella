@@ -141,7 +141,7 @@ pub struct TableState {
     /// The "save these changes?" summary is open.
     pub confirm_save: bool,
     /// Boolean cell whose true/false/NULL dropdown is open.
-    pub bool_pick: Option<(usize, usize)>,
+    pub option_pick: Option<(usize, usize)>,
     /// The "new row" form, while open.
     pub insert: Option<Vec<InsertField>>,
     /// The CSV import dialog, while open.
@@ -240,7 +240,7 @@ impl TableState {
             counted_filter: None,
             changes: Vec::new(),
             confirm_save: false,
-            bool_pick: None,
+            option_pick: None,
             insert: None,
             import: None,
             value_filter: None,
@@ -613,6 +613,8 @@ pub struct InsertField {
     pub references: Option<crate::db::FkRef>,
     pub data_type: String,
     pub kind: ValueKind,
+    /// The allowed values when the column is an ENUM.
+    pub enum_values: Vec<String>,
     pub nullable: bool,
     pub mode: FieldMode,
     pub text: String,
@@ -2438,6 +2440,7 @@ pub fn open_insert_form(tab: &mut Tab) {
                 references: c.references.clone(),
                 data_type: c.data_type.clone(),
                 kind,
+                enum_values: c.enum_values.clone(),
                 nullable: c.nullable,
                 mode: if c.has_default {
                     FieldMode::Default
@@ -2503,6 +2506,16 @@ pub fn submit_insert(tab: &mut Tab, s: &Session) {
                     return;
                 }
             },
+            FieldMode::Value if !f.enum_values.is_empty() => {
+                match enum_value(k, &f.name, &f.enum_values, f.text.clone()) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tab.error = Some(e);
+                        ts.insert = Some(fields);
+                        return;
+                    }
+                }
+            }
             FieldMode::Value => Some(f.text.clone()),
         };
         values.push((f.name.clone(), v));
@@ -3172,6 +3185,26 @@ pub fn explain(tab: &mut Tab, s: &Session, sql: &str, analyze: bool) {
     });
 }
 
+/// An ENUM column only takes one of its values: the server would refuse anything else only when
+/// saving, so a typo or a pasted value is caught here instead. MySQL compares enum values
+/// ignoring case, so it gets the spelling the type declares.
+fn enum_value(k: Kind, column: &str, values: &[String], v: String) -> Result<String, String> {
+    let found = values
+        .iter()
+        .find(|e| **e == v || (k == Kind::MySql && e.eq_ignore_ascii_case(&v)));
+    match found {
+        Some(e) => Ok(e.clone()),
+        None => {
+            let list: Vec<&str> = values.iter().take(8).map(String::as_str).collect();
+            let more = if values.len() > 8 { ", …" } else { "" };
+            Err(format!(
+                "\"{v}\" is not a value of {column}: {}{more}",
+                list.join(", ")
+            ))
+        }
+    }
+}
+
 /// Records a new value for a cell as a pending change (saved together with Ctrl+S). Typed
 /// booleans ("true", "yes", "0"...) are normalized for the engine.
 fn set_cell(
@@ -3194,6 +3227,10 @@ fn set_cell(
             None => return Err(format!("\"{v}\" is not a boolean (use true or false)")),
         },
         (_, v) => v,
+    };
+    let val = match (val, ts.cols.iter().find(|c| c.name == res.columns[col])) {
+        (Some(v), Some(c)) if !c.enum_values.is_empty() => Some(enum_value(k, &c.name, &c.enum_values, v)?),
+        (v, _) => v,
     };
     let key = ts.row_key(res, row);
     let col_name = res.columns[col].clone();
@@ -3316,6 +3353,7 @@ pub mod tests {
 
     pub(super) fn table_tab() -> Tab {
         let col = |name: &str, ty: &str, pk| ColumnInfo {
+            enum_values: Vec::new(),
             name: name.into(),
             data_type: ty.into(),
             pk,
@@ -3336,6 +3374,103 @@ pub mod tests {
             ..Default::default()
         });
         tab
+    }
+
+    fn enum_tab() -> Tab {
+        let mut tab = table_tab();
+        if let TabKind::Table(ts) = &mut tab.kind {
+            ts.cols[2].enum_values = ["pending", "shipped", "It's done"].map(String::from).to_vec();
+        }
+        tab
+    }
+
+    #[test]
+    fn enums_open_a_picker_and_only_take_their_values() {
+        let (s, jobs, _replies) = fake_session(Kind::Postgres);
+        let mut tab = enum_tab();
+        handle_grid_event(&mut tab, &s, GridEvent::StartEdit(0, 2), true);
+        assert!(
+            matches!(&tab.kind, TabKind::Table(ts) if ts.option_pick == Some((0, 2)) && ts.edit.is_none())
+        );
+        assert!(jobs.try_recv().is_err(), "opening the picker writes nothing");
+        handle_grid_event(
+            &mut tab,
+            &s,
+            GridEvent::Commit(0, 2, Some("It's done".into())),
+            true,
+        );
+        assert!(tab.error.is_none());
+        save_changes(&mut tab, &s);
+        let Ok(Job::Batch { stmts, .. }) = jobs.try_recv() else {
+            panic!()
+        };
+        assert_eq!(
+            stmts[0].render(Kind::Postgres),
+            "UPDATE \"public\".\"t\" SET \"name\" = 'It''s done' WHERE \"id\" = '7'"
+        );
+        // Anything else is refused before it reaches the server, with the values to choose from.
+        let mut tab = enum_tab();
+        handle_grid_event(
+            &mut tab,
+            &s,
+            GridEvent::Commit(0, 2, Some("Shipped".into())),
+            true,
+        );
+        let error = tab.error.clone().unwrap();
+        assert!(
+            error.contains("\"Shipped\" is not a value of name: pending, shipped"),
+            "{error}"
+        );
+        let TabKind::Table(ts) = &tab.kind else { panic!() };
+        assert!(ts.changes.is_empty());
+        // NULL is always allowed for a nullable column.
+        handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 2, None), true);
+        let TabKind::Table(ts) = &tab.kind else { panic!() };
+        assert_eq!(ts.changes.len(), 1);
+    }
+
+    #[test]
+    fn mysql_enums_compare_ignoring_case_and_take_the_declared_spelling() {
+        let (s, jobs, _replies) = fake_session(Kind::MySql);
+        let mut tab = enum_tab();
+        handle_grid_event(
+            &mut tab,
+            &s,
+            GridEvent::Commit(0, 2, Some("SHIPPED".into())),
+            true,
+        );
+        assert!(tab.error.is_none());
+        save_changes(&mut tab, &s);
+        let Ok(Job::Batch { stmts, .. }) = jobs.try_recv() else {
+            panic!()
+        };
+        assert_eq!(stmts[0].with_placeholders().1[0], "shipped");
+    }
+
+    #[test]
+    fn the_insert_form_checks_enum_values_too() {
+        let (s, jobs, _replies) = fake_session(Kind::Postgres);
+        let mut tab = enum_tab();
+        open_insert_form(&mut tab);
+        let TabKind::Table(ts) = &mut tab.kind else {
+            panic!()
+        };
+        let fields = ts.insert.as_mut().unwrap();
+        assert_eq!(fields[2].enum_values.len(), 3);
+        fields[0].mode = FieldMode::Default;
+        fields[1].mode = FieldMode::Default;
+        fields[2].mode = FieldMode::Value;
+        fields[2].text = "nope".into();
+        submit_insert(&mut tab, &s);
+        assert!(tab.error.is_some());
+        assert!(jobs.try_recv().is_err());
+        let TabKind::Table(ts) = &mut tab.kind else {
+            panic!()
+        };
+        assert!(ts.insert.is_some(), "the form stays open to fix the value");
+        ts.insert.as_mut().unwrap()[2].text = "pending".into();
+        submit_insert(&mut tab, &s);
+        assert!(jobs.try_recv().is_ok());
     }
 
     #[test]
@@ -3365,7 +3500,7 @@ pub mod tests {
         let (s, jobs, _replies) = fake_session(Kind::MySql);
         let mut tab = table_tab();
         handle_grid_event(&mut tab, &s, GridEvent::StartEdit(0, 1), true);
-        assert!(matches!(&tab.kind, TabKind::Table(ts) if ts.bool_pick == Some((0, 1))));
+        assert!(matches!(&tab.kind, TabKind::Table(ts) if ts.option_pick == Some((0, 1))));
         assert!(jobs.try_recv().is_err(), "opening the picker writes nothing");
         handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 1, Some("true".into())), true);
         save_changes(&mut tab, &s);
@@ -3790,6 +3925,7 @@ mod poll_tests {
         let mut tab = super::tests::table_tab();
         if let TabKind::Table(ts) = &mut tab.kind {
             ts.cols.push(ColumnInfo {
+                enum_values: Vec::new(),
                 name: "data".into(),
                 data_type: "jsonb".into(),
                 pk: false,
@@ -3863,6 +3999,7 @@ mod poll_tests {
         if let TabKind::Table(ts) = &mut app.tabs[0].kind {
             ts.cols = vec![
                 ColumnInfo {
+                    enum_values: Vec::new(),
                     name: "id".into(),
                     data_type: "integer".into(),
                     pk: true,
@@ -3871,6 +4008,7 @@ mod poll_tests {
                     references: None,
                 },
                 ColumnInfo {
+                    enum_values: Vec::new(),
                     name: "customer_id".into(),
                     data_type: "integer".into(),
                     pk: false,
@@ -3879,6 +4017,7 @@ mod poll_tests {
                     references: Some(fk("customers")),
                 },
                 ColumnInfo {
+                    enum_values: Vec::new(),
                     name: "status_id".into(),
                     data_type: "integer".into(),
                     pk: false,
@@ -3974,6 +4113,7 @@ mod poll_tests {
     fn overlay_cache_never_shows_stale_edits() {
         let mut ts = TableState::new("public", "t", None);
         ts.cols = vec![ColumnInfo {
+            enum_values: Vec::new(),
             name: "id".into(),
             data_type: "integer".into(),
             pk: true,
@@ -4082,6 +4222,7 @@ mod poll_tests {
         let asked = jobs.try_iter().any(|j| matches!(j, Job::Columns { ref schema, ref table, .. } if schema == "public" && table == "customers"));
         assert!(asked);
         let col = |name: &str, pk| ColumnInfo {
+            enum_values: Vec::new(),
             name: name.into(),
             data_type: "text".into(),
             pk,

@@ -71,6 +71,7 @@ fn big_result(rows: usize, cols: usize) -> (QueryResult, Vec<ColumnInfo>) {
         .iter()
         .enumerate()
         .map(|(i, n)| ColumnInfo {
+            enum_values: Vec::new(),
             name: n.clone(),
             data_type: if i % 3 == 0 {
                 "numeric".into()
