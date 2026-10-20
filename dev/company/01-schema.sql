@@ -451,6 +451,7 @@ CREATE TABLE finance.budgets (
 -- ---------------------------------------------------------------- support
 
 CREATE TYPE support.priority AS ENUM ('low', 'normal', 'high', 'urgent');
+CREATE TYPE support.contact_channel AS ENUM ('email', 'phone', 'chat', 'web_form', 'social');
 CREATE TYPE support.ticket_status AS ENUM ('open', 'in_progress', 'waiting_on_customer', 'resolved', 'closed');
 
 CREATE TABLE support.sla_policies (
@@ -467,7 +468,7 @@ CREATE TABLE support.tickets (
     subject      text NOT NULL,
     priority     support.priority NOT NULL DEFAULT 'normal',
     status       support.ticket_status NOT NULL DEFAULT 'open',
-    channel      text NOT NULL CHECK (channel IN ('email', 'phone', 'chat', 'web_form', 'social')),
+    channel      support.contact_channel NOT NULL,
     satisfaction smallint CHECK (satisfaction BETWEEN 1 AND 5),
     opened_at    timestamptz NOT NULL,
     first_response_at timestamptz,
@@ -488,10 +489,15 @@ CREATE INDEX ticket_comments_ticket ON support.ticket_comments (ticket_id);
 
 -- ---------------------------------------------------------------- marketing
 
+CREATE TYPE marketing.campaign_channel AS ENUM ('email', 'search', 'social', 'display', 'tv', 'events', 'affiliate');
+CREATE TYPE marketing.lead_status AS ENUM ('new', 'contacted', 'qualified', 'converted', 'lost');
+-- Labels with spaces, a comma and an apostrophe, to see how such values show up and save.
+CREATE TYPE marketing.lead_source AS ENUM ('Search ads', 'Trade show', 'Partner''s referral', 'Webinar, live', 'Word of mouth');
+
 CREATE TABLE marketing.campaigns (
     id          integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name        text NOT NULL,
-    channel     text NOT NULL CHECK (channel IN ('email', 'search', 'social', 'display', 'tv', 'events', 'affiliate')),
+    channel     marketing.campaign_channel NOT NULL,
     region      core.region,
     budget_usd  numeric(14, 2) NOT NULL,
     starts_on   date NOT NULL,
@@ -517,7 +523,8 @@ CREATE TABLE marketing.leads (
     job_title   text,
     country_code char(2) REFERENCES core.countries,
     score       smallint NOT NULL CHECK (score BETWEEN 0 AND 100),
-    status      text NOT NULL CHECK (status IN ('new', 'contacted', 'qualified', 'converted', 'lost')),
+    status      marketing.lead_status NOT NULL,
+    source      marketing.lead_source,
     converted_customer_id integer REFERENCES sales.customers,
     created_at  timestamptz NOT NULL
 );

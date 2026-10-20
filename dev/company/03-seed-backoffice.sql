@@ -288,7 +288,7 @@ INSERT INTO support.tickets (customer_id, order_id, assignee_id, subject, priori
                              opened_at, first_response_at, resolved_at)
 SELECT x.customer_id, x.order_id, CASE WHEN st.status <> 'open' OR random() < 0.5 THEN seed.pick(ag.a) END,
        x.subject, pr.priority, st.status,
-       seed.pick(array['email','email','chat','chat','chat','phone','web_form','social']),
+       seed.pick(array['email','email','chat','chat','chat','phone','web_form','social'])::support.contact_channel,
        CASE WHEN st.status IN ('resolved', 'closed') AND random() < 0.55
             THEN (array[1, 2, 3, 4, 4, 5, 5, 5, 5])[seed.rint(1, 9)] END,
        x.opened_at,
@@ -360,7 +360,7 @@ SELECT extract(year FROM s.starts_on) || ' Q' || extract(quarter FROM s.starts_o
                               'New Arrivals','Home Office Upgrade','Fitness Kickoff','Loyalty Rewards','Brand Awareness',
                               'B2B Procurement Week','Clearance Event','App Download Push','Northstar Basics Launch'])
            || ' - ' || CASE ch.channel WHEN 'tv' THEN 'TV' ELSE initcap(ch.channel) END || coalesce(' - ' || r.region::text, ''),
-       ch.channel, r.region,
+       ch.channel::marketing.campaign_channel, r.region,
        round((5000 + power(random(), 2) * 1500000)::numeric, -2),
        s.starts_on, s.starts_on + seed.rint(7, 90), seed.pick(m.a)
 FROM generate_series(1, 800) g
@@ -381,7 +381,7 @@ CROSS JOIN LATERAL (SELECT round(c.budget_usd / (c.ends_on - c.starts_on + 1) * 
 CROSS JOIN LATERAL (SELECT sp.spend, imp AS impressions, floor(imp * (0.003 + random() * 0.022))::int AS clicks
                     FROM (SELECT floor(sp.spend::float8 * (40 + random() * 85))::int AS imp) x) s;
 
-INSERT INTO marketing.leads (campaign_id, email, company, job_title, country_code, score, status, converted_customer_id, created_at)
+INSERT INTO marketing.leads (campaign_id, email, company, job_title, country_code, score, status, source, converted_customer_id, created_at)
 SELECT c.id,
        lower(regexp_replace(seed.pick((SELECT a FROM seed.first_names)), '[^A-Za-z]', '', 'g')) || '.'
            || lower(regexp_replace(seed.pick((SELECT a FROM seed.last_names)), '[^A-Za-z]', '', 'g'))
@@ -392,7 +392,9 @@ SELECT c.id,
        seed.pick(array['Procurement Manager','Office Manager','IT Director','Operations Lead','Purchasing Agent',
                        'CFO','Facilities Coordinator','Student','Small Business Owner', NULL]),
        seed.pick((SELECT a FROM seed.country_pool)),
-       sc.score, st.status,
+       sc.score, st.status::marketing.lead_status,
+       -- Unknown for about a fifth of the leads.
+       CASE WHEN random() < 0.8 THEN (enum_range(NULL::marketing.lead_source))[seed.rint(1, 5)] END,
        CASE WHEN st.status = 'converted' THEN seed.rint(1, 300000) END,
        c.starts_on + random() * (least(c.ends_on, date '2026-10-14') - c.starts_on) * interval '1 day'
 FROM generate_series(1, 350000) g
