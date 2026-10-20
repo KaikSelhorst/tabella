@@ -101,6 +101,9 @@ pub(super) enum TabAction {
     /// Close the others (`true`: only those to the right).
     CloseOthers(usize, bool),
     Reopen,
+    /// Split right: the tab goes to the other pane (a SQL tab is copied there).
+    Split(usize),
+    CloseSplit,
 }
 
 pub(super) enum Request {
@@ -134,27 +137,72 @@ impl App {
             self.welcome(ui);
             return;
         }
+        self.sync_split();
+        let request = if self.split.is_some() {
+            self.split_panes(ui)
+        } else {
+            if !self.tab_strip(ui, None) {
+                return;
+            }
+            self.sync_split();
+            let (Some(s), Some(tab)) = (&self.session, self.tabs.get_mut(self.active)) else {
+                return;
+            };
+            let mut cx = Cx {
+                s,
+                show_detail: &mut self.show_detail,
+                history: &self.history,
+                favorites: &self.favorites,
+                filters: &self.filters,
+                saved: &self.saved,
+                request: None,
+            };
+            tab_body(ui, tab, &mut cx);
+            cx.request
+        };
+        self.handle_request(request);
+    }
+
+    /// One pane's tab strip (`None`: the only one) and what was chosen in it. `false`: a tab was
+    /// closed, so the rest of the frame is skipped.
+    fn tab_strip(&mut self, ui: &mut egui::Ui, side: Option<bool>) -> bool {
         let t = theme::tokens();
         let mut close = None;
         let mut action: Option<TabAction> = None;
+        let mut dropped: Option<u64> = None;
+        let tag = side.map_or(2u8, u8::from);
+        // The tab this strip shows as selected, and whether the pane has the focus.
+        let sel = match side {
+            None => Some(self.active),
+            Some(r) => self
+                .split
+                .as_ref()
+                .and_then(|sp| self.tabs.iter().position(|t| t.id == sp.shown[usize::from(r)])),
+        };
+        let focused = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| side.is_none_or(|r| t.right == r));
         let strip = egui::Frame::new()
             .fill(t.sidebar)
             .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 ui.set_height(32.0);
+                // The whole width of the pane is the drop zone for a dragged tab.
+                ui.set_width(ui.available_width());
                 // More tabs than fit: the strip scrolls (the wheel too), follows the active tab,
                 // and a list at the end reaches any of them.
-                let overflow_id = egui::Id::new("tab_strip_overflow");
+                let overflow_id = egui::Id::new(("tab_strip_overflow", tag));
                 let overflowed = ui.data(|d| d.get_temp::<bool>(overflow_id)).unwrap_or(false);
-                let follow_id = egui::Id::new("tab_strip_active");
-                let active_id = self.tabs.get(self.active).map(|t| t.id);
+                let follow_id = egui::Id::new(("tab_strip_active", tag));
+                let active_id = sel.and_then(|i| self.tabs.get(i)).map(|t| t.id);
                 let follow = ui.data(|d| d.get_temp::<Option<u64>>(follow_id)) != Some(active_id);
                 ui.data_mut(|d| d.insert_temp(follow_id, active_id));
                 let mut pick: Option<usize> = None;
                 ui.horizontal_centered(|ui| {
                     let list_width = if overflowed { 32.0 } else { 0.0 };
                     let scroll = egui::ScrollArea::horizontal()
-                        .id_salt("tab_strip")
+                        .id_salt(("tab_strip", tag))
                         .max_width(ui.available_width() - list_width)
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                         .show(ui, |ui| {
@@ -168,7 +216,12 @@ impl App {
                                             .any(|t| t.is_view && t.schema == schema && t.name == table)
                                     })
                                 };
-                                for (i, tab) in self.tabs.iter().enumerate() {
+                                for (i, tab) in self
+                                    .tabs
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, t)| side.is_none_or(|r| t.right == r))
+                                {
                                     let glyph = match &tab.kind {
                                         // A view opens like a table; its tab shows the sidebar's eye.
                                         TabKind::Table(ts) if is_view(&ts.schema, &ts.table) => icon::EYE,
@@ -189,17 +242,22 @@ impl App {
                                     } else {
                                         tab.title.clone()
                                     };
-                                    let label = theme::tab_label(ui, glyph, &shown, i == self.active);
+                                    let label = theme::tab_label(ui, glyph, &shown, Some(i) == sel);
                                     let label_rect = label.rect;
                                     if label.clicked() {
                                         self.active = i;
                                     }
-                                    if follow && i == self.active {
+                                    if label.drag_started() {
+                                        label.dnd_set_drag_payload(tab.id);
+                                    }
+                                    if follow && Some(i) == sel {
                                         label.scroll_to_me(None);
                                     }
                                     let is_sql = matches!(tab.kind, TabKind::Sql(_));
                                     let closed = !self.closed.is_empty();
+                                    let split_on = self.split.is_some();
                                     let n = self.tabs.len();
+                                    let can_split = is_sql || n > 1;
                                     label.context_menu(|ui| {
                                         // Rename in place: type and press Enter.
                                         let name_id = egui::Id::new(("tab_name", tab.id));
@@ -238,6 +296,25 @@ impl App {
                                             action = Some(TabAction::CloseOthers(i, true));
                                             ui.close();
                                         }
+                                        let split_label = if split_on {
+                                            "Move to the other pane"
+                                        } else {
+                                            "Split right"
+                                        };
+                                        if ui
+                                            .add_enabled(
+                                                split_on || can_split,
+                                                egui::Button::new(split_label).shortcut_text("Ctrl+\\"),
+                                            )
+                                            .clicked()
+                                        {
+                                            action = Some(TabAction::Split(i));
+                                            ui.close();
+                                        }
+                                        if split_on && ui.button("Close split view").clicked() {
+                                            action = Some(TabAction::CloseSplit);
+                                            ui.close();
+                                        }
                                         if ui
                                             .add_enabled(
                                                 closed,
@@ -252,8 +329,8 @@ impl App {
                                     });
                                     let x = theme::icon(icon::X).size(11.0).color(t.subtle);
                                     let x = ui.add(egui::Button::new(x).frame(false)).on_hover_text("Close");
-                                    if i == self.active {
-                                        theme::tab_underline(ui, label_rect.union(x.rect));
+                                    if Some(i) == sel {
+                                        theme::tab_underline(ui, label_rect.union(x.rect), focused);
                                     }
                                     if x.clicked() {
                                         close = Some(i);
@@ -273,8 +350,13 @@ impl App {
                         let list = theme::icon(icon::CARET_DOWN).color(t.muted_foreground);
                         ui.menu_button(list, |ui| {
                             egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
-                                for (i, tab) in self.tabs.iter().enumerate() {
-                                    if ui.selectable_label(i == self.active, &tab.title).clicked() {
+                                for (i, tab) in self
+                                    .tabs
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, t)| side.is_none_or(|r| t.right == r))
+                                {
+                                    if ui.selectable_label(Some(i) == sel, &tab.title).clicked() {
                                         pick = Some(i);
                                         ui.close();
                                     }
@@ -282,7 +364,13 @@ impl App {
                             });
                         })
                         .response
-                        .on_hover_text(format!("All {} tabs", self.tabs.len()));
+                        .on_hover_text(format!(
+                            "All {} tabs",
+                            self.tabs
+                                .iter()
+                                .filter(|t| side.is_none_or(|r| t.right == r))
+                                .count()
+                        ));
                     }
                 });
                 if let Some(i) = pick {
@@ -290,11 +378,25 @@ impl App {
                 }
             });
         let r = strip.response.rect;
+        if self.split.is_some() {
+            if strip.response.dnd_hover_payload::<u64>().is_some() {
+                ui.painter()
+                    .rect_stroke(r, 0.0, egui::Stroke::new(2.0, t.lime), egui::StrokeKind::Inside);
+            }
+            if let Some(id) = strip.response.dnd_release_payload::<u64>() {
+                dropped = Some(*id);
+            }
+        }
         ui.painter()
             .hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, t.border));
         if let Some(i) = close {
             self.close_tab(i);
-            return;
+            return false;
+        }
+        if let (Some(r), Some(id)) = (side, dropped)
+            && let Some(i) = self.tabs.iter().position(|t| t.id == id)
+        {
+            self.move_to_pane(i, r);
         }
         match action {
             Some(TabAction::Rename(i, name)) => {
@@ -306,48 +408,92 @@ impl App {
             Some(TabAction::Duplicate(i)) => self.duplicate_tab(i),
             Some(TabAction::CloseOthers(i, right)) => self.close_others(i, right),
             Some(TabAction::Reopen) => self.reopen_closed_tab(),
+            Some(TabAction::Split(i)) => self.split_tab(i),
+            Some(TabAction::CloseSplit) => self.close_split(),
             None => {}
         }
-        let (Some(s), Some(tab)) = (&self.session, self.tabs.get_mut(self.active)) else {
-            return;
-        };
-        let mut cx = Cx {
-            s,
-            show_detail: &mut self.show_detail,
-            history: &self.history,
-            favorites: &self.favorites,
-            filters: &self.filters,
-            saved: &self.saved,
-            request: None,
-        };
-        match &tab.kind {
-            TabKind::Sql(_) => sql_tab(ui, tab, &mut cx),
-            TabKind::Table(_) => table_tab(ui, tab, &mut cx),
-            TabKind::Activity(_) => activity_tab(ui, tab, &mut cx),
-            TabKind::Search(_) => search_tab(ui, tab, &mut cx),
-            TabKind::History(_) => history_tab(ui, tab, &mut cx),
-            TabKind::Script(_) => script_tab(ui, tab, &mut cx),
-            TabKind::Dump(_) => dump_tab(ui, tab, &mut cx),
-            TabKind::Compare(_) => compare_tab(ui, tab, &mut cx),
-            TabKind::Diagram(_) => diagram_view(ui, tab, &mut cx),
-            TabKind::Design(_) => design_view(ui, tab, &mut cx),
-            TabKind::Structure(st) => {
-                if let Some(e) = &tab.error {
-                    error_banner(ui, e);
+        true
+    }
+
+    /// Both panes of the split view, each with its own tab strip; returns the request of the one
+    /// with focus. A request from the other pane moves focus there first, so it acts on the tab
+    /// it came from.
+    fn split_panes(&mut self, ui: &mut egui::Ui) -> Option<Request> {
+        let t = theme::tokens();
+        let mut from_focused = None;
+        let mut from_other = None;
+        // The unfocused pane's tab, when it was clicked or asked for something.
+        let mut take_focus: Option<u64> = None;
+        let mut abort = false;
+        let mut divider = None;
+        ui.columns(2, |cols| {
+            for (col, ui) in cols.iter_mut().enumerate() {
+                let side = col == 1;
+                // A closed tab shifts the indices: draw nothing else this frame.
+                if !self.tab_strip(ui, Some(side)) {
+                    abort = true;
+                    break;
                 }
-                let view = s.is_view(&st.schema, &st.table);
-                cx.request = match structure::structure_tab(ui, st, tab.busy(), view) {
-                    Some(StructAction::OpenSql(ddl)) => Some(Request::Sql(ddl)),
-                    Some(StructAction::ViewSource) => {
-                        Some(Request::ViewSource(st.schema.clone(), st.table.clone()))
-                    }
-                    Some(StructAction::Edit) => Some(Request::Design(st.schema.clone(), st.table.clone())),
-                    Some(StructAction::OpenData) => Some(Request::Data(st.schema.clone(), st.table.clone())),
-                    None => None,
+                self.sync_split();
+                let shown = self.split.as_ref().map(|sp| sp.shown[col]);
+                let idx = shown.and_then(|id| self.tabs.iter().position(|t| t.id == id));
+                let (Some(idx), Some(s)) = (idx, self.session.as_ref()) else {
+                    abort = true;
+                    break;
                 };
+                let focused = self.tabs.get(self.active).is_some_and(|t| t.right == side);
+                let pane = ui.max_rect();
+                if side {
+                    divider = Some(pane.left() - ui.spacing().item_spacing.x / 2.0);
+                }
+                let tab = &mut self.tabs[idx];
+                let id = tab.id;
+                ui.push_id(("pane", side), |ui| {
+                    let mut cx = Cx {
+                        s,
+                        show_detail: &mut self.show_detail,
+                        history: &self.history,
+                        favorites: &self.favorites,
+                        filters: &self.filters,
+                        saved: &self.saved,
+                        request: None,
+                    };
+                    tab_body(ui, tab, &mut cx);
+                    if focused {
+                        from_focused = cx.request;
+                    } else {
+                        from_other = cx.request;
+                    }
+                });
+                if !focused
+                    && (from_other.is_some()
+                        || (ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(pane)))
+                {
+                    take_focus = Some(id);
+                }
             }
+        });
+        if abort {
+            return None;
         }
-        match cx.request {
+        if let Some(x) = divider {
+            let r = ui.min_rect();
+            ui.painter()
+                .vline(x, r.y_range(), egui::Stroke::new(1.0, t.border));
+        }
+        // The focused pane's request first: it was drawn while its tab was still the active one.
+        self.handle_request(from_focused);
+        if let Some(id) = take_focus
+            && let Some(i) = self.tabs.iter().position(|t| t.id == id)
+        {
+            self.active = i;
+            ui.ctx().request_repaint();
+        }
+        from_other
+    }
+
+    fn handle_request(&mut self, request: Option<Request>) {
+        match request {
             Some(Request::Structure(schema, table)) => self.open_structure(&schema, &table),
             Some(Request::Data(schema, table)) => self.open_table(&schema, &table),
             Some(Request::OpenFiltered(schema, table, filter)) => {
@@ -397,6 +543,38 @@ impl App {
             }
             Some(Request::DeleteFilter(id)) => self.delete_filter(&id),
             None => {}
+        }
+    }
+}
+
+/// Draws the body of one tab; what it asks of the app ends up in `cx.request`.
+fn tab_body(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
+    let s = cx.s;
+    match &tab.kind {
+        TabKind::Sql(_) => sql_tab(ui, tab, cx),
+        TabKind::Table(_) => table_tab(ui, tab, cx),
+        TabKind::Activity(_) => activity_tab(ui, tab, cx),
+        TabKind::Search(_) => search_tab(ui, tab, cx),
+        TabKind::History(_) => history_tab(ui, tab, cx),
+        TabKind::Script(_) => script_tab(ui, tab, cx),
+        TabKind::Dump(_) => dump_tab(ui, tab, cx),
+        TabKind::Compare(_) => compare_tab(ui, tab, cx),
+        TabKind::Diagram(_) => diagram_view(ui, tab, cx),
+        TabKind::Design(_) => design_view(ui, tab, cx),
+        TabKind::Structure(st) => {
+            if let Some(e) = &tab.error {
+                error_banner(ui, e);
+            }
+            let view = s.is_view(&st.schema, &st.table);
+            cx.request = match structure::structure_tab(ui, st, tab.busy(), view) {
+                Some(StructAction::OpenSql(ddl)) => Some(Request::Sql(ddl)),
+                Some(StructAction::ViewSource) => {
+                    Some(Request::ViewSource(st.schema.clone(), st.table.clone()))
+                }
+                Some(StructAction::Edit) => Some(Request::Design(st.schema.clone(), st.table.clone())),
+                Some(StructAction::OpenData) => Some(Request::Data(st.schema.clone(), st.table.clone())),
+                None => None,
+            };
         }
     }
 }

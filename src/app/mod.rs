@@ -618,8 +618,17 @@ pub struct InsertField {
     pub text: String,
 }
 
+/// Two panes side by side, each with its own tab strip and its own selected tab. A tab belongs
+/// to the pane `Tab::right` says; the focused pane is the one holding the active tab.
+pub struct Split {
+    /// The tab each pane shows: `[left, right]`.
+    pub shown: [u64; 2],
+}
+
 pub struct Tab {
     pub id: u64,
+    /// In the right pane of the split view.
+    pub right: bool,
     pub title: String,
     pub kind: TabKind,
     pub result: Option<QueryResult>,
@@ -699,6 +708,7 @@ impl Tab {
     pub(crate) fn new(id: u64, title: String, kind: TabKind) -> Self {
         Tab {
             id,
+            right: false,
             title,
             kind,
             result: None,
@@ -1124,6 +1134,8 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub tabs: Vec<Tab>,
     pub active: usize,
+    /// Two tabs side by side. `active` is always the one with focus.
+    pub split: Option<Split>,
     next_id: u64,
     pub filter: String,
     /// The schema (MySQL: database) just switched to: the sidebar opens it and folds the others
@@ -1209,6 +1221,7 @@ impl App {
             sort_by_size: false,
             quit_prompt: false,
             closed: Vec::new(),
+            split: None,
             settings: settings.value,
             title_changed: false,
             quit_after_tx: false,
@@ -1825,10 +1838,87 @@ impl App {
     }
 
     fn push_tab(&mut self, title: String, kind: TabKind) -> usize {
-        self.tabs.push(Tab::new(self.next_id, title, kind));
+        // A new tab opens in the pane the user is working in.
+        let right = self.tabs.get(self.active).is_some_and(|t| t.right);
+        let mut tab = Tab::new(self.next_id, title, kind);
+        tab.right = right;
+        self.tabs.push(tab);
         self.next_id += 1;
         self.active = self.tabs.len() - 1;
         self.active
+    }
+
+    /// Keeps the split view consistent with the tabs: the pane holding the active tab shows it,
+    /// each pane falls back to one of its own tabs when its selected one is gone or moved, and a
+    /// pane left without tabs ends the split.
+    pub fn sync_split(&mut self) {
+        let Some(sp) = &mut self.split else { return };
+        let Some(cur) = self.tabs.get(self.active) else {
+            self.split = None;
+            return;
+        };
+        sp.shown[usize::from(cur.right)] = cur.id;
+        for side in [false, true] {
+            let shown = sp.shown[usize::from(side)];
+            if self.tabs.iter().any(|t| t.id == shown && t.right == side) {
+                continue;
+            }
+            match self.tabs.iter().rev().find(|t| t.right == side) {
+                Some(t) => sp.shown[usize::from(side)] = t.id,
+                None => {
+                    self.close_split();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Back to one pane, keeping every tab.
+    pub fn close_split(&mut self) {
+        self.split = None;
+        for t in &mut self.tabs {
+            t.right = false;
+        }
+    }
+
+    /// Moves tab `i` to the other pane and focuses it. Without a split, opens one: a SQL tab is
+    /// copied to the new pane (so the original stays where it was), any other tab moves there.
+    pub fn split_tab(&mut self, i: usize) {
+        let Some(tab) = self.tabs.get(i) else { return };
+        if self.split.is_some() {
+            self.move_to_pane(i, !tab.right);
+            return;
+        }
+        let id = tab.id;
+        if tab.editor().is_some() {
+            self.duplicate_tab(i);
+        } else if self.tabs.len() > 1 {
+            self.active = i;
+        } else {
+            return;
+        }
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            t.right = true;
+        }
+        self.split = Some(Split { shown: [id, 0] });
+        self.sync_split();
+    }
+
+    /// Moves tab `i` into a pane (and makes it the active one).
+    pub fn move_to_pane(&mut self, i: usize, right: bool) {
+        if self.split.is_none() {
+            return;
+        }
+        if let Some(t) = self.tabs.get_mut(i) {
+            t.right = right;
+            self.active = i;
+        }
+        self.sync_split();
+    }
+
+    /// The tab ids of a pane, in strip order.
+    pub fn pane_tabs(&self, right: bool) -> impl Iterator<Item = usize> + '_ {
+        (0..self.tabs.len()).filter(move |&i| self.tabs[i].right == right)
     }
 
     pub fn close_tab(&mut self, i: usize) {
@@ -3616,6 +3706,53 @@ mod poll_tests {
         let snap = app.snapshot();
         assert!(matches!(&snap.tabs[0], SavedTab::Sql { file: Some(f), .. } if *f == path));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn split_view_has_a_strip_per_pane_and_ends_when_one_empties() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.open_table("public", "a");
+        app.open_table("public", "b");
+        app.open_table("public", "c");
+        let ids: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
+        // Splitting a table tab moves it to the right pane, focused.
+        app.split_tab(2);
+        let sp = app.split.as_ref().unwrap();
+        assert_eq!(sp.shown, [ids[1], ids[2]]);
+        assert_eq!(app.active, 2);
+        assert_eq!(app.pane_tabs(true).collect::<Vec<_>>(), [2]);
+        assert_eq!(app.pane_tabs(false).collect::<Vec<_>>(), [0, 1]);
+        // A tab opened now lands in the focused pane.
+        app.open_table("public", "d");
+        assert!(app.tabs[3].right);
+        // Moving a tab across panes focuses it; the pane it left falls back to another tab.
+        app.move_to_pane(1, true);
+        assert_eq!(app.pane_tabs(false).collect::<Vec<_>>(), [0]);
+        assert_eq!(app.split.as_ref().unwrap().shown[0], ids[0]);
+        assert_eq!(app.active, 1);
+        // Emptying a pane ends the split and keeps every tab.
+        app.move_to_pane(0, true);
+        assert!(app.split.is_none());
+        assert_eq!(app.tabs.len(), 4);
+        assert!(app.tabs.iter().all(|t| !t.right));
+    }
+
+    #[test]
+    fn splitting_a_sql_tab_copies_it() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.open_sql("select 1".into());
+        app.split_tab(0);
+        assert_eq!(app.tabs.len(), 2, "the original stays in the left pane");
+        assert!(!app.tabs[0].right && app.tabs[1].right);
+        assert_eq!(app.tabs[1].editor().unwrap().text, "select 1");
+        // A lone non-SQL tab can't be split: it would leave the left pane empty.
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.open_table("public", "a");
+        app.split_tab(0);
+        assert!(app.split.is_none());
     }
 
     #[test]

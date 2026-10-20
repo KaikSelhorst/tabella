@@ -450,7 +450,7 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::T)) {
             self.reopen_closed_tab();
         }
-        let (palette, new_sql, close, prev, next) = ctx.input_mut(|i| {
+        let (palette, new_sql, close, prev, next, split) = ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::COMMAND, Key::P) || i.consume_key(Modifiers::COMMAND, Key::K),
                 i.consume_key(Modifiers::COMMAND, Key::T),
@@ -458,6 +458,7 @@ impl App {
                 // Shift variant first: the plain one would also match Ctrl+Shift+Tab.
                 i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Tab),
                 i.consume_key(Modifiers::COMMAND, Key::Tab),
+                i.consume_key(Modifiers::COMMAND, Key::Backslash),
             )
         });
         if palette {
@@ -473,12 +474,20 @@ impl App {
         if close {
             self.close_tab(self.active);
         }
-        let n = self.tabs.len();
-        if n > 0 && next {
-            self.active = (self.active + 1) % n;
+        // In a split view Ctrl+Tab cycles the tabs of the focused pane.
+        let right = self.tabs.get(self.active).is_some_and(|t| t.right);
+        let pane: Vec<usize> = self.pane_tabs(right).collect();
+        let n = pane.len();
+        if let Some(pos) = pane.iter().position(|&i| i == self.active) {
+            if next {
+                self.active = pane[(pos + 1) % n];
+            }
+            if prev {
+                self.active = pane[(pos + n - 1) % n];
+            }
         }
-        if n > 0 && prev {
-            self.active = (self.active + n - 1) % n;
+        if split && ready && !self.tabs.is_empty() {
+            self.split_tab(self.active);
         }
     }
 }
@@ -592,12 +601,13 @@ pub(crate) mod screenshots {
         ts.order = Some(("id".into(), true));
         ts.total = Some(40);
         ts.counted_filter = Some(String::new());
-        let mut table_tab = Tab::new(1, "customers".into(), TabKind::Table(Box::new(ts)));
+        // Far from `App::next_id`, so tabs the screens open never share an id with these.
+        let mut table_tab = Tab::new(1001, "customers".into(), TabKind::Table(Box::new(ts)));
         table_tab.result = Some(result.clone());
         table_tab.selected = Some((2, 2));
         let sql = "SELECT id, name, balance\nFROM public.customers\nWHERE active\nORDER BY balance DESC;";
         let mut sql_tab = Tab::new(
-            2,
+            1002,
             "SQL 1".into(),
             TabKind::Sql(Box::new(crate::app::Editor::new(sql.into()))),
         );
@@ -605,6 +615,45 @@ pub(crate) mod screenshots {
         app.tabs = vec![table_tab, sql_tab];
         app.active = 0;
         app
+    }
+
+    #[test]
+    fn dragging_a_tab_to_the_other_strip_moves_it() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.state_mut().split_tab(1);
+        harness.run();
+        assert_eq!(
+            harness.state().tabs.iter().map(|t| t.right).collect::<Vec<_>>(),
+            [false, false, true]
+        );
+        let from = egui::pos2(290.0, 17.0);
+        let to = egui::pos2(1000.0, 17.0);
+        harness.hover_at(from);
+        harness.step();
+        harness.drag_at(from);
+        harness.step();
+        for i in 1..=10 {
+            harness.hover_at(from + (to - from) * (i as f32 / 10.0));
+            harness.step();
+        }
+        // Not `drop_at`: it also removes the cursor, which a real mouse doesn't do on release.
+        harness.event(egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+        harness.run();
+        assert_eq!(
+            harness.state().tabs.iter().map(|t| t.right).collect::<Vec<_>>(),
+            [true, false, true]
+        );
     }
 
     #[test]
@@ -625,6 +674,19 @@ pub(crate) mod screenshots {
         harness.run();
         let img = harness.render().unwrap();
         img.save(format!("{dir}/table.png")).unwrap();
+
+        harness.state_mut().split_tab(1);
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/split.png"))
+            .unwrap();
+        // The split copied the SQL tab: drop the copy so the later screens keep their tab order.
+        harness.state_mut().close_split();
+        harness.state_mut().tabs.pop();
+        harness.state_mut().active = 0;
+        harness.run();
 
         // New features: environment band + export banner, insert form, structure tab.
         harness.state_mut().session.as_mut().unwrap().cfg.color = Some(crate::db::Tag::Red);

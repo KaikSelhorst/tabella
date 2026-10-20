@@ -79,6 +79,11 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
 - In the editor, hovering a table name shows its columns; `Ctrl+click` opens it
 - Tabs: right-click to rename, duplicate, close the others/the ones to the right;
   `Ctrl+Shift+T` reopens the last closed one
+- Split view, like in Zed: `Ctrl+\` (or right-click a tab → "Split right") opens a second pane with
+  its own tab strip and selected tab; drag tabs between the strips or use "Move to the other
+  pane". The pane with the active tab has focus; new tabs open in it and `Ctrl+Tab` cycles its
+  tabs. A SQL tab is copied to the new pane, any other tab moves. The split closes when a pane
+  runs out of tabs, or from "Close split view"
 - "Repeat": runs the last read query every 2 s … 1 min
 - ER diagram per schema (`Ctrl+P` or right-click the schema): tables and foreign keys laid out
   automatically, with zoom, dragging and double-click to open

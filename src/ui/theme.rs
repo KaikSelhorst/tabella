@@ -391,15 +391,18 @@ pub fn tab_label(ui: &mut egui::Ui, glyph: &str, text: &str, active: bool) -> eg
     } else {
         (t.subtle, t.muted_foreground)
     };
-    let r = ui.add(egui::Label::new(icon_text(glyph, text, ic, tc)).sense(egui::Sense::click()));
+    let r = ui.add(egui::Label::new(icon_text(glyph, text, ic, tc)).sense(egui::Sense::click_and_drag()));
     r.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The lime line under the active tab, across all of it: from its icon to its close button.
-pub fn tab_underline(ui: &egui::Ui, tab: egui::Rect) {
+/// The line under the selected tab, across all of it: from its icon to its close button. Lime in
+/// the pane with focus, grey in the other one of a split view.
+pub fn tab_underline(ui: &egui::Ui, tab: egui::Rect, focused: bool) {
     let y = ui.max_rect().bottom() - 1.0;
+    let t = tokens();
+    let color = if focused { t.lime } else { t.subtle };
     ui.painter()
-        .hline(tab.x_range().expand(4.0), y, Stroke::new(2.0, tokens().lime));
+        .hline(tab.x_range().expand(4.0), y, Stroke::new(2.0, color));
 }
 
 #[cfg(test)]

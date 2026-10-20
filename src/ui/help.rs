@@ -38,7 +38,14 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Ctrl+P → Compare structure",
                 "Diff against another schema or database, with the SQL to match",
             ),
-            ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
+            (
+                "Ctrl+Tab / Ctrl+Shift+Tab",
+                "Next / previous tab (in the focused pane)",
+            ),
+            (
+                "Ctrl+\\",
+                "Split right: move the tab to the other pane (SQL tabs are copied)",
+            ),
             ("F1", "This screen"),
             (
                 "Ctrl + / Ctrl − / Ctrl 0",
