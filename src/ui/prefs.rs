@@ -23,12 +23,39 @@ impl App {
         self.settings = s;
     }
 
+    /// Picking a theme by hand stops following the system.
     pub fn toggle_theme(&mut self, ctx: &egui::Context) {
         let s = Settings {
             light: !self.settings.light,
+            system_theme: false,
             ..self.settings.clone()
         };
         self.apply_settings(ctx, s);
+    }
+
+    pub fn toggle_system_theme(&mut self, ctx: &egui::Context) {
+        let s = Settings {
+            system_theme: !self.settings.system_theme,
+            ..self.settings.clone()
+        };
+        self.apply_settings(ctx, s);
+    }
+
+    /// With "follow the system" on, switches to the operating system's theme whenever it changes
+    /// (and at start, once the window can say). Where the system doesn't tell, nothing changes.
+    pub fn follow_system_theme(&mut self, ctx: &egui::Context) {
+        if !self.settings.system_theme {
+            return;
+        }
+        let Some(system) = ctx.system_theme() else { return };
+        let light = system == egui::Theme::Light;
+        if light != self.settings.light {
+            let s = Settings {
+                light,
+                ..self.settings.clone()
+            };
+            self.apply_settings(ctx, s);
+        }
     }
 
     /// `+1` / `-1` steps of 10%; `0` back to 100%.
@@ -86,5 +113,29 @@ mod tests {
         assert!(super::theme::is_light() && harness.state().settings.light);
         harness.state_mut().toggle_theme(&ctx);
         assert!(!super::theme::is_light());
+
+        // "Follow the system" tracks the OS theme as it changes; choosing by hand stops it.
+        harness.state_mut().settings.system_theme = true;
+        harness.input_mut().system_theme = Some(egui::Theme::Light);
+        harness.run();
+        assert!(super::theme::is_light() && harness.state().settings.light);
+        harness.input_mut().system_theme = Some(egui::Theme::Dark);
+        harness.run();
+        assert!(!super::theme::is_light() && !harness.state().settings.light);
+        // Choosing by hand wins over the system until it is turned on again.
+        harness.state_mut().toggle_theme(&ctx);
+        assert!(!harness.state().settings.system_theme && super::theme::is_light());
+        harness.run();
+        assert!(
+            super::theme::is_light(),
+            "the system's dark theme no longer applies"
+        );
+        harness.state_mut().toggle_system_theme(&ctx);
+        harness.run();
+        assert!(
+            !super::theme::is_light(),
+            "following again picks the system's theme up"
+        );
+        harness.state_mut().toggle_system_theme(&ctx);
     }
 }

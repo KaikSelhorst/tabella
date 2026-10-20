@@ -152,6 +152,19 @@ fn any_result_event(
                 filter: sql::filter_condition(k, &target.column, FilterOp::Eq, Some(value)),
             })
         }
+        GridEvent::ColumnWidths(widths) => {
+            let TabKind::Table(ts) = &tab.kind else {
+                return ControlFlow::Break(None);
+            };
+            let (schema, table) = (ts.schema.clone(), ts.table.clone());
+            tab.col_widths
+                .extend(widths.iter().map(|(name, w)| (name.clone(), w.round())));
+            Some(Effect::ColumnWidths {
+                schema,
+                table,
+                widths: widths.clone(),
+            })
+        }
         // Filtering doesn't change data, so read-only tables get it too.
         GridEvent::Filter(row, col, op) => {
             let cond = sql::filter_condition(k, &res.columns[*col], *op, res.rows[*row][*col].as_deref());
@@ -383,6 +396,7 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
         // Handled by `any_result_event`.
         GridEvent::Select(..)
         | GridEvent::CopyMarkdown
+        | GridEvent::ColumnWidths(..)
         | GridEvent::FollowIncoming(..)
         | GridEvent::ColumnStats(..)
         | GridEvent::FilterValues(..)

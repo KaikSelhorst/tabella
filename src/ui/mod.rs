@@ -126,6 +126,7 @@ impl App {
         self.path_prompt_ui(&ctx);
         self.table_action_ui(&ctx);
         self.track_zoom(&ctx);
+        self.follow_system_theme(&ctx);
     }
 }
 
@@ -509,6 +510,8 @@ pub(crate) mod screenshots {
         let dir = std::env::temp_dir().join("tabella-screenshots-config");
         // SAFETY: set before any other thread reads the environment in this test binary's run.
         unsafe { std::env::set_var("TABELLA_CONFIG_DIR", &dir) };
+        // Widths dragged in an earlier run would change how the screens look.
+        let _ = std::fs::remove_file(dir.join("column_widths.json"));
         let mut app = App::new(ctx);
         app.max_fps = false;
         let mut cfg = ConnConfig::new(Kind::Postgres);
@@ -655,6 +658,43 @@ pub(crate) mod screenshots {
             harness.state().tabs.iter().map(|t| t.right).collect::<Vec<_>>(),
             [true, false, true]
         );
+    }
+
+    #[test]
+    fn dragging_a_column_edge_is_remembered_for_the_table() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        harness.state_mut().tabs[0].col_widths.clear();
+        let before = harness.state().col_widths_for("customers");
+        assert!(before.is_empty());
+        // The "name" column's right edge sits at about x = 543 in this layout (see table.png).
+        let (edge, y) = (egui::pos2(543.0, 96.0), 96.0);
+        harness.hover_at(edge);
+        harness.step();
+        harness.drag_at(edge);
+        harness.step();
+        for i in 1..=8 {
+            harness.hover_at(egui::pos2(543.0 + 12.0 * i as f32, y));
+            harness.step();
+        }
+        // Still held: nothing is remembered while dragging.
+        assert!(harness.state().col_widths_for("customers").is_empty());
+        harness.event(egui::Event::PointerButton {
+            pos: egui::pos2(543.0 + 96.0, y),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+        harness.run();
+        let after = harness.state().col_widths_for("customers");
+        assert!(after["name"] > 200.0, "{after:?}");
+        assert_eq!(harness.state().tabs[0].col_widths["name"], after["name"]);
     }
 
     #[test]

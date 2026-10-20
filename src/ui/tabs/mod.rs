@@ -129,6 +129,8 @@ pub(super) enum Request {
     /// schema, table, name, filter
     SaveFilter(String, String, String, String),
     DeleteFilter(String),
+    /// Column widths to remember: schema, table, (column, width).
+    ColumnWidths(String, String, Vec<(String, f32)>),
 }
 
 impl App {
@@ -542,6 +544,9 @@ impl App {
                 self.save_filter(&schema, &table, &name, &filter);
             }
             Some(Request::DeleteFilter(id)) => self.delete_filter(&id),
+            Some(Request::ColumnWidths(schema, table, widths)) => {
+                self.remember_widths(&schema, &table, &widths)
+            }
             None => {}
         }
     }

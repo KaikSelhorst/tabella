@@ -667,6 +667,8 @@ pub struct Tab {
     /// survive reloads and paging).
     pub hidden_cols: Vec<String>,
     pub pinned_cols: Vec<String>,
+    /// Widths the user gave columns, by name (remembered across tabs and runs).
+    pub col_widths: std::collections::HashMap<String, f32>,
     /// The user gave the tab its own name.
     pub renamed: bool,
 }
@@ -731,6 +733,7 @@ impl Tab {
             col_stats: None,
             hidden_cols: Vec::new(),
             pinned_cols: Vec::new(),
+            col_widths: Default::default(),
             renamed: false,
         }
     }
@@ -1105,11 +1108,19 @@ pub enum GridEvent {
     FillDown,
     /// Mark the selected rows for deletion.
     DeleteRows,
+    /// Columns got new widths from dragging their edges (name, width).
+    ColumnWidths(Vec<(String, f32)>),
 }
 
 /// What `handle_grid_event` needs the app (or the clipboard) to do.
 pub enum Effect {
     Copy(String),
+    /// Remember these column widths for the table.
+    ColumnWidths {
+        schema: String,
+        table: String,
+        widths: Vec<(String, f32)>,
+    },
     OpenFiltered {
         schema: String,
         table: String,
@@ -1152,6 +1163,8 @@ pub struct App {
     pub history: Vec<Entry>,
     pub favorites: Vec<Favorite>,
     pub filters: Vec<SavedFilter>,
+    /// Column widths dragged by the user, per connection and table.
+    col_widths: crate::widths::Store,
     /// Tabs from the last run, reopened once their connection is ready.
     restore: Option<session::Saved>,
     /// Current window size, saved on exit.
@@ -1181,6 +1194,7 @@ impl App {
         let history = history::load();
         let favorites = favorites::load();
         let filters = filters::load();
+        let col_widths = crate::widths::load();
         let settings = crate::settings::load();
         let last = session::load();
         // Files that existed but couldn't be read were backed up; say so instead of starting
@@ -1191,6 +1205,7 @@ impl App {
             history.warning,
             favorites.warning,
             filters.warning,
+            col_widths.warning,
             settings.warning,
             last.warning,
         ]
@@ -1217,6 +1232,7 @@ impl App {
             history: history.value,
             favorites: favorites.value,
             filters: filters.value,
+            col_widths: col_widths.value,
             restore: None,
             window: None,
             show_detail: true,
@@ -1259,20 +1275,53 @@ impl App {
 
     /// What to restore next time: open connection, tabs and window size.
     pub fn snapshot(&self) -> session::Saved {
-        let tabs = self.tabs.iter().filter_map(saved_tab).collect();
+        // Only some kinds of tab are saved: the split refers to them by their place in the list.
+        let kept: Vec<(&Tab, SavedTab)> = self
+            .tabs
+            .iter()
+            .filter_map(|t| saved_tab(t).map(|s| (t, s)))
+            .collect();
+        let split = self.split.as_ref().map(|sp| session::SavedSplit {
+            right: kept.iter().map(|(t, _)| t.right).collect(),
+            shown: sp
+                .shown
+                .map(|id| kept.iter().position(|(t, _)| t.id == id).unwrap_or(0)),
+        });
+        // A saved list that lost some tabs can't say which one was active.
+        let active = self
+            .tabs
+            .get(self.active)
+            .and_then(|a| kept.iter().position(|(t, _)| t.id == a.id))
+            .unwrap_or(0);
         session::Saved {
             conn: self.session.as_ref().map(|s| s.cfg.id.clone()),
-            tabs,
-            active: self.active,
+            tabs: kept.into_iter().map(|(_, s)| s).collect(),
+            active,
             window: self.window,
+            split,
         }
     }
 
     fn restore_tabs(&mut self, saved: session::Saved) {
+        let count = saved.tabs.len();
         for t in saved.tabs {
             self.restore_tab(t);
         }
         self.active = saved.active.min(self.tabs.len().saturating_sub(1));
+        // Only when every tab came back as its own: otherwise the indices mean something else.
+        if let Some(sp) = saved.split
+            && self.tabs.len() == count
+            && sp.right.len() == count
+            && sp.shown.iter().all(|&i| i < count)
+        {
+            for (tab, right) in self.tabs.iter_mut().zip(&sp.right) {
+                tab.right = *right;
+            }
+            self.split = Some(Split {
+                shown: sp.shown.map(|i| self.tabs[i].id),
+            });
+            self.sync_split();
+        }
     }
 
     /// Opens a tab as it was saved (session restore, "reopen closed tab").
@@ -1519,6 +1568,32 @@ impl App {
     pub fn delete_filter(&mut self, id: &str) {
         self.filters.retain(|f| f.id != id);
         self.store_filters();
+    }
+
+    /// The widths remembered for a table of the open connection.
+    #[cfg(test)]
+    pub fn col_widths_for(&self, table: &str) -> std::collections::HashMap<String, f32> {
+        let Some(s) = &self.session else {
+            return Default::default();
+        };
+        let schema = s
+            .tables
+            .iter()
+            .find(|t| t.name == table)
+            .map_or("public", |t| t.schema.as_str());
+        crate::widths::for_table(&self.col_widths, &s.cfg.id, schema, table)
+    }
+
+    /// Remembers column widths dragged in a table tab.
+    pub fn remember_widths(&mut self, schema: &str, table: &str, widths: &[(String, f32)]) {
+        let Some(conn) = self.session.as_ref().map(|s| s.cfg.id.clone()) else {
+            return;
+        };
+        if crate::widths::remember(&mut self.col_widths, &conn, schema, table, widths)
+            && let Err(e) = crate::widths::save(&self.col_widths)
+        {
+            self.notice = Notice::error(format!("Error saving column widths: {e}"));
+        }
     }
 
     fn store_filters(&mut self) {
@@ -2327,10 +2402,12 @@ impl App {
             .iter()
             .find(|t| t.schema == schema && t.name == table)
             .and_then(|t| t.estimate);
+        let widths = crate::widths::for_table(&self.col_widths, &s.cfg.id, schema, table);
         let i = self.push_tab(
             table.into(),
             TabKind::Table(Box::new(TableState::new(schema, table, estimate))),
         );
+        self.tabs[i].col_widths = widths;
         let Some(s) = &self.session else { return };
         // The first page is requested when the columns arrive (see `poll`); spinner until then.
         let tab = &mut self.tabs[i];
@@ -3810,6 +3887,61 @@ mod poll_tests {
             .map(|j| matches!(j, Job::Columns { .. } | Job::Structure { .. }))
             .collect();
         assert_eq!(kinds, [true, true]);
+    }
+
+    #[test]
+    fn a_tab_opens_with_the_widths_remembered_for_its_table() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.col_widths.clear();
+        app.remember_widths("public", "customers", &[("name".into(), 250.0)]);
+        app.open_table("public", "customers");
+        app.open_table("public", "orders");
+        assert_eq!(app.tabs[0].col_widths["name"], 250.0);
+        assert!(
+            app.tabs[1].col_widths.is_empty(),
+            "another table starts with its own widths"
+        );
+        // They are on disk for the next run.
+        let saved = crate::widths::load().value;
+        assert_eq!(
+            crate::widths::for_table(&saved, "t", "public", "customers")["name"],
+            250.0
+        );
+        app.col_widths.clear();
+        let _ = crate::widths::save(&app.col_widths);
+    }
+
+    #[test]
+    fn the_split_view_comes_back_with_the_session() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.open_table("public", "a");
+        app.open_table("public", "b");
+        app.open_table("public", "c");
+        app.split_tab(2);
+        app.active = 1;
+        app.sync_split();
+        let snap = app.snapshot();
+        let sp = snap.split.as_ref().unwrap();
+        assert_eq!(sp.right, [false, false, true]);
+        assert_eq!(sp.shown, [1, 2]);
+        assert_eq!(snap.active, 1);
+
+        let (s2, _jobs2, _r2) = fake_session(Kind::Postgres);
+        let mut fresh = app_with(s2);
+        fresh.restore_tabs(snap);
+        assert_eq!(
+            fresh.tabs.iter().map(|t| t.right).collect::<Vec<_>>(),
+            [false, false, true]
+        );
+        assert_eq!(fresh.active, 1);
+        let shown = fresh.split.as_ref().unwrap().shown;
+        assert_eq!(shown, [fresh.tabs[1].id, fresh.tabs[2].id]);
+        // No split in the session: one pane, whatever the tabs were.
+        let mut app = app_with(fake_session(Kind::Postgres).0);
+        app.open_table("public", "a");
+        assert!(app.snapshot().split.is_none());
     }
 
     #[test]

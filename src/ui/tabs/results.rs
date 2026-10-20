@@ -397,6 +397,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         order: &order,
         row_offset,
         option_pick,
+        widths: table_tab.then_some(&tab.col_widths),
         kinds: &kinds,
         changed: overlay.as_ref().map(|o| &o.changed),
         deleted: overlay.as_ref().map(|o| &o.deleted),
@@ -453,6 +454,13 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
             filter,
         }) => {
             cx.request = Some(Request::OpenFiltered(schema, table, filter));
+        }
+        Some(Effect::ColumnWidths {
+            schema,
+            table,
+            widths,
+        }) => {
+            cx.request = Some(Request::ColumnWidths(schema, table, widths));
         }
         None => {}
     }

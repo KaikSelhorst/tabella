@@ -235,6 +235,8 @@ pub struct GridOpts<'a> {
     pub order: &'a Option<(String, bool)>,
     /// Index of the first shown row in the full table (page * page size).
     pub row_offset: usize,
+    /// Widths the user gave columns (by name), when this grid remembers them (table tabs).
+    pub widths: Option<&'a std::collections::HashMap<String, f32>>,
     /// Boolean or ENUM cell with its value dropdown open.
     pub option_pick: Option<(usize, usize)>,
     /// Kind of each column (computed once per frame by the caller).
@@ -292,6 +294,7 @@ pub fn grid(
         order,
         row_offset,
         option_pick,
+        widths,
         kinds,
         changed,
         deleted,
@@ -349,11 +352,14 @@ pub fn grid(
     for (vi, &ci) in view.iter().enumerate() {
         let name = &res.columns[ci];
         let ty = info[ci].map(|c| c.data_type.as_str());
-        let w = column_width(
-            name,
-            ty,
-            sample.iter().map(|r| r[ci].as_ref().map(|v| v.chars().count())),
-        );
+        // A width the user dragged to wins over the one worked out from the content.
+        let w = widths.and_then(|w| w.get(name).copied()).unwrap_or_else(|| {
+            column_width(
+                name,
+                ty,
+                sample.iter().map(|r| r[ci].as_ref().map(|v| v.chars().count())),
+            )
+        });
         table = table.column(if vi == last {
             // The last column absorbs the remaining width so the grid fills the panel.
             Column::remainder().at_least(w).clip(true)
@@ -362,6 +368,8 @@ pub fn grid(
         });
     }
 
+    // Widths as drawn this frame, to notice a column being dragged (the last one just fills up).
+    let mut drawn: Vec<(String, f32)> = Vec::new();
     table
         .header(HEADER_HEIGHT, |mut header| {
             header.col(|ui| {
@@ -384,6 +392,9 @@ pub fn grid(
                 let name = &res.columns[ci];
                 header.col(|ui| {
                     cell_chrome(ui, table_rect, t);
+                    if vi != last {
+                        drawn.push((name.clone(), ui.max_rect().width()));
+                    }
                     if vi < pinned {
                         frozen.push(Frozen {
                             rect: full_cell(ui),
@@ -700,6 +711,30 @@ pub fn grid(
                 ctx.request_repaint();
             }
         });
+    // A column dragged to a new width is reported once the pointer is let go (not on every frame
+    // of the drag), so the caller can remember it.
+    if widths.is_some() {
+        let ctx = ui.ctx().clone();
+        let seen_id = egui::Id::new(("grid_widths_seen", id));
+        let moved_id = egui::Id::new(("grid_widths_moved", id));
+        let seen: Option<Vec<(String, f32)>> = ctx.data(|d| d.get_temp(seen_id));
+        let changed = seen.is_some_and(|p| {
+            p.len() == drawn.len()
+                && p.iter()
+                    .zip(&drawn)
+                    .any(|(a, b)| a.0 == b.0 && (a.1 - b.1).abs() > 0.5)
+        });
+        let pending = changed || ctx.data(|d| d.get_temp::<bool>(moved_id)).unwrap_or(false);
+        ctx.data_mut(|d| d.insert_temp(seen_id, drawn.clone()));
+        if pending && ctx.input(|i| i.pointer.any_down()) {
+            ctx.data_mut(|d| d.insert_temp(moved_id, true));
+        } else if pending {
+            ctx.data_mut(|d| d.remove::<bool>(moved_id));
+            if event.is_none() {
+                event = Some(GridEvent::ColumnWidths(drawn));
+            }
+        }
+    }
     event
 }
 
@@ -1026,6 +1061,7 @@ mod tests {
                     order: &None,
                     row_offset: 0,
                     option_pick: None,
+                    widths: None,
                     kinds: &[ValueKind::Number, ValueKind::Text],
                     changed: None,
                     deleted: None,
@@ -1064,6 +1100,7 @@ mod tests {
                     order: &None,
                     row_offset: 0,
                     option_pick: None,
+                    widths: None,
                     kinds: &[ValueKind::Number, ValueKind::Text],
                     changed: None,
                     deleted: None,

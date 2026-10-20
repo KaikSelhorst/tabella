@@ -86,7 +86,7 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
   its own tab strip and selected tab; drag tabs between the strips or use "Move to the other
   pane". The pane with the active tab has focus; new tabs open in it and `Ctrl+Tab` cycles its
   tabs. A SQL tab is copied to the new pane, any other tab moves. The split closes when a pane
-  runs out of tabs, or from "Close split view"
+  runs out of tabs, or from "Close split view", and is restored with the session
 - "Repeat": runs the last read query every 2 s … 1 min
 - ER diagram per schema (`Ctrl+P` or right-click the schema): tables and foreign keys laid out
   automatically, with zoom, dragging and double-click to open
@@ -97,7 +97,10 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
   marks unsaved changes and warns before closing
 - Full history (`Ctrl+Shift+H`): search, filter by connection and by error, open in the editor
 - Light or dark theme and interface zoom from `Ctrl+P` (zoom also with `Ctrl +`/`Ctrl −`/
-  `Ctrl 0`); both are remembered
+  `Ctrl 0`); both are remembered. "Follow the system theme" (same palette; on by default on a
+  first run) matches the operating system's light/dark setting where the system reports it
+- Column widths dragged in a table are remembered for that table (per connection), across tabs
+  and runs
 - Functions, procedures, triggers and sequences in the sidebar (views along with the tables):
   one click opens the code in an editor, ready to change and run
 - "Generate SQL" in the table's right-click menu: SELECT, INSERT, UPDATE and DELETE by key, with

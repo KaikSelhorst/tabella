@@ -13,6 +13,18 @@ pub struct Saved {
     pub active: usize,
     /// Inner window size in points.
     pub window: Option<[f32; 2]>,
+    /// The split view, when there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split: Option<SavedSplit>,
+}
+
+/// Which pane each saved tab was in, and the tab each pane showed (indices into `Saved::tabs`).
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct SavedSplit {
+    /// One entry per saved tab: in the right pane.
+    pub right: Vec<bool>,
+    /// The selected tab of the left and the right pane.
+    pub shown: [usize; 2],
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -78,9 +90,17 @@ mod tests {
             ],
             active: 1,
             window: Some([1200.0, 800.0]),
+            split: Some(SavedSplit {
+                right: vec![false, true],
+                shown: [0, 1],
+            }),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Saved>(&json).unwrap(), s);
+        // Sessions saved before the split view have no `split`.
+        let old: Saved =
+            serde_json::from_str(r#"{"conn":"abc","tabs":[],"active":0,"window":null}"#).unwrap();
+        assert_eq!(old.split, None);
         // A broken file just means "nothing to restore".
         assert!(serde_json::from_str::<Saved>("{oops").is_err());
     }

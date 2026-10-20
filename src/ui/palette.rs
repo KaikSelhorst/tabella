@@ -16,6 +16,7 @@ const COLUMN_PENALTY: i32 = 24;
 enum Cmd {
     Activity,
     Theme,
+    SystemTheme,
     Fps,
     /// +1 / -1 steps; 0 back to 100%.
     Zoom(i32),
@@ -186,6 +187,17 @@ impl App {
             label: theme_label.into(),
             detail: "switch the theme".into(),
             cmd: Cmd::Theme,
+        });
+        items.push(Item {
+            icon: icon::DESKTOP,
+            label: if self.settings.system_theme {
+                "Stop following the system theme"
+            } else {
+                "Follow the system theme"
+            }
+            .into(),
+            detail: "light or dark with the operating system".into(),
+            cmd: Cmd::SystemTheme,
         });
         let zoom = format!("now {:.0}%", self.settings.zoom * 100.0);
         for (steps, glyph, label, keys) in [
@@ -453,6 +465,7 @@ impl App {
                 }
                 Cmd::Activity => self.open_activity(),
                 Cmd::Theme => self.toggle_theme(ctx),
+                Cmd::SystemTheme => self.toggle_system_theme(ctx),
                 Cmd::Zoom(steps) => self.zoom_by(ctx, steps),
                 Cmd::History => self.open_history(),
                 Cmd::RunFile => self.pick_script(),

@@ -29,6 +29,7 @@ mod tunnel;
 mod ui;
 mod url;
 mod values;
+mod widths;
 mod worker;
 
 use eframe::egui;

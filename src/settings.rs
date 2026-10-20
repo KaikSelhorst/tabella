@@ -8,6 +8,10 @@ use crate::store::{self, Loaded, StoreError};
 #[serde(default)]
 pub struct Settings {
     pub light: bool,
+    /// Match the operating system's light/dark setting (`light` then holds the last one seen, so
+    /// the next start opens in it). A file from before this option keeps the theme it had.
+    #[serde(default)]
+    pub system_theme: bool,
     /// UI scale (Ctrl + / Ctrl − / Ctrl 0, or Ctrl+P).
     pub zoom: f32,
 }
@@ -16,6 +20,8 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             light: false,
+            // A first run follows the system.
+            system_theme: true,
             zoom: 1.0,
         }
     }
@@ -56,7 +62,17 @@ mod tests {
         let s = s.clamped();
         assert!(s.light);
         assert_eq!(s.zoom, 3.0, "pulled into range");
+        // A settings file from before "follow the system" keeps its theme.
+        assert!(!s.system_theme);
+        // No file at all (a first run) follows the system; a file that lacks the option doesn't.
+        assert!(Settings::default().system_theme);
         let s: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(s, Settings::default());
+        assert_eq!(
+            s,
+            Settings {
+                system_theme: false,
+                ..Settings::default()
+            }
+        );
     }
 }
