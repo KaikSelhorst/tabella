@@ -602,6 +602,8 @@ pub struct ActivityState {
     pub confirm_kill: Option<(i64, bool)>,
     /// Why the last cancel/terminate had no effect (kept until the next one).
     pub kill_error: Option<String>,
+    /// The answer to "Suggest index", shown in a dialog until closed.
+    pub advice: Option<Result<crate::advisor::Advice, String>>,
 }
 
 /// "Structure" tab: columns, indexes, foreign keys and DDL of one table.
@@ -2641,6 +2643,7 @@ impl App {
             last_refresh: None,
             confirm_kill: None,
             kill_error: None,
+            advice: None,
         };
         let i = self.push_tab("Activity".into(), TabKind::Activity(Box::new(state)));
         if let Some(s) = &self.session {
@@ -3145,6 +3148,16 @@ pub fn reset_query_stats(tab: &mut Tab, s: &Session) {
     st.last_refresh = Some(Instant::now());
     let id = tab.id;
     tab.send_rows_job(s, Job::ResetQueryStats { tab: id });
+}
+
+/// "Suggest index" for the selected slow query. `schema` is where its unqualified tables are.
+pub fn suggest_index(tab: &mut Tab, s: &Session, sql: String, schema: String) {
+    let TabKind::Activity(st) = &mut tab.kind else {
+        return;
+    };
+    st.advice = None;
+    let id = tab.id;
+    tab.send_rows_job(s, Job::SuggestIndex { tab: id, sql, schema });
 }
 
 /// Cancels (or terminates) the session confirmed in the dialog.

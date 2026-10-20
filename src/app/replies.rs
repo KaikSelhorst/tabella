@@ -202,6 +202,11 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                 d.build(&s.tables, &s.schema_cols);
             }
         }
+        Reply::IndexAdvice { res, .. } => {
+            if let TabKind::Activity(st) = &mut t.kind {
+                st.advice = Some(res);
+            }
+        }
         Reply::ServerInfo { res, .. } => {
             if let TabKind::Activity(st) = &mut t.kind {
                 st.server = Some(res.map_err(|e| e.to_string()));

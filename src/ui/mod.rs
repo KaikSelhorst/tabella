@@ -814,6 +814,76 @@ pub(crate) mod screenshots {
         assert_eq!(harness.state().tabs[0].col_widths["name"], after["name"]);
     }
 
+    /// `TABELLA_SHOTS=<dir> cargo test index_advice_shot -- --ignored`: the "Suggest index" dialog.
+    #[test]
+    #[ignore]
+    fn index_advice_shot() {
+        let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .with_max_steps(8)
+            .wgpu()
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        let q =
+            "SELECT * FROM orders WHERE customer_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 20";
+        let res = QueryResult {
+            columns: ["calls", "total_ms", "mean_ms", "row_count", "query"]
+                .map(String::from)
+                .to_vec(),
+            rows: vec![
+                ["8120", "91234.5", "11.23", "162400", q]
+                    .map(|v| Some(v.to_string()))
+                    .to_vec(),
+            ],
+            ..Default::default()
+        };
+        let plans = crate::advisor::parse(q).unwrap();
+        let advice = crate::advisor::advise(crate::db::Kind::Postgres, "public", &plans, |_, _| {
+            Some(crate::db::TableStructure {
+                columns: ["id", "customer_id", "status", "created_at"]
+                    .map(|n| crate::db::StructColumn {
+                        name: n.into(),
+                        data_type: "text".into(),
+                        nullable: true,
+                        default: None,
+                        pk: false,
+                    })
+                    .to_vec(),
+                indexes: vec![(
+                    "orders_customer_idx".into(),
+                    "CREATE INDEX orders_customer_idx ON public.orders USING btree (customer_id)".into(),
+                )],
+                ..Default::default()
+            })
+        });
+        let st = crate::app::ActivityState {
+            view: crate::db::ActivityView::Slow,
+            server: None,
+            auto_refresh: false,
+            last_refresh: None,
+            confirm_kill: None,
+            kill_error: None,
+            advice: Some(advice),
+        };
+        let mut tab = Tab::new(4, "Activity".into(), TabKind::Activity(Box::new(st)));
+        tab.result = Some(res);
+        tab.selected = Some((0, 4));
+        let state = harness.state_mut();
+        state.tabs.push(tab);
+        state.active = 2;
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/index-advice.png"))
+            .unwrap();
+    }
+
     /// `TABELLA_SHOTS=<dir> cargo test tab_drag_shot -- --ignored`: a tab in the middle of a drag.
     #[test]
     #[ignore]
@@ -1135,6 +1205,7 @@ pub(crate) mod screenshots {
                 last_refresh: None,
                 confirm_kill: None,
                 kill_error: None,
+                advice: None,
             };
             let mut tab = Tab::new(4, "Activity".into(), TabKind::Activity(Box::new(st)));
             tab.result = Some(res);
@@ -1642,6 +1713,7 @@ pub(crate) mod screenshots {
                 last_refresh: None,
                 confirm_kill: None,
                 kill_error: None,
+                advice: None,
             };
             let state = harness.state_mut();
             state

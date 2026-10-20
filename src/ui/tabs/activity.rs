@@ -27,12 +27,26 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         let col = res.columns.iter().position(|c| c == "query")?;
         res.rows.get(row)?.get(col)?.clone()
     });
+    // Where its unqualified tables are: the digest's own database (MySQL), else the current one.
+    let selected_schema = tab
+        .selected
+        .and_then(|(row, _)| {
+            let res = tab.result.as_ref()?;
+            let col = res.columns.iter().position(|c| c == "db")?;
+            res.rows.get(row)?.get(col)?.clone().filter(|d| !d.is_empty())
+        })
+        .unwrap_or_else(|| match s.cfg.kind {
+            crate::db::Kind::MySql => s.current_db.clone(),
+            _ if s.current_schema.is_empty() => "public".into(),
+            _ => s.current_schema.clone(),
+        });
     let TabKind::Activity(st) = &mut tab.kind else {
         return;
     };
     let mut refresh = false;
     let mut switched = false;
     let mut reset_stats = false;
+    let mut suggest = false;
     egui::Frame::new()
         .fill(t.background)
         .inner_margin(egui::Margin::symmetric(12, 8))
@@ -114,6 +128,25 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         }
                         if ui
                             .add_enabled(
+                                selected_query.is_some() && !busy,
+                                egui::Button::new(theme::icon_text(
+                                    icon::LIGHTBULB,
+                                    "Suggest index",
+                                    t.muted_foreground,
+                                    t.foreground,
+                                )),
+                            )
+                            .on_hover_text(
+                                "Looks at the selected query's WHERE, JOIN and ORDER BY columns and the table's \
+                                 indexes",
+                            )
+                            .on_disabled_hover_text("Select a query")
+                            .clicked()
+                        {
+                            suggest = true;
+                        }
+                        if ui
+                            .add_enabled(
                                 selected_query.is_some(),
                                 egui::Button::new(theme::icon_text(
                                     icon::CODE,
@@ -176,11 +209,14 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     if reset_stats {
         app::reset_query_stats(tab, s);
     }
+    if suggest && let Some(q) = &selected_query {
+        app::suggest_index(tab, s, q.clone(), selected_schema);
+    }
     let TabKind::Activity(st) = &mut tab.kind else {
         return;
     };
     // While the confirmation is open the list stays still, so the selection can't move under it.
-    if st.auto_refresh && st.confirm_kill.is_none() && !busy && !reset_stats {
+    if st.auto_refresh && st.confirm_kill.is_none() && st.advice.is_none() && !busy && !reset_stats {
         let due = st.last_refresh.is_none_or(|at| at.elapsed() >= ACTIVITY_EVERY);
         if due {
             refresh = true;
@@ -207,7 +243,105 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     {
         error_banner(ui, e);
     }
+    if let TabKind::Activity(st) = &mut tab.kind
+        && let Some(advice) = &st.advice
+    {
+        match index_advice(ui.ctx(), tab.id, advice) {
+            Some(AdviceAction::Open(ddl)) => {
+                st.advice = None;
+                cx.request = Some(Request::Sql(ddl));
+            }
+            Some(AdviceAction::Close) => st.advice = None,
+            None => {}
+        }
+    }
     result_area(ui, tab, cx, false);
+}
+
+enum AdviceAction {
+    Open(String),
+    Close,
+}
+
+/// The index "Suggest index" came up with (or why there is none): to copy or open in the
+/// editor, never run from here.
+fn index_advice(
+    ctx: &egui::Context,
+    tab_id: u64,
+    advice: &Result<crate::advisor::Advice, String>,
+) -> Option<AdviceAction> {
+    let t = theme::tokens();
+    let mut action = None;
+    let modal = egui::Modal::new(egui::Id::new(("index_advice", tab_id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::LIGHTBULB).size(16.0).color(t.lime));
+                ui.label(
+                    egui::RichText::new("Suggest index")
+                        .size(15.0)
+                        .color(t.foreground),
+                );
+            });
+            ui.add_space(6.0);
+            match advice {
+                Ok(a) => {
+                    ui.label(egui::RichText::new(&a.reason).color(t.muted_foreground));
+                    ui.add_space(8.0);
+                    egui::Frame::new()
+                        .fill(t.sidebar)
+                        .inner_margin(egui::Margin::symmetric(8, 6))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&a.ddl)
+                                        .monospace()
+                                        .size(12.0)
+                                        .color(t.foreground),
+                                )
+                                .wrap()
+                                .selectable(true),
+                            );
+                        });
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "A guess from the statement text, without row counts: check it with EXPLAIN \
+                             ANALYZE. On a busy PostgreSQL table CREATE INDEX CONCURRENTLY avoids blocking \
+                             writes (it can't run inside a transaction). An index slows down writes.",
+                        )
+                        .size(11.0)
+                        .color(t.subtle),
+                    );
+                }
+                Err(e) => {
+                    ui.label(egui::RichText::new(e).color(t.muted_foreground));
+                }
+            }
+            ui.add_space(14.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(theme::outline_button("Close")).clicked() {
+                    action = Some(AdviceAction::Close);
+                }
+                if let Ok(a) = advice {
+                    if ui
+                        .add(theme::primary_button(Some(icon::CODE), "Open in editor"))
+                        .clicked()
+                    {
+                        action = Some(AdviceAction::Open(a.ddl.clone()));
+                    }
+                    if ui.add(theme::outline_button("Copy")).clicked() {
+                        ui.ctx().copy_text(a.ddl.clone());
+                    }
+                }
+            });
+        });
+    if action.is_none() && modal.should_close() {
+        action = Some(AdviceAction::Close);
+    }
+    action
 }
 
 /// "Server": headline numbers as tiles, then the biggest tables and the least used indexes.

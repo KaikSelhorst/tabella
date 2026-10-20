@@ -109,6 +109,12 @@ pub enum Job {
         tab: u64,
         object: DbObject,
     },
+    /// Which index a slow query is missing (see `advisor`); `schema` holds its unqualified tables.
+    SuggestIndex {
+        tab: u64,
+        sql: String,
+        schema: String,
+    },
     /// The "Server" panel.
     ServerInfo {
         tab: u64,
@@ -270,6 +276,10 @@ pub enum Reply {
         done: String,
         res: DbResult<()>,
     },
+    IndexAdvice {
+        tab: u64,
+        res: Result<crate::advisor::Advice, String>,
+    },
     ScriptProgress {
         tab: u64,
         progress: ScriptProgress,
@@ -394,6 +404,7 @@ impl Reply {
             | Reply::Distinct { tab, .. }
             | Reply::FkOptions { tab, .. }
             | Reply::DumpDone { tab, .. }
+            | Reply::IndexAdvice { tab, .. }
             | Reply::Compared { tab, .. }
             | Reply::Preview { tab, .. }
             | Reply::ServerInfo { tab, .. }
@@ -941,6 +952,13 @@ impl<S: Fn(Reply)> Worker<'_, S> {
                 tab,
                 res: conn.all_fks(),
             },
+            Job::SuggestIndex { tab, sql, schema } => {
+                let kind = conn.kind();
+                let res = crate::advisor::parse(&sql).and_then(|plans| {
+                    crate::advisor::advise(kind, &schema, &plans, |s, t| conn.structure(s, t).ok())
+                });
+                Reply::IndexAdvice { tab, res }
+            }
             Job::ServerInfo { tab } => Reply::ServerInfo {
                 tab,
                 res: conn.server_info(),
@@ -1496,6 +1514,59 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    /// "Suggest index" on a real server: asks for one, gets it, creates it, and is told it is covered.
+    fn suggests_an_index(kind: Kind, port: u16, db: &str, schema: &str) {
+        use std::time::Duration;
+        let mut cfg = ConnConfig::new(kind);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = port;
+        cfg.password = "pw".into();
+        cfg.database = db.into();
+        let mut c = Conn::connect(&cfg, None).expect("connect");
+        c.query("DROP TABLE IF EXISTS dbl_adv").unwrap();
+        c.query(
+            "CREATE TABLE dbl_adv (id INT PRIMARY KEY, owner INT, status VARCHAR(20), created TIMESTAMP)",
+        )
+        .unwrap();
+        let (jobs, replies) = spawn(cfg, eframe::egui::Context::default());
+        let ask = |sql: &str| {
+            jobs.send(Job::SuggestIndex {
+                tab: 1,
+                sql: sql.into(),
+                schema: schema.into(),
+            })
+            .unwrap();
+            loop {
+                if let Reply::IndexAdvice { res, .. } =
+                    replies.recv_timeout(Duration::from_secs(15)).expect("reply")
+                {
+                    return res;
+                }
+            }
+        };
+        let q = "SELECT * FROM dbl_adv WHERE owner = ? AND status = ? ORDER BY created DESC LIMIT 10";
+        let a = ask(q).unwrap();
+        assert_eq!(a.columns, ["owner", "status", "created"], "{kind:?}");
+        assert!(a.ddl.starts_with("CREATE INDEX"), "{}", a.ddl);
+        c.query(&a.ddl)
+            .unwrap_or_else(|e| panic!("{kind:?}: the suggestion runs: {e}\n{}", a.ddl));
+        let err = ask(q).unwrap_err();
+        assert!(err.contains("Already indexed"), "{kind:?}: {err}");
+        c.query("DROP TABLE dbl_adv").unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn index_advice_postgres() {
+        suggests_an_index(Kind::Postgres, 55432, "postgres", "public");
+    }
+
+    #[test]
+    #[ignore]
+    fn index_advice_mysql() {
+        suggests_an_index(Kind::MySql, 53306, "test", "test");
     }
 
     #[test]

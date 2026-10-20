@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod advisor;
 mod app;
 mod backup;
 mod cli;

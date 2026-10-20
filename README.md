@@ -121,6 +121,10 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
 - `Ctrl+P` → "Back up database" / "Restore database": runs `pg_dump`/`pg_restore`/`psql` or
   `mysqldump`/`mysql` (they must be installed; the password goes in the environment, not the
   command line). A `.sql` name is plain text; other names are PostgreSQL's compressed format
+- "Suggest index" in the Slow queries view: reads the selected query's WHERE, JOIN and ORDER BY
+  columns, compares them with the table's indexes and proposes a `CREATE INDEX` (or says an index
+  already covers it). It opens in the editor, never runs by itself; it is a guess from the text,
+  so check it with EXPLAIN ANALYZE. Queries with OR or subqueries aren't analysed
 - Column widths dragged in a table are remembered for that table (per connection), across tabs
   and runs
 - Functions, procedures, triggers and sequences in the sidebar (views along with the tables):
