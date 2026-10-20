@@ -11,6 +11,9 @@ use crate::history;
 const MAX_RESULTS: usize = 12;
 /// Columns rank below tables and actions with a similar match.
 const COLUMN_PENALTY: i32 = 24;
+/// What a recently opened table adds to its score (less for each place down the list): enough to
+/// lead on an empty query and to break ties, not to beat a clearly better match.
+const RECENT_BONUS: i32 = 40;
 
 #[derive(Clone)]
 enum Cmd {
@@ -126,10 +129,15 @@ impl App {
                     .estimate
                     .map(|n| format!(" · ~{} rows", format_count(n)))
                     .unwrap_or_default();
+                let recent = if self.recent_rank(&t.schema, &t.name).is_some() {
+                    "recent · "
+                } else {
+                    ""
+                };
                 items.push(Item {
                     icon: if t.is_view { icon::EYE } else { icon::TABLE },
                     label: t.name.clone(),
-                    detail: format!("{}{rows}", t.schema),
+                    detail: format!("{recent}{}{rows}", t.schema),
                     cmd: Cmd::OpenTable(t.schema.clone(), t.name.clone()),
                 });
             }
@@ -379,7 +387,15 @@ impl App {
                 let mut scored: Vec<(i32, Item)> = self
                     .palette_items()
                     .into_iter()
-                    .filter_map(|it| fuzzy_score(&p.query, &it.label).map(|s| (s, it)))
+                    .filter_map(|it| {
+                        let mut score = fuzzy_score(&p.query, &it.label)?;
+                        if let Cmd::OpenTable(schema, table) = &it.cmd
+                            && let Some(rank) = self.recent_rank(schema, table)
+                        {
+                            score += RECENT_BONUS - rank as i32;
+                        }
+                        Some((score, it))
+                    })
                     .collect();
                 // Columns ("where is the ssn column?") from two letters on, below tables and actions
                 // that match as well.

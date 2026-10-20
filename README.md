@@ -125,6 +125,12 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
   columns, compares them with the table's indexes and proposes a `CREATE INDEX` (or says an index
   already covers it). It opens in the editor, never runs by itself; it is a guess from the text,
   so check it with EXPLAIN ANALYZE. Queries with OR or subqueries aren't analysed
+- `Ctrl+P` lists the tables opened last first ("recent"), per connection, across runs
+- Pinned tabs (right-click → "Pin tab"): they stay at the start of their strip, have a pin instead
+  of the close button, are left alone by "Close others" and `Ctrl+W`, and come back with the session
+- Sort by several columns: click a header to sort by it alone, `Shift+click` adds more (numbers
+  in the headers show the order; each goes ascending, descending, then out). Saved with the session
+  and used by the export
 - Column widths dragged in a table are remembered for that table (per connection), across tabs
   and runs
 - Functions, procedures, triggers and sequences in the sidebar (views along with the tables):

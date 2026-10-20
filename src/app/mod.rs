@@ -128,7 +128,8 @@ pub struct TableState {
     pub filter: String,
     /// Text searched in every column (the search box), on top of `filter`.
     pub search: String,
-    pub order: Option<(String, bool)>,
+    /// Columns sorted by, the first being the main one (Shift+click on a header adds more).
+    pub order: Vec<(String, bool)>,
     pub edit: Option<Edit>,
     /// Exact row count for the current filter, once the COUNT(*) comes back.
     pub total: Option<i64>,
@@ -233,7 +234,7 @@ impl TableState {
             page: 0,
             filter: String::new(),
             search: String::new(),
-            order: None,
+            order: Vec::new(),
             edit: None,
             total: None,
             estimate,
@@ -380,7 +381,7 @@ impl TableState {
                 schema: &self.schema,
                 table: &self.table,
                 filter: &filter,
-                order: self.order.as_ref().map(|(c, asc)| (c.as_str(), *asc)),
+                order: &self.order,
                 pk: &pk,
                 page: self.page,
             },
@@ -646,6 +647,8 @@ pub struct Tab {
     pub id: u64,
     /// In the right pane of the split view.
     pub right: bool,
+    /// Kept at the start of its strip, without a close button, and out of "Close others".
+    pub pinned: bool,
     pub title: String,
     pub kind: TabKind,
     pub result: Option<QueryResult>,
@@ -728,6 +731,7 @@ impl Tab {
         Tab {
             id,
             right: false,
+            pinned: false,
             title,
             kind,
             result: None,
@@ -1079,6 +1083,8 @@ impl ValueEditor {
 /// What the grid asks for. Produced by the UI, carried out by `handle_grid_event`.
 pub enum GridEvent {
     Sort(String),
+    /// Shift+click: this column joins the sort (or flips, or leaves it).
+    SortAlso(String),
     Select(usize, usize),
     StartEdit(usize, usize),
     Commit(usize, usize, Option<String>),
@@ -1191,6 +1197,8 @@ pub struct App {
     pub filters: Vec<SavedFilter>,
     /// Column widths dragged by the user, per connection and table.
     col_widths: crate::widths::Store,
+    /// The tables opened last, per connection, for `Ctrl+P`.
+    recent: crate::recent::Store,
     /// Foreign keys followed (and other jumps to a filtered table), for "Back".
     nav_back: Vec<NavStep>,
     /// Tabs from the last run, reopened once their connection is ready.
@@ -1233,6 +1241,7 @@ impl App {
         let favorites = favorites::load();
         let filters = filters::load();
         let col_widths = crate::widths::load();
+        let recent = crate::recent::load();
         let settings = crate::settings::load();
         crate::db::set_max_rows(settings.value.row_limit);
         let last = session::load();
@@ -1272,6 +1281,7 @@ impl App {
             favorites: favorites.value,
             filters: filters.value,
             col_widths: col_widths.value,
+            recent: recent.value,
             nav_back: Vec::new(),
             restore: None,
             launch_files: Vec::new(),
@@ -1385,6 +1395,7 @@ impl App {
             conn: self.session.as_ref().map(|s| s.cfg.id.clone()),
             database,
             schema,
+            pinned: kept.iter().map(|(t, _)| t.pinned).collect(),
             tabs: kept.into_iter().map(|(_, s)| s).collect(),
             active,
             window: self.window,
@@ -1421,6 +1432,17 @@ impl App {
             });
             self.sync_split();
         }
+        // Pins go by position too, so only when every tab came back.
+        if self.tabs.len() == count && saved.pinned.len() == count {
+            let active = self.tabs.get(self.active).map(|t| t.id);
+            for (tab, pinned) in self.tabs.iter_mut().zip(&saved.pinned) {
+                tab.pinned = *pinned;
+            }
+            self.normalize_pins();
+            if let Some(i) = active.and_then(|id| self.tabs.iter().position(|t| t.id == id)) {
+                self.active = i;
+            }
+        }
     }
 
     /// Opens a tab as it was saved (session restore, "reopen closed tab").
@@ -1450,6 +1472,7 @@ impl App {
                     table,
                     filter,
                     order,
+                    then_by,
                     hidden,
                     pinned,
                 } => {
@@ -1460,7 +1483,7 @@ impl App {
                         t.pinned_cols = pinned;
                         if let TabKind::Table(ts) = &mut t.kind {
                             ts.filter = filter;
-                            ts.order = order;
+                            ts.order = order.into_iter().chain(then_by).collect();
                         }
                     }
                 }
@@ -1578,7 +1601,7 @@ impl App {
             .tabs
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i != keep && (!only_right || *i > keep))
+            .filter(|(i, t)| *i != keep && !t.pinned && (!only_right || *i > keep))
             .map(|(_, t)| t.id)
             .collect();
         for id in ids {
@@ -2118,6 +2141,40 @@ impl App {
         self.sync_split();
     }
 
+    /// Pins or unpins a tab; pinned ones sit first in their strip.
+    pub fn set_pinned(&mut self, i: usize, pinned: bool) {
+        if let Some(t) = self.tabs.get_mut(i) {
+            t.pinned = pinned;
+            self.normalize_pins();
+        }
+    }
+
+    /// Pinned tabs first within each pane, otherwise in the order they were. The active tab stays
+    /// the same one.
+    fn normalize_pins(&mut self) {
+        let mut order: Vec<usize> = (0..self.tabs.len()).collect();
+        for right in [false, true] {
+            let slots: Vec<usize> = self.pane_tabs(right).collect();
+            // Stable: pinned (false after the negation) first, the rest keep their order.
+            let mut members = slots.clone();
+            members.sort_by_key(|&i| !self.tabs[i].pinned);
+            for (slot, member) in slots.into_iter().zip(members) {
+                order[slot] = member;
+            }
+        }
+        if order.iter().enumerate().all(|(slot, &i)| slot == i) {
+            return;
+        }
+        let active = self.tabs.get(self.active).map(|t| t.id);
+        let mut old: Vec<Option<Tab>> = std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
+        self.tabs = order.iter().filter_map(|&i| old[i].take()).collect();
+        if let Some(id) = active
+            && let Some(i) = self.tabs.iter().position(|t| t.id == id)
+        {
+            self.active = i;
+        }
+    }
+
     /// Puts a tab (by id) before another one, or at the end when `before` is None, in the pane
     /// `pane` (None: the only strip). The tab becomes the active one.
     pub fn reorder_tab(&mut self, id: u64, before: Option<u64>, pane: Option<bool>) {
@@ -2143,6 +2200,8 @@ impl App {
             });
         self.tabs.insert(at, tab);
         self.active = at;
+        // Unpinned tabs can't be put before pinned ones, nor the other way round.
+        self.normalize_pins();
         self.sync_split();
     }
 
@@ -2734,7 +2793,23 @@ impl App {
         }
     }
 
+    /// Where the table is among the last opened on this connection (0 = the latest).
+    pub fn recent_rank(&self, schema: &str, table: &str) -> Option<usize> {
+        let s = self.session.as_ref()?;
+        crate::recent::rank(&self.recent, &s.cfg.id, schema, table)
+    }
+
+    fn remember_recent(&mut self, schema: &str, table: &str) {
+        let Some(s) = &self.session else { return };
+        if crate::recent::touch(&mut self.recent, &s.cfg.id, schema, table)
+            && let Err(e) = crate::recent::save(&self.recent)
+        {
+            self.notice = Notice::error(format!("Error saving recent tables: {e}"));
+        }
+    }
+
     pub fn open_table(&mut self, schema: &str, table: &str) {
+        self.remember_recent(schema, table);
         let Some(s) = &self.session else { return };
         let existing = self
             .tabs
@@ -3261,7 +3336,8 @@ fn saved_tab(t: &Tab) -> Option<SavedTab> {
             schema: ts.schema.clone(),
             table: ts.table.clone(),
             filter: ts.filter.clone(),
-            order: ts.order.clone(),
+            order: ts.order.first().cloned(),
+            then_by: ts.order.iter().skip(1).cloned().collect(),
             hidden: t.hidden_cols.clone(),
             pinned: t.pinned_cols.clone(),
         }),
@@ -4219,8 +4295,41 @@ pub mod tests {
             let TabKind::Table(ts) = &tab.kind else {
                 unreachable!()
             };
-            assert_eq!(ts.order.as_ref().map(|(_, asc)| *asc), expected);
+            assert_eq!(ts.order.first().map(|(_, asc)| *asc), expected);
         }
+        assert!(jobs.try_iter().any(|j| matches!(j, Job::Query { .. })));
+    }
+
+    /// Shift+click adds sort columns in the order they were clicked; each one flips, then leaves.
+    #[test]
+    fn shift_click_sorts_by_several_columns() {
+        let (s, jobs, _replies) = fake_session(Kind::Postgres);
+        let mut tab = table_tab();
+        let order = |tab: &Tab| match &tab.kind {
+            TabKind::Table(ts) => ts.order.clone(),
+            _ => unreachable!(),
+        };
+        let name = |c: &str| (c.to_string(), true);
+        handle_grid_event(&mut tab, &s, GridEvent::Sort("name".into()), true);
+        handle_grid_event(&mut tab, &s, GridEvent::SortAlso("email".into()), true);
+        assert_eq!(order(&tab), [name("name"), name("email")]);
+        handle_grid_event(&mut tab, &s, GridEvent::SortAlso("email".into()), true);
+        assert_eq!(order(&tab), [name("name"), ("email".to_string(), false)]);
+        handle_grid_event(&mut tab, &s, GridEvent::SortAlso("name".into()), true);
+        assert_eq!(
+            order(&tab),
+            [("name".to_string(), false), ("email".to_string(), false)]
+        );
+        handle_grid_event(&mut tab, &s, GridEvent::SortAlso("email".into()), true);
+        assert_eq!(
+            order(&tab),
+            [("name".to_string(), false)],
+            "a third click drops it"
+        );
+        // A plain click goes back to a single column.
+        handle_grid_event(&mut tab, &s, GridEvent::SortAlso("email".into()), true);
+        handle_grid_event(&mut tab, &s, GridEvent::Sort("id".into()), true);
+        assert_eq!(order(&tab), [name("id")]);
         assert!(jobs.try_iter().any(|j| matches!(j, Job::Query { .. })));
     }
 }
@@ -4251,6 +4360,61 @@ mod poll_tests {
         assert!(app.session.is_none());
         assert!(app.notice.as_ref().is_some_and(|n| n.error));
         assert!(!app.tabs[0].busy(), "nothing stays stuck on Loading…");
+    }
+
+    /// Pinned tabs sit first in their strip, survive "Close others" and come back with the session.
+    #[test]
+    fn pinned_tabs_stay_first_and_are_kept() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.open_sql("select 1".into());
+        app.open_sql("select 2".into());
+        app.open_sql("select 3".into());
+        let ids: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
+        app.active = 2;
+        app.set_pinned(2, true);
+        assert_eq!(
+            app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+            [ids[2], ids[0], ids[1]]
+        );
+        assert_eq!(
+            app.tabs[app.active].id, ids[2],
+            "the active tab is still the same one"
+        );
+        // Dragging an unpinned tab before the pinned one puts it right after it.
+        app.reorder_tab(ids[1], Some(ids[2]), None);
+        assert_eq!(app.tabs[0].id, ids[2]);
+        // "Close others" from an unpinned tab leaves the pinned one.
+        let keep = app.tabs.iter().position(|t| t.id == ids[0]).unwrap();
+        app.close_others(keep, false);
+        assert_eq!(
+            app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+            [ids[2], ids[0]]
+        );
+        // The session remembers it.
+        let snap = app.snapshot();
+        assert_eq!(snap.pinned, [true, false]);
+        let (s2, _j2, _r2) = fake_session(Kind::Postgres);
+        let mut fresh = app_with(s2);
+        fresh.restore_tabs(snap);
+        assert_eq!(
+            fresh.tabs.iter().map(|t| t.pinned).collect::<Vec<_>>(),
+            [true, false]
+        );
+    }
+
+    /// Opening a table makes it the latest recent one, and the list is per connection.
+    #[test]
+    fn opened_tables_are_remembered_as_recent() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.recent.clear();
+        app.open_table("public", "orders");
+        app.open_table("public", "customers");
+        app.open_table("public", "orders");
+        assert_eq!(app.recent_rank("public", "orders"), Some(0));
+        assert_eq!(app.recent_rank("public", "customers"), Some(1));
+        assert_eq!(app.recent_rank("public", "products"), None);
     }
 
     /// Resuming a Postgres session goes back to the database it was in, once.
@@ -4353,7 +4517,7 @@ mod poll_tests {
         app.open_table("public", "customers");
         if let TabKind::Table(ts) = &mut app.tabs[1].kind {
             ts.filter = "active".into();
-            ts.order = Some(("name".into(), false));
+            ts.order = vec![("name".into(), false)];
         }
         app.open_structure("public", "orders");
         app.active = 1;

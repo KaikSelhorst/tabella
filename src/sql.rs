@@ -12,7 +12,8 @@ pub struct PageQuery<'a> {
     pub schema: &'a str,
     pub table: &'a str,
     pub filter: &'a str,
-    pub order: Option<(&'a str, bool)>,
+    /// Sort columns, the main one first; the primary key follows as the tiebreaker.
+    pub order: &'a [(String, bool)],
     /// Primary key: the default order, and the tiebreaker after a user-chosen one.
     pub pk: &'a [String],
     pub page: usize,
@@ -33,15 +34,15 @@ pub fn select_range(kind: Kind, q: &PageQuery, limit: usize, offset: usize) -> S
     // Without a stable order Postgres returns an updated row at the end of the table, so after
     // an edit the row would jump away and a neighbor would show up in its place.
     let mut keys: Vec<String> = Vec::new();
-    if let Some((col, asc)) = q.order {
+    for (col, asc) in q.order {
         keys.push(format!(
             "{} {}",
             kind.quote_ident(col),
-            if asc { "ASC" } else { "DESC" }
+            if *asc { "ASC" } else { "DESC" }
         ));
     }
     for p in q.pk {
-        if q.order.is_none_or(|(c, _)| c != p) {
+        if !q.order.iter().any(|(c, _)| c == p) {
             keys.push(format!("{} ASC", kind.quote_ident(p)));
         }
     }
@@ -1412,6 +1413,33 @@ pub fn fk_label(columns: &[(String, String)], key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn several_sort_columns_keep_their_order_and_the_key_follows() {
+        let pk = vec!["id".to_string()];
+        let q = PageQuery {
+            schema: "public",
+            table: "t",
+            filter: "",
+            order: &[
+                ("status".into(), true),
+                ("created_at".into(), false),
+                ("id".into(), true),
+            ],
+            pk: &pk,
+            page: 0,
+        };
+        assert_eq!(
+            select_page(Kind::Postgres, &q),
+            "SELECT * FROM \"public\".\"t\" ORDER BY \"status\" ASC, \"created_at\" DESC, \"id\" ASC LIMIT 200 OFFSET 0"
+        );
+        // The key is added only when no sort column is it already.
+        let q = PageQuery {
+            order: &[("status".into(), false)],
+            ..q
+        };
+        assert!(select_page(Kind::Postgres, &q).contains("ORDER BY \"status\" DESC, \"id\" ASC"));
+    }
+
     use super::*;
 
     #[test]
@@ -1420,7 +1448,7 @@ mod tests {
             schema: "public",
             table: "t",
             filter: " id > 1 ",
-            order: Some(("na\"me", false)),
+            order: &[("na\"me".into(), false)],
             pk: &[],
             page: 2,
         };
@@ -1432,7 +1460,7 @@ mod tests {
             schema: "db",
             table: "t",
             filter: "",
-            order: None,
+            order: &[],
             pk: &[],
             page: 0,
         };
@@ -1449,7 +1477,7 @@ mod tests {
             schema: "s",
             table: "t",
             filter: "",
-            order: None,
+            order: &[],
             pk: &pk,
             page: 0,
         };
@@ -1458,12 +1486,12 @@ mod tests {
             "SELECT * FROM \"s\".\"t\" ORDER BY \"id\" ASC LIMIT 200 OFFSET 0"
         );
         let q = PageQuery {
-            order: Some(("name", false)),
+            order: &[("name".into(), false)],
             ..q
         };
         assert!(select_page(Kind::MySql, &q).contains("ORDER BY `name` DESC, `id` ASC"));
         let q = PageQuery {
-            order: Some(("id", false)),
+            order: &[("id".into(), false)],
             ..q
         };
         assert!(select_page(Kind::MySql, &q).ends_with("ORDER BY `id` DESC LIMIT 200 OFFSET 0"));

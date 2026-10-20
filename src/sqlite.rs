@@ -340,7 +340,7 @@ pub(crate) mod tests {
             schema: "main",
             table: "purchase",
             filter: "total > 5",
-            order: Some(("total", false)),
+            order: &[("total".into(), false)],
             pk: &pk,
             page: 0,
         };

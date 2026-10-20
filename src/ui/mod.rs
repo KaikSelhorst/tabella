@@ -508,7 +508,12 @@ impl App {
             self.open_sql(String::new());
         }
         if close {
-            self.close_tab(self.active);
+            if self.tabs.get(self.active).is_some_and(|t| t.pinned) {
+                self.notice =
+                    crate::app::Notice::info("This tab is pinned: unpin it (right-click) to close it");
+            } else {
+                self.close_tab(self.active);
+            }
         }
         // In a split view Ctrl+Tab cycles the tabs of the focused pane.
         let right = self.tabs.get(self.active).is_some_and(|t| t.right);
@@ -647,7 +652,7 @@ pub(crate) mod screenshots {
         };
         let mut ts = TableState::new("public", "customers", Some(40));
         ts.cols = cols;
-        ts.order = Some(("id".into(), true));
+        ts.order = vec![("id".into(), true)];
         ts.total = Some(40);
         ts.counted_filter = Some(String::new());
         // Far from `App::next_id`, so tabs the screens open never share an id with these.
@@ -812,6 +817,35 @@ pub(crate) mod screenshots {
         let after = harness.state().col_widths_for("customers");
         assert!(after["name"] > 200.0, "{after:?}");
         assert_eq!(harness.state().tabs[0].col_widths["name"], after["name"]);
+    }
+
+    /// `TABELLA_SHOTS=<dir> cargo test sort_pin_shot -- --ignored`: two sort columns and a pinned tab.
+    #[test]
+    #[ignore]
+    fn sort_pin_shot() {
+        let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .with_max_steps(8)
+            .wgpu()
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        let state = harness.state_mut();
+        state.active = 0;
+        if let TabKind::Table(ts) = &mut state.tabs[0].kind {
+            ts.order = vec![("name".into(), true), ("email".into(), false)];
+        }
+        state.set_pinned(1, true);
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/sort-pin.png"))
+            .unwrap();
     }
 
     /// `TABELLA_SHOTS=<dir> cargo test index_advice_shot -- --ignored`: the "Suggest index" dialog.

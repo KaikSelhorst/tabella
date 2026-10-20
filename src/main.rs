@@ -19,6 +19,7 @@ mod history;
 mod import;
 mod plan;
 mod programs;
+mod recent;
 mod script;
 mod search;
 mod secrets;

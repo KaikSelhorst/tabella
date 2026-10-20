@@ -317,7 +317,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
                     &ts.incoming,
                 )
             }
-            None => (&no_cols, None, None, None, 0, false, &no_incoming),
+            None => (&no_cols, None, Vec::new(), None, 0, false, &no_incoming),
         };
     let can_edit = has_pk && !s.cfg.read_only;
     let kinds = values::column_kinds(res, cols);

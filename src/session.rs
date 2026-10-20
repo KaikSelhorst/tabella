@@ -20,6 +20,9 @@ pub struct Saved {
     pub active: usize,
     /// Inner window size in points.
     pub window: Option<[f32; 2]>,
+    /// One entry per saved tab: pinned. Missing in older files (nothing pinned).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned: Vec<bool>,
     /// The split view, when there was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split: Option<SavedSplit>,
@@ -50,6 +53,9 @@ pub enum SavedTab {
         table: String,
         filter: String,
         order: Option<(String, bool)>,
+        /// Further sort columns, after `order`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        then_by: Vec<(String, bool)>,
         #[serde(default)]
         hidden: Vec<String>,
         #[serde(default)]
@@ -82,6 +88,7 @@ mod tests {
             conn: Some("abc".into()),
             database: Some("b".into()),
             schema: None,
+            pinned: vec![true],
             tabs: vec![
                 SavedTab::Sql {
                     text: "select 1".into(),
@@ -93,6 +100,7 @@ mod tests {
                     table: "t".into(),
                     filter: "id > 1".into(),
                     order: Some(("id".into(), false)),
+                    then_by: vec![("name".into(), true)],
                     hidden: vec!["note".into()],
                     pinned: vec!["id".into()],
                 },

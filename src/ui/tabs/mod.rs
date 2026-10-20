@@ -100,6 +100,8 @@ pub(super) enum TabAction {
     Duplicate(usize),
     /// Close the others (`true`: only those to the right).
     CloseOthers(usize, bool),
+    /// Pin the tab at the start of its strip, or let go of it.
+    TogglePin(usize),
     Reopen,
     /// Split right: the tab goes to the other pane (a SQL tab is copied there).
     Split(usize),
@@ -323,6 +325,11 @@ impl App {
                                             ui.data_mut(|d| d.insert_temp(name_id, name));
                                         }
                                         ui.separator();
+                                        let pin_label = if tab.pinned { "Unpin tab" } else { "Pin tab" };
+                                        if ui.button(pin_label).clicked() {
+                                            action = Some(TabAction::TogglePin(i));
+                                            ui.close();
+                                        }
                                         if is_sql && ui.button("Duplicate").clicked() {
                                             action = Some(TabAction::Duplicate(i));
                                             ui.close();
@@ -373,13 +380,28 @@ impl App {
                                             ui.close();
                                         }
                                     });
-                                    let x = theme::icon(icon::X).size(11.0).color(t.subtle);
-                                    let x = ui.add(egui::Button::new(x).frame(false)).on_hover_text("Close");
+                                    // A pinned tab has a pin where the close button would be; clicking
+                                    // it lets go.
+                                    let (glyph, tip) = if tab.pinned {
+                                        (icon::PUSH_PIN, "Pinned: click to unpin")
+                                    } else {
+                                        (icon::X, "Close")
+                                    };
+                                    let x = theme::icon(glyph).size(11.0).color(if tab.pinned {
+                                        t.lime
+                                    } else {
+                                        t.subtle
+                                    });
+                                    let x = ui.add(egui::Button::new(x).frame(false)).on_hover_text(tip);
                                     if Some(i) == sel {
                                         theme::tab_underline(ui, label_rect.union(x.rect), focused);
                                     }
                                     if x.clicked() {
-                                        close = Some(i);
+                                        if tab.pinned {
+                                            action = Some(TabAction::TogglePin(i));
+                                        } else {
+                                            close = Some(i);
+                                        }
                                     }
                                     ui.add_space(12.0);
                                 }
@@ -472,6 +494,11 @@ impl App {
             }
             Some(TabAction::Duplicate(i)) => self.duplicate_tab(i),
             Some(TabAction::CloseOthers(i, right)) => self.close_others(i, right),
+            Some(TabAction::TogglePin(i)) => {
+                if let Some(pinned) = self.tabs.get(i).map(|t| t.pinned) {
+                    self.set_pinned(i, !pinned);
+                }
+            }
             Some(TabAction::Reopen) => self.reopen_closed_tab(),
             Some(TabAction::Split(i)) => self.split_tab(i),
             Some(TabAction::CloseSplit) => self.close_split(),

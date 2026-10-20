@@ -97,6 +97,10 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Fill down (each column gets the value of the first selected row)",
             ),
             ("Delete", "Mark the selected rows for deletion"),
+            (
+                "Click / Shift+click a header",
+                "Sort by that column / add it as another sort column",
+            ),
             ("Enter / F2 / double-click", "Edit the cell"),
             (
                 "Shift+Enter",

@@ -232,7 +232,8 @@ pub struct GridOpts<'a> {
     pub can_edit: bool,
     pub selected: Option<(usize, usize)>,
     pub scroll_to: Option<usize>,
-    pub order: &'a Option<(String, bool)>,
+    /// Sort columns, the main one first.
+    pub order: &'a [(String, bool)],
     /// Index of the first shown row in the full table (page * page size).
     pub row_offset: usize,
     /// Widths the user gave columns (by name), when this grid remembers them (table tabs).
@@ -417,13 +418,18 @@ pub fn grid(
                             .truncate()
                             .sense(Sense::click()),
                     );
-                    let arrow = match order {
-                        Some((c, true)) if c == name => Some(icon::ARROW_UP),
-                        Some((c, false)) if c == name => Some(icon::ARROW_DOWN),
-                        _ => None,
-                    };
-                    if let Some(a) = arrow {
+                    let place = order.iter().position(|(c, _)| c == name);
+                    if let Some(pos) = place {
+                        let a = if order[pos].1 {
+                            icon::ARROW_UP
+                        } else {
+                            icon::ARROW_DOWN
+                        };
                         ui.label(theme::icon(a).color(t.lime).size(12.0));
+                        // Which of several sort columns this is.
+                        if order.len() > 1 {
+                            ui.label(RichText::new((pos + 1).to_string()).color(t.lime).size(10.0));
+                        }
                     }
                     if filtered.contains(name)
                         && ui
@@ -447,14 +453,19 @@ pub fn grid(
                     }
                     let r = r.on_hover_text(match c {
                         Some(c) => format!(
-                            "{name}: {}{}",
+                            "{name}: {}{}\nClick sorts; Shift+click adds a sort column",
                             c.data_type,
                             if c.pk { " (primary key)" } else { "" }
                         ),
                         None => name.clone(),
                     });
                     if can_edit && r.clicked() {
-                        event = Some(GridEvent::Sort(name.clone()));
+                        // Shift adds the column to the sort instead of replacing it.
+                        event = Some(if ui.input(|i| i.modifiers.shift) {
+                            GridEvent::SortAlso(name.clone())
+                        } else {
+                            GridEvent::Sort(name.clone())
+                        });
                     }
                     r.context_menu(|ui| {
                         if let Some(e) = header_menu(ui, res, opts, vi, ci) {
@@ -1082,7 +1093,7 @@ mod tests {
                     can_edit: false,
                     selected: None,
                     scroll_to: None,
-                    order: &None,
+                    order: &[],
                     row_offset: 0,
                     option_pick: None,
                     widths: None,
@@ -1121,7 +1132,7 @@ mod tests {
                     can_edit: true,
                     selected: None,
                     scroll_to: None,
-                    order: &None,
+                    order: &[],
                     row_offset: 0,
                     option_pick: None,
                     widths: None,

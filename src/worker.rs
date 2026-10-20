@@ -229,7 +229,7 @@ pub enum ExportSource {
         schema: String,
         table: String,
         filter: String,
-        order: Option<(String, bool)>,
+        order: Vec<(String, bool)>,
         pk: Vec<String>,
     },
 }
@@ -1150,14 +1150,19 @@ fn export(conn: &mut Conn, spec: ExportSpec) -> DbResult<(PathBuf, u64)> {
                 schema: &schema,
                 table: &table,
                 filter: &filter,
-                order: order.as_ref().map(|(c, asc)| (c.as_str(), *asc)),
+                order: &order,
                 pk: &pk,
                 page: 0,
             };
             // Ordered by the primary key, so chunks neither skip nor repeat rows. In key order,
             // each chunk starts after the last key read; ordered by another column (which may
             // hold NULLs), by OFFSET.
-            let by_key = !pk.is_empty() && q.order.is_none_or(|(c, asc)| asc && pk.len() == 1 && c == pk[0]);
+            let by_key = !pk.is_empty()
+                && match q.order {
+                    [] => true,
+                    [(c, asc)] => *asc && pk.len() == 1 && *c == pk[0],
+                    _ => false,
+                };
             let mut writer: Option<Writer> = None;
             let mut offset = 0;
             let mut after: Option<Vec<Option<String>>> = None;
@@ -1237,7 +1242,7 @@ mod tests {
                 schema: schema.into(),
                 table: "dbl_export".into(),
                 filter: "id > 10".into(),
-                order: None,
+                order: Vec::new(),
                 pk: vec!["id".into()],
             },
         };
@@ -1829,7 +1834,7 @@ mod tests {
                     schema: schema.into(),
                     table: table.into(),
                     filter: String::new(),
-                    order: None,
+                    order: Vec::new(),
                     pk,
                 },
             },

@@ -295,7 +295,7 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
     let kinds = values::column_kinds(res, &ts.cols);
     match event {
         // Editor results keep the order their query asked for.
-        GridEvent::Sort(_) if !is_table => {}
+        GridEvent::Sort(_) | GridEvent::SortAlso(_) if !is_table => {}
         // Expressions and aliases in an editor's SELECT aren't columns of the table.
         GridEvent::StartEdit(_, col) if !ts.cols.iter().any(|c| c.name == res.columns[col]) => {
             tab.error = Some(format!(
@@ -304,11 +304,24 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
             ));
         }
         GridEvent::Sort(col) => {
-            ts.order = match &ts.order {
-                Some((c, true)) if *c == col => Some((col, false)),
-                Some((c, false)) if *c == col => None,
-                _ => Some((col, true)),
+            // A plain click sorts by this column alone: ascending, descending, then off.
+            ts.order = match ts.order.as_slice() {
+                [(c, true)] if *c == col => vec![(col, false)],
+                [(c, false)] if *c == col => Vec::new(),
+                _ => vec![(col, true)],
             };
+            ts.page = 0;
+            reload(tab, s);
+        }
+        GridEvent::SortAlso(col) => {
+            match ts.order.iter().position(|(c, _)| *c == col) {
+                // Each sort column goes ascending, descending, then out of the sort.
+                Some(i) if ts.order[i].1 => ts.order[i].1 = false,
+                Some(i) => {
+                    ts.order.remove(i);
+                }
+                None => ts.order.push((col, true)),
+            }
             ts.page = 0;
             reload(tab, s);
         }
