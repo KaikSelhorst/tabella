@@ -113,6 +113,8 @@ pub(super) enum Request {
     Data(String, String),
     Sql(String),
     OpenFiltered(String, String, String),
+    /// A bulk UPDATE to look at: opens it in an editor and previews what it would change.
+    PreviewUpdate(String),
     SaveFavorite(String),
     DeleteFavorite(String),
     /// The ER diagram of a schema.
@@ -592,6 +594,7 @@ impl App {
                 self.open_table_filtered(&schema, &table, filter)
             }
             Some(Request::Sql(text)) => self.open_sql(text),
+            Some(Request::PreviewUpdate(sql)) => self.open_update_preview(sql),
             Some(Request::SaveFavorite(sql)) => {
                 self.dialog = Some(Dialog::Favorite(FavPrompt {
                     name: String::new(),

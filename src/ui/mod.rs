@@ -819,6 +819,69 @@ pub(crate) mod screenshots {
         assert_eq!(harness.state().tabs[0].col_widths["name"], after["name"]);
     }
 
+    /// `TABELLA_SHOTS=<dir> cargo test bulk_dialog_shot -- --ignored`: "Set with an expression".
+    #[test]
+    #[ignore]
+    fn bulk_dialog_shot() {
+        let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .with_max_steps(8)
+            .wgpu()
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        let state = harness.state_mut();
+        state.active = 0;
+        let tab = &mut state.tabs[0];
+        tab.selected = Some((2, 4));
+        tab.anchor = Some((0, 4));
+        tab.bulk_prompt = Some(crate::app::BulkPrompt {
+            column: "balance".into(),
+            expression: "balance * 1.1".into(),
+            selected_only: true,
+        });
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/bulk-dialog.png"))
+            .unwrap();
+    }
+
+    /// `TABELLA_SHOTS=<dir> cargo test plan_compare_shot -- --ignored`: a plan against the pinned one.
+    #[test]
+    #[ignore]
+    fn plan_compare_shot() {
+        let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .with_max_steps(8)
+            .wgpu()
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        let before = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Total Cost": 91000, "Plan Rows": 5000000, "Actual Total Time": 610.0, "Actual Rows": 41, "Actual Loops": 1, "Filter": "(customer_id = 7)"}, "Planning Time": 0.3, "Execution Time": 610.4}]"#;
+        let after = r#"[{"Plan": {"Node Type": "Index Scan", "Index Name": "idx_orders_customer_id", "Relation Name": "orders", "Total Cost": 12.4, "Plan Rows": 40, "Actual Total Time": 0.09, "Actual Rows": 41, "Actual Loops": 1, "Index Cond": "(customer_id = 7)"}, "Planning Time": 0.4, "Execution Time": 0.2}]"#;
+        let state = harness.state_mut();
+        state.active = 1;
+        let ed = state.tabs[1].editor_mut().unwrap();
+        ed.pinned_plan = Some(crate::plan::from_pg_json(before).unwrap());
+        ed.plan = Some(crate::plan::from_pg_json(after).unwrap());
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/plan-compare.png"))
+            .unwrap();
+    }
+
     /// `TABELLA_SHOTS=<dir> cargo test sort_pin_shot -- --ignored`: two sort columns and a pinned tab.
     #[test]
     #[ignore]

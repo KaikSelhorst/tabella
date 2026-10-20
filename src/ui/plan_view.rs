@@ -18,13 +18,23 @@ const BIG_SCAN: f64 = 10_000.0;
 pub enum PlanAction {
     Close,
     OpenSql(String),
+    /// Keep this plan to compare the next one with.
+    Pin,
+    Unpin,
 }
 
-/// `hints`: suggested `CREATE INDEX` statements with what they're for.
-pub fn plan_view(ui: &mut egui::Ui, plan: &Plan, hints: &[(String, String)]) -> Option<PlanAction> {
+/// `baseline`: the pinned plan to compare with. `hints`: suggested `CREATE INDEX` statements with
+/// what they're for.
+pub fn plan_view(
+    ui: &mut egui::Ui,
+    plan: &Plan,
+    baseline: Option<&Plan>,
+    hints: &[(String, String)],
+) -> Option<PlanAction> {
     let t = theme::tokens();
     let mut close = false;
     let mut open_sql = None;
+    let mut pin_action = None;
     // What each bar measures: real time when the statement ran, planner cost otherwise.
     let weight = |n: &Node| if plan.analyzed { n.self_ms() } else { n.self_cost() };
     let mut max = 0.0f64;
@@ -73,9 +83,58 @@ pub fn plan_view(ui: &mut egui::Ui, plan: &Plan, hints: &[(String, String)]) -> 
                     {
                         ui.ctx().copy_text(plan_text(plan));
                     }
+                    let pinned_here = baseline == Some(plan);
+                    let (glyph, label, tip) = match baseline {
+                        Some(_) if pinned_here => (
+                            icon::PUSH_PIN,
+                            "Unpin",
+                            "This is the pinned plan: run the query again after your change to compare",
+                        ),
+                        Some(_) => (icon::PUSH_PIN, "Pin this one instead", "Compare the next plan with this one"),
+                        None => (
+                            icon::PUSH_PIN,
+                            "Pin to compare",
+                            "Keep this plan, change something (an index, the query), explain again: the two are \
+                             compared",
+                        ),
+                    };
+                    let color = if baseline.is_some() { t.lime } else { t.muted_foreground };
+                    if ui
+                        .add(egui::Button::new(theme::icon_text(glyph, label, color, t.foreground)).frame(false))
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        pin_action = Some(if pinned_here { PlanAction::Unpin } else { PlanAction::Pin });
+                    }
+                    if baseline.is_some()
+                        && !pinned_here
+                        && ui
+                            .add(
+                                egui::Button::new(theme::icon_text(
+                                    icon::X,
+                                    "Forget pinned",
+                                    t.muted_foreground,
+                                    t.foreground,
+                                ))
+                                .frame(false),
+                            )
+                            .clicked()
+                    {
+                        pin_action = Some(PlanAction::Unpin);
+                    }
                 });
             });
         });
+    if let Some(before) = baseline.filter(|b| *b != plan) {
+        comparison_panel(ui, &crate::plan::compare(before, plan));
+    } else if baseline.is_some() {
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new("  Pinned. Change something, run the explain again and the two are compared here.")
+                .size(12.0)
+                .color(t.lime),
+        );
+    }
 
     egui::ScrollArea::both()
         .id_salt("plan")
@@ -136,8 +195,106 @@ pub fn plan_view(ui: &mut egui::Ui, plan: &Plan, hints: &[(String, String)]) -> 
     if close {
         Some(PlanAction::Close)
     } else {
-        open_sql.map(PlanAction::OpenSql)
+        pin_action.or_else(|| open_sql.map(PlanAction::OpenSql))
     }
+}
+
+/// How far a figure dropped, in percent, without rounding "almost all" up to "all": 100 only
+/// when it really reached zero.
+fn drop_pct(change: f64) -> f64 {
+    if change <= -100.0 {
+        100.0
+    } else {
+        (-change).min(99.0)
+    }
+}
+
+/// A figure as text: "120 ms", "1,500", "3".
+fn metric_text(v: Option<f64>, unit: crate::plan::Unit) -> String {
+    use crate::plan::Unit;
+    match (v, unit) {
+        (None, _) => "–".into(),
+        (Some(v), Unit::Ms) => ms_text(v),
+        (Some(v), Unit::Cost) => format!("{v:.1}"),
+        (Some(v), Unit::Rows | Unit::Count) => palette::format_count(v.round() as i64),
+    }
+}
+
+/// The two plans side by side: each figure before and after, how much it moved (lower is
+/// better), and the tables that are read another way now.
+fn comparison_panel(ui: &mut egui::Ui, c: &crate::plan::Comparison) {
+    let t = theme::tokens();
+    egui::Frame::new()
+        .fill(t.card)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::GIT_DIFF).color(t.lime));
+                ui.label(RichText::new("VS PINNED PLAN").size(11.0).color(t.subtle));
+                // The headline: time when both ran, else planner cost.
+                let headline = c
+                    .metrics
+                    .iter()
+                    .find(|m| m.label == "Execution time" && m.change_pct().is_some())
+                    .or_else(|| c.metrics.iter().find(|m| m.label == "Planner cost"));
+                if let Some(pct) = headline.and_then(|m| m.change_pct()) {
+                    let what = headline.map_or("", |m| {
+                        if m.unit == crate::plan::Unit::Ms {
+                            "time"
+                        } else {
+                            "cost"
+                        }
+                    });
+                    let (text, color) = if pct.abs() < 5.0 {
+                        (format!("about the same {what}"), t.muted_foreground)
+                    } else if pct < 0.0 {
+                        (format!("{:.0}% lower {what}", drop_pct(pct)), t.lime)
+                    } else if pct.is_finite() {
+                        (format!("{pct:.0}% higher {what}"), t.destructive)
+                    } else {
+                        (format!("higher {what}"), t.destructive)
+                    };
+                    ui.label(RichText::new(text).color(color));
+                }
+            });
+            ui.add_space(4.0);
+            egui::Grid::new("plan_compare")
+                .num_columns(4)
+                .spacing([24.0, 3.0])
+                .show(ui, |ui| {
+                    for h in ["", "pinned", "now", "change"] {
+                        ui.label(RichText::new(h).size(11.0).color(t.subtle));
+                    }
+                    ui.end_row();
+                    for m in &c.metrics {
+                        ui.label(RichText::new(m.label).color(t.muted_foreground));
+                        ui.label(
+                            RichText::new(metric_text(m.before, m.unit))
+                                .monospace()
+                                .size(12.0),
+                        );
+                        ui.label(RichText::new(metric_text(m.after, m.unit)).monospace().size(12.0));
+                        let (text, color) = match m.change_pct() {
+                            None => ("–".to_string(), t.subtle),
+                            Some(p) if p.abs() < 1.0 => ("same".to_string(), t.subtle),
+                            Some(p) if !p.is_finite() => ("new".to_string(), t.destructive),
+                            Some(p) if p < 0.0 => (format!("-{:.0}%", drop_pct(p)), t.lime),
+                            Some(p) => (format!("+{p:.0}%"), t.destructive),
+                        };
+                        ui.label(RichText::new(text).monospace().size(12.0).color(color));
+                        ui.end_row();
+                    }
+                });
+            for s in &c.scan_changes {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!("{}: {}  →  {}", s.relation, s.before, s.after))
+                        .size(12.0)
+                        .color(t.foreground),
+                );
+            }
+        });
 }
 
 /// A row with free content on the left and fixed-width numbers on the right.

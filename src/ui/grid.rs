@@ -308,6 +308,12 @@ pub fn grid(
         ..
     } = *opts;
     let in_range = |ri: usize, ci: usize| range.is_some_and(|r| r.contains(ri, ci));
+    // The selected cell's value (NULL and empty excluded): the same value elsewhere in its
+    // column is lit, to spot repeats. Not while a range is selected.
+    let same: Option<(usize, &str)> = selected
+        .filter(|_| range.is_none())
+        .and_then(|(r, c)| Some((c, res.rows.get(r)?.get(c)?.as_deref()?)))
+        .filter(|(_, v)| !v.is_empty());
     // Dragging across cells selects a range: set when a drag starts on a cell, until release.
     let drag_id = egui::Id::new(("grid_drag", id));
     let dragging = ui.ctx().data(|d| d.get_temp::<bool>(drag_id)).unwrap_or(false);
@@ -552,6 +558,11 @@ pub fn grid(
                                     .then_some(found_current == Some((ri, ci))),
                                 deleted: row_deleted,
                                 changed: changed.is_some_and(|c| c.contains(&(ri, ci))),
+                                same_value: same.is_some_and(|(c, v)| {
+                                    c == ci
+                                        && selected != Some((ri, ci))
+                                        && res.rows[ri][ci].as_deref() == Some(v)
+                                }),
                             },
                         );
                         if let Some(fill) = fill {
@@ -952,6 +963,20 @@ fn cell_menu(
         }
         ui.separator();
     }
+    if can_edit && can_filter {
+        // A bulk UPDATE of this column (table tabs): opens a form, then a preview.
+        if ui
+            .button(format!("Set {} with an expression…", res.columns[ci]))
+            .on_hover_text(
+                "UPDATE with a SQL expression (price * 1.1) on the selected rows, previewed before it runs",
+            )
+            .clicked()
+        {
+            event = Some(GridEvent::AskBulk(ci));
+            ui.close();
+        }
+        ui.separator();
+    }
     if range.is_some() {
         if ui
             .button("Copy selection")
@@ -1024,6 +1049,8 @@ struct CellState {
     found: Option<bool>,
     deleted: bool,
     changed: bool,
+    /// The same value as the selected cell, in its column.
+    same_value: bool,
 }
 
 /// The cell's background, when not the plain one. The strongest state wins.
@@ -1039,6 +1066,8 @@ fn cell_fill(t: &theme::Tokens, c: CellState) -> Option<egui::Color32> {
         Some(mix(t.destructive, 0.14))
     } else if c.changed {
         Some(mix(t.warning, 0.18))
+    } else if c.same_value {
+        Some(mix(t.selection, 0.45))
     } else {
         None
     }
@@ -1046,6 +1075,31 @@ fn cell_fill(t: &theme::Tokens, c: CellState) -> Option<egui::Color32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_repeated_value_is_lit_below_the_stronger_states() {
+        let t = super::theme::tokens();
+        let state = |same_value, selected, changed| CellState {
+            selected,
+            in_range: false,
+            found: None,
+            deleted: false,
+            changed,
+            same_value,
+        };
+        assert!(cell_fill(t, state(true, false, false)).is_some());
+        assert!(cell_fill(t, state(false, false, false)).is_none());
+        assert_eq!(
+            cell_fill(t, state(true, true, false)),
+            Some(t.selection),
+            "selection wins"
+        );
+        assert_ne!(
+            cell_fill(t, state(true, false, true)),
+            cell_fill(t, state(true, false, false)),
+            "an unsaved edit still shows"
+        );
+    }
+
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 

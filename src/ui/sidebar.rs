@@ -278,11 +278,13 @@ impl App {
             | TabKind::Dump(_)
             | TabKind::Compare(_) => None,
         });
+        let starred = self.starred.get(&s.cfg.id).cloned().unwrap_or_default();
         let tree = Tree {
             s,
             needle: self.filter.to_lowercase(),
             by_size: self.sort_by_size,
             active_table,
+            starred: &starred,
         };
         let focus = self.schema_focus.take();
         ui.add_space(4.0);
@@ -291,6 +293,9 @@ impl App {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                if let Some(a) = tree.starred_section(ui) {
+                    action = Some(a);
+                }
                 // Where unqualified names go (the Postgres schema, the MySQL database) comes
                 // first and is marked.
                 let mut groups: Vec<&[TableRef]> = s.tables.chunk_by(|a, b| a.schema == b.schema).collect();
@@ -317,6 +322,7 @@ impl App {
             TreeAction::ToggleSort => self.sort_by_size = !self.sort_by_size,
             TreeAction::NewSql => self.open_sql(String::new()),
             TreeAction::Open(schema, table) => self.open_table(&schema, &table),
+            TreeAction::ToggleStar(schema, table) => self.toggle_star(&schema, &table),
             TreeAction::Structure(schema, table) => self.open_structure(&schema, &table),
             TreeAction::Sql(sql) => self.open_sql(sql),
             TreeAction::Template(schema, table, what) => self.open_template(&schema, &table, what),
@@ -339,6 +345,8 @@ enum TreeAction {
     ToggleSort,
     NewSql,
     Open(String, String),
+    /// Star the table (or take the star off).
+    ToggleStar(String, String),
     Structure(String, String),
     Sql(String),
     Template(String, String, Template),
@@ -400,6 +408,8 @@ struct Tree<'a> {
     by_size: bool,
     /// The table of the active tab, highlighted.
     active_table: Option<(&'a str, &'a str)>,
+    /// Starred tables of this connection, in the order they were starred.
+    starred: &'a [(String, String)],
 }
 
 impl Tree<'_> {
@@ -410,6 +420,42 @@ impl Tree<'_> {
             Kind::MySql => &self.s.current_db,
             Kind::Sqlite => "main",
         }
+    }
+
+    /// The starred tables, above the schemas. Tables that no longer exist are skipped.
+    fn starred_section(&self, ui: &mut egui::Ui) -> Option<TreeAction> {
+        let tk = theme::tokens();
+        let tables: Vec<&TableRef> = self
+            .starred
+            .iter()
+            .filter_map(|(schema, name)| {
+                self.s
+                    .tables
+                    .iter()
+                    .find(|t| t.schema == *schema && t.name == *name)
+            })
+            .filter(|t| self.needle.is_empty() || t.search_key.contains(&self.needle))
+            .collect();
+        if tables.is_empty() {
+            return None;
+        }
+        let header = egui::RichText::new(format!("★ Starred  {}", tables.len()))
+            .size(11.0)
+            .color(tk.warning);
+        let mut action = None;
+        egui::CollapsingHeader::new(header)
+            .id_salt("starred")
+            .default_open(true)
+            .show(ui, |ui| {
+                for t in tables {
+                    ui.push_id(("starred", &t.schema, &t.name), |ui| {
+                        if let Some(a) = self.table_row(ui, t) {
+                            action = Some(a);
+                        }
+                    });
+                }
+            });
+        action
     }
 
     /// One schema: its tables, then its other objects. `focus` opens it (and folds the others).
@@ -544,6 +590,17 @@ impl Tree<'_> {
         }
         if ui.button("Structure").clicked() {
             return Some(TreeAction::Structure(schema, name));
+        }
+        let starred = crate::starred::is_starred(self.starred, &t.schema, &t.name);
+        if ui
+            .button(if starred {
+                "Remove from starred"
+            } else {
+                "Star this table"
+            })
+            .clicked()
+        {
+            return Some(TreeAction::ToggleStar(schema, name));
         }
         if ui.button("SELECT in new editor").clicked() {
             let from = s.cfg.kind.qualified(&t.schema, &t.name);

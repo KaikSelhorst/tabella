@@ -457,6 +457,8 @@ pub struct Editor {
     pub text: String,
     /// EXPLAIN of an editor statement, shown in place of the result until closed.
     pub plan: Option<Plan>,
+    /// A plan kept to compare the next ones with ("Pin to compare").
+    pub pinned_plan: Option<Plan>,
     /// Values asked for `:parameters` before running.
     pub params: Option<ParamPrompt>,
     /// Last value typed for each parameter name.
@@ -528,6 +530,7 @@ impl Editor {
         Editor {
             text,
             plan: None,
+            pinned_plan: None,
             params: None,
             param_values: Default::default(),
             preview: None,
@@ -680,6 +683,8 @@ pub struct Tab {
     pub set_shown: usize,
     /// "Set value in selection": the value being typed.
     pub fill_prompt: Option<String>,
+    /// "Set with an expression": the form for a bulk UPDATE of a table's column.
+    pub bulk_prompt: Option<BulkPrompt>,
     pub col_stats: Option<StatsView>,
     /// Columns hidden from the grid, and columns pinned to its left edge (by name, so they
     /// survive reloads and paging).
@@ -749,6 +754,7 @@ impl Tab {
             sets: Vec::new(),
             set_shown: 0,
             fill_prompt: None,
+            bulk_prompt: None,
             col_stats: None,
             hidden_cols: Vec::new(),
             pinned_cols: Vec::new(),
@@ -1080,6 +1086,14 @@ impl ValueEditor {
     }
 }
 
+/// The "Set with an expression" form.
+pub struct BulkPrompt {
+    pub column: String,
+    pub expression: String,
+    /// The selected rows (else every row passing the filter).
+    pub selected_only: bool,
+}
+
 /// What the grid asks for. Produced by the UI, carried out by `handle_grid_event`.
 pub enum GridEvent {
     Sort(String),
@@ -1125,6 +1139,8 @@ pub enum GridEvent {
     CopyInList(usize),
     /// Ask for a value to put in every selected cell.
     AskFill,
+    /// "Set with an expression…" for this column.
+    AskBulk(usize),
     /// Every selected cell gets this value (`None`: NULL).
     FillSelection(Option<String>),
     /// Each selected column takes the value of the selection's first row (Ctrl+D).
@@ -1199,6 +1215,8 @@ pub struct App {
     col_widths: crate::widths::Store,
     /// The tables opened last, per connection, for `Ctrl+P`.
     recent: crate::recent::Store,
+    /// Tables starred in the sidebar, per connection.
+    pub starred: crate::starred::Store,
     /// Foreign keys followed (and other jumps to a filtered table), for "Back".
     nav_back: Vec<NavStep>,
     /// Tabs from the last run, reopened once their connection is ready.
@@ -1242,6 +1260,7 @@ impl App {
         let filters = filters::load();
         let col_widths = crate::widths::load();
         let recent = crate::recent::load();
+        let starred = crate::starred::load();
         let settings = crate::settings::load();
         crate::db::set_max_rows(settings.value.row_limit);
         let last = session::load();
@@ -1282,6 +1301,7 @@ impl App {
             filters: filters.value,
             col_widths: col_widths.value,
             recent: recent.value,
+            starred: starred.value,
             nav_back: Vec::new(),
             restore: None,
             launch_files: Vec::new(),
@@ -2797,6 +2817,24 @@ impl App {
     pub fn recent_rank(&self, schema: &str, table: &str) -> Option<usize> {
         let s = self.session.as_ref()?;
         crate::recent::rank(&self.recent, &s.cfg.id, schema, table)
+    }
+
+    /// Opens a generated UPDATE in a new editor and shows what it would change; running it is
+    /// the editor's own "Run" afterwards.
+    pub fn open_update_preview(&mut self, sql: String) {
+        self.open_sql(sql.clone());
+        if let (Some(s), Some(tab)) = (&self.session, self.tabs.last_mut()) {
+            preview(tab, s, sql);
+        }
+    }
+
+    /// Stars or unstars a table in the sidebar.
+    pub fn toggle_star(&mut self, schema: &str, table: &str) {
+        let Some(s) = &self.session else { return };
+        crate::starred::toggle(&mut self.starred, &s.cfg.id, schema, table);
+        if let Err(e) = crate::starred::save(&self.starred) {
+            self.notice = Notice::error(format!("Error saving starred tables: {e}"));
+        }
     }
 
     fn remember_recent(&mut self, schema: &str, table: &str) {
@@ -4401,6 +4439,36 @@ mod poll_tests {
             fresh.tabs.iter().map(|t| t.pinned).collect::<Vec<_>>(),
             [true, false]
         );
+    }
+
+    /// A generated UPDATE opens in its own editor with the preview already asked for.
+    #[test]
+    fn a_bulk_update_opens_previewed_in_an_editor() {
+        let (s, jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        let sql = "UPDATE t SET a = a + 1 WHERE id IN ('1');".to_string();
+        app.open_update_preview(sql.clone());
+        let tab = app.tabs.last().unwrap();
+        assert_eq!(tab.editor().unwrap().text, sql);
+        assert_eq!(
+            tab.editor().unwrap().preview.as_ref().map(|p| p.sql.clone()),
+            Some(sql)
+        );
+        assert!(jobs.try_iter().any(|j| matches!(j, Job::Preview { .. })));
+        assert!(tab.busy(), "waiting for the preview");
+    }
+
+    /// Starring is per connection and survives toggling the same table twice.
+    #[test]
+    fn tables_are_starred_per_connection() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.starred.clear();
+        let id = app.session.as_ref().unwrap().cfg.id.clone();
+        app.toggle_star("public", "orders");
+        assert_eq!(app.starred[&id], [("public".to_string(), "orders".to_string())]);
+        app.toggle_star("public", "orders");
+        assert!(app.starred.is_empty());
     }
 
     /// Opening a table makes it the latest recent one, and the list is per connection.

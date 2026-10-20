@@ -385,6 +385,16 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
         }
         GridEvent::DuplicateRow(row) => open_duplicate_form(tab, row),
         GridEvent::AskFill => tab.fill_prompt = Some(String::new()),
+        GridEvent::AskBulk(col) if is_table => {
+            tab.bulk_prompt = Some(BulkPrompt {
+                column: res.columns[col].clone(),
+                expression: String::new(),
+                selected_only: selection
+                    .as_ref()
+                    .is_some_and(|s| s.r1 > s.r0 || s.cols.len() == 1),
+            });
+        }
+        GridEvent::AskBulk(_) => {}
         GridEvent::FillSelection(value) => {
             let Some(sel) = &selection else { return };
             tab.fill_prompt = None;

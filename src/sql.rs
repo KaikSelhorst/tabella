@@ -133,6 +133,79 @@ pub fn filter_condition(kind: Kind, column: &str, op: FilterOp, value: Option<&s
     }
 }
 
+/// Which rows a bulk update touches.
+pub enum BulkScope<'a> {
+    /// These rows, by primary key (`pk` names the columns, each row has one value per column).
+    Keys {
+        pk: &'a [String],
+        rows: &'a [Vec<Option<String>>],
+    },
+    /// Every row passing this filter (empty: the whole table).
+    Filter(&'a str),
+}
+
+/// What the "new value" of a bulk update may not contain: it must stay one expression inside
+/// one statement.
+pub fn check_expression(expr: &str) -> Result<(), String> {
+    let e = expr.trim();
+    if e.is_empty() {
+        return Err("Type the new value: a SQL expression such as price * 1.1, upper(name) or NULL".into());
+    }
+    if e.contains(';') || e.contains("--") || e.contains("/*") {
+        return Err("One expression only: no ';' and no comments".into());
+    }
+    Ok(())
+}
+
+/// `UPDATE t SET col = <expression> WHERE …`, to be looked at (and previewed) before it runs.
+pub fn bulk_update(
+    kind: Kind,
+    schema: &str,
+    table: &str,
+    column: &str,
+    expression: &str,
+    scope: &BulkScope,
+) -> String {
+    let target = kind.qualified(schema, table);
+    let mut sql = format!(
+        "UPDATE {target}\nSET {} = {}",
+        kind.quote_ident(column),
+        expression.trim()
+    );
+    let condition = match scope {
+        BulkScope::Filter(f) if f.trim().is_empty() => String::new(),
+        BulkScope::Filter(f) => format!("({})", f.trim()),
+        BulkScope::Keys { pk, rows } => match pk {
+            [] => String::new(),
+            [only] => {
+                let values: Vec<String> = rows
+                    .iter()
+                    .filter_map(|r| r.first().cloned().flatten())
+                    .map(|v| kind.quote_str(&v))
+                    .collect();
+                format!("{} IN ({})", kind.quote_ident(only), values.join(", "))
+            }
+            _ => rows
+                .iter()
+                .map(|r| {
+                    let parts: Vec<String> = pk
+                        .iter()
+                        .zip(r)
+                        .map(|(c, v)| filter_condition(kind, c, FilterOp::Eq, v.as_deref()))
+                        .collect();
+                    format!("({})", parts.join(" AND "))
+                })
+                .collect::<Vec<_>>()
+                .join("\n   OR "),
+        },
+    };
+    if !condition.is_empty() {
+        let _ = write!(sql, "\nWHERE {condition}");
+    }
+    sql.push(';');
+    sql
+}
+
 fn contains(kind: Kind, col: &str, term: &str) -> String {
     let pattern = kind.quote_str(&format!("%{term}%"));
     match kind {
@@ -976,7 +1049,8 @@ pub fn preview_queries(statement: &str) -> Option<PreviewQueries> {
             while t0 < set && matches!(words[t0].0.as_str(), "LOW_PRIORITY" | "IGNORE" | "ONLY") {
                 t0 += 1;
             }
-            let table = text(words.get(t0)?.1, words[set].1);
+            // From the end of UPDATE (or its modifier): a quoted name isn't one of `words`.
+            let table = text(words.get(t0 - 1)?.2, words[set].1);
             if table.contains(',') || words[t0..set].iter().any(|(w, _, _)| w == "JOIN") {
                 return None;
             }
@@ -995,7 +1069,7 @@ pub fn preview_queries(statement: &str) -> Option<PreviewQueries> {
             }
             let stop = find(t0, &["WHERE", "USING", "ORDER", "LIMIT", "RETURNING"]);
             let end = stop.map_or(chars.len(), |i| words[i].1);
-            let table = text(words.get(t0)?.1, end);
+            let table = text(words.get(t0 - 1)?.2, end);
             if stop.is_some_and(|i| words[i].0 == "USING") || table.contains(',') {
                 return None;
             }
@@ -1413,6 +1487,78 @@ pub fn fk_label(columns: &[(String, String)], key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn previews_read_quoted_table_names() {
+        let q = preview_queries("UPDATE \"public\".\"My Table\"\nSET \"a\" = a + 1\nWHERE \"id\" IN ('1');")
+            .unwrap();
+        assert_eq!(
+            q.count,
+            "SELECT count(*) FROM \"public\".\"My Table\" WHERE \"id\" IN ('1')"
+        );
+        let q = preview_queries("DELETE FROM `db`.`t` WHERE x = 1").unwrap();
+        assert_eq!(q.count, "SELECT count(*) FROM `db`.`t` WHERE x = 1");
+        // Unquoted names and MySQL's modifiers keep working.
+        let q = preview_queries("UPDATE LOW_PRIORITY t SET a = 1").unwrap();
+        assert_eq!(q.count, "SELECT count(*) FROM t");
+        let q = preview_queries("UPDATE ONLY s.t x SET a = 1 WHERE b").unwrap();
+        assert_eq!(q.count, "SELECT count(*) FROM s.t x WHERE b");
+    }
+
+    #[test]
+    fn bulk_updates_name_their_rows_by_key_or_filter() {
+        let pk = vec!["id".to_string()];
+        let rows = vec![vec![Some("1".into())], vec![Some("7".into())]];
+        let sql = bulk_update(
+            Kind::Postgres,
+            "public",
+            "products",
+            "price",
+            " price * 1.1 ",
+            &BulkScope::Keys { pk: &pk, rows: &rows },
+        );
+        assert_eq!(
+            sql,
+            "UPDATE \"public\".\"products\"\nSET \"price\" = price * 1.1\nWHERE \"id\" IN ('1', '7');"
+        );
+        // A composite key becomes an OR of the key pairs.
+        let pk2 = vec!["a".to_string(), "b".to_string()];
+        let rows2 = vec![vec![Some("1".into()), Some("x".into())]];
+        let sql = bulk_update(
+            Kind::MySql,
+            "db",
+            "t",
+            "v",
+            "NULL",
+            &BulkScope::Keys {
+                pk: &pk2,
+                rows: &rows2,
+            },
+        );
+        assert!(sql.ends_with("WHERE (`a` = '1' AND `b` = 'x');"), "{sql}");
+        // A filter stays in one piece; no filter means the whole table.
+        let sql = bulk_update(
+            Kind::Postgres,
+            "s",
+            "t",
+            "c",
+            "0",
+            &BulkScope::Filter("a > 1 OR b"),
+        );
+        assert!(sql.ends_with("WHERE (a > 1 OR b);"), "{sql}");
+        let sql = bulk_update(Kind::Postgres, "s", "t", "c", "0", &BulkScope::Filter(""));
+        assert!(!sql.contains("WHERE"), "{sql}");
+    }
+
+    #[test]
+    fn the_new_value_must_be_one_expression() {
+        assert!(check_expression("price * 1.1").is_ok());
+        assert!(check_expression("coalesce(x, 0) + 1").is_ok());
+        assert!(check_expression("   ").is_err());
+        assert!(check_expression("1; DROP TABLE t").is_err());
+        assert!(check_expression("1 -- comment").is_err());
+        assert!(check_expression("1 /* c */").is_err());
+    }
+
     #[test]
     fn several_sort_columns_keep_their_order_and_the_key_follows() {
         let pk = vec!["id".to_string()];

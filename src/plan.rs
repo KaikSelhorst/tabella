@@ -59,6 +59,134 @@ impl Node {
     }
 }
 
+/// What a number measures, for showing it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Unit {
+    Ms,
+    Cost,
+    Rows,
+    Count,
+}
+
+/// One figure of two plans side by side. Lower is better for every one of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Metric {
+    pub label: &'static str,
+    pub unit: Unit,
+    pub before: Option<f64>,
+    pub after: Option<f64>,
+}
+
+impl Metric {
+    /// How much it changed, in percent of the earlier value (negative: it dropped).
+    pub fn change_pct(&self) -> Option<f64> {
+        let (b, a) = (self.before?, self.after?);
+        if b == 0.0 {
+            return (a != 0.0).then_some(f64::INFINITY);
+        }
+        Some((a - b) / b * 100.0)
+    }
+}
+
+/// A table that is read another way in the later plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScanChange {
+    pub relation: String,
+    pub before: String,
+    pub after: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Comparison {
+    pub metrics: Vec<Metric>,
+    pub scan_changes: Vec<ScanChange>,
+}
+
+fn scans(plan: &Plan) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    plan.root.walk(0, &mut |n, _| {
+        if let Some(r) = &n.relation
+            && !out.iter().any(|(rel, _)| rel == r)
+        {
+            out.push((r.clone(), n.label.clone()));
+        }
+    });
+    out
+}
+
+fn full_scans(plan: &Plan) -> f64 {
+    let mut n = 0.0;
+    plan.root.walk(0, &mut |node, _| {
+        if node.is_full_scan() {
+            n += 1.0;
+        }
+    });
+    n
+}
+
+/// The plan as it was (`before`) against the plan now (`after`): times, cost, rows, how many
+/// tables are read in full, and which tables switched from one kind of scan to another.
+pub fn compare(before: &Plan, after: &Plan) -> Comparison {
+    let both_ran = before.analyzed && after.analyzed;
+    let metric = |label, unit, b: Option<f64>, a: Option<f64>| Metric {
+        label,
+        unit,
+        before: b,
+        after: a,
+    };
+    let mut metrics = Vec::new();
+    if both_ran {
+        metrics.push(metric(
+            "Execution time",
+            Unit::Ms,
+            before.execution_ms,
+            after.execution_ms,
+        ));
+        metrics.push(metric(
+            "Planning time",
+            Unit::Ms,
+            before.planning_ms,
+            after.planning_ms,
+        ));
+    }
+    metrics.push(metric(
+        "Planner cost",
+        Unit::Cost,
+        before.root.cost,
+        after.root.cost,
+    ));
+    if both_ran {
+        metrics.push(metric(
+            "Rows read by the top step",
+            Unit::Rows,
+            before.root.actual_rows,
+            after.root.actual_rows,
+        ));
+    }
+    metrics.push(metric(
+        "Tables read in full",
+        Unit::Count,
+        Some(full_scans(before)),
+        Some(full_scans(after)),
+    ));
+    let after_scans = scans(after);
+    let scan_changes = scans(before)
+        .into_iter()
+        .filter_map(|(relation, label)| {
+            let (_, later) = after_scans.iter().find(|(r, _)| *r == relation)?;
+            (*later != label).then(|| ScanChange {
+                relation,
+                before: label,
+                after: later.clone(),
+            })
+        })
+        .collect();
+    Comparison {
+        metrics,
+        scan_changes,
+    }
+}
+
 /// Postgres `EXPLAIN (FORMAT JSON[, ANALYZE])` output: `[{"Plan": {...}, "Execution Time": ...}]`.
 pub fn from_pg_json(text: &str) -> Result<Plan, String> {
     let v: Value = serde_json::from_str(text).map_err(|e| format!("invalid plan: {e}"))?;
@@ -399,6 +527,47 @@ pub fn filter_columns(cond: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Before and after an index: the time drops, a sequential scan turns into an index scan.
+    #[test]
+    fn comparing_plans_shows_what_changed() {
+        let before = from_pg_json(
+            r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Total Cost": 1500.0,
+                "Plan Rows": 40000, "Actual Total Time": 120.0, "Actual Rows": 40, "Actual Loops": 1},
+                "Planning Time": 0.3, "Execution Time": 120.5}]"#,
+        )
+        .unwrap();
+        let after = from_pg_json(
+            r#"[{"Plan": {"Node Type": "Index Scan", "Relation Name": "orders", "Index Name": "idx_o",
+                "Total Cost": 8.2, "Plan Rows": 40, "Actual Total Time": 0.05, "Actual Rows": 40,
+                "Actual Loops": 1}, "Planning Time": 0.4, "Execution Time": 0.1}]"#,
+        )
+        .unwrap();
+        let c = compare(&before, &after);
+        let metric = |label: &str| c.metrics.iter().find(|m| m.label == label).unwrap().clone();
+        let time = metric("Execution time");
+        assert!(time.change_pct().unwrap() < -99.0, "{time:?}");
+        assert_eq!(metric("Tables read in full").before, Some(1.0));
+        assert_eq!(metric("Tables read in full").after, Some(0.0));
+        assert!(metric("Planner cost").change_pct().unwrap() < -99.0);
+        assert_eq!(c.scan_changes.len(), 1);
+        assert_eq!(c.scan_changes[0].relation, "orders");
+        assert!(c.scan_changes[0].before.starts_with("Seq Scan"));
+        assert!(c.scan_changes[0].after.starts_with("Index Scan"));
+        // Estimated plans have no times to compare, only cost and scans.
+        let mut est = before.clone();
+        est.analyzed = false;
+        let c = compare(&est, &after);
+        assert!(c.metrics.iter().all(|m| m.unit != Unit::Ms));
+        // The same plan: nothing moved.
+        let same = compare(&before, &before);
+        assert!(same.scan_changes.is_empty());
+        assert!(
+            same.metrics
+                .iter()
+                .all(|m| m.change_pct().is_none_or(|p| p == 0.0))
+        );
+    }
+
     use super::*;
 
     #[test]

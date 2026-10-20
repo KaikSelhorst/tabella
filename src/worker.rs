@@ -1562,6 +1562,76 @@ mod tests {
         c.query("DROP TABLE dbl_adv").unwrap();
     }
 
+    /// A bulk UPDATE by expression, as the form builds it: the preview counts the right rows and
+    /// running it changes only those.
+    fn bulk_expression_update(kind: Kind, port: u16, db: &str) {
+        let mut cfg = ConnConfig::new(kind);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = port;
+        cfg.password = "pw".into();
+        cfg.database = db.into();
+        let mut c = Conn::connect(&cfg, None).expect("connect");
+        c.query("DROP TABLE IF EXISTS dbl_bulk").unwrap();
+        c.query("CREATE TABLE dbl_bulk (id INT PRIMARY KEY, price DECIMAL(10,2), tag VARCHAR(10))")
+            .unwrap();
+        c.query("INSERT INTO dbl_bulk VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c')")
+            .unwrap();
+        let schema = if kind == Kind::Postgres { "public" } else { db };
+        let pk = vec!["id".to_string()];
+        let rows = vec![vec![Some("1".to_string())], vec![Some("3".to_string())]];
+        let sql = crate::sql::bulk_update(
+            kind,
+            schema,
+            "dbl_bulk",
+            "price",
+            "price * 1.5",
+            &crate::sql::BulkScope::Keys { pk: &pk, rows: &rows },
+        );
+        let preview = c
+            .preview(&sql, false)
+            .unwrap_or_else(|e| panic!("{kind:?}: {e}\n{sql}"));
+        assert_eq!(preview.count, 2, "{kind:?}: two rows would change\n{sql}");
+        let prices = |c: &mut Conn| {
+            c.query("SELECT CONCAT(price, '') FROM dbl_bulk ORDER BY id")
+                .unwrap()
+                .rows
+                .into_iter()
+                .map(|r| r[0].clone().unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            prices(&mut c),
+            ["10.00", "20.00", "30.00"],
+            "the preview changed nothing"
+        );
+        c.query(&sql).unwrap();
+        assert_eq!(prices(&mut c), ["15.00", "20.00", "45.00"], "{kind:?}");
+        // By filter, an expression that reads another column's text.
+        let sql = crate::sql::bulk_update(
+            kind,
+            schema,
+            "dbl_bulk",
+            "tag",
+            "upper(tag)",
+            &crate::sql::BulkScope::Filter("price > 20"),
+        );
+        assert_eq!(c.preview(&sql, false).unwrap().count, 1);
+        c.query(&sql).unwrap();
+        c.query("DROP TABLE dbl_bulk").unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn bulk_expression_postgres() {
+        bulk_expression_update(Kind::Postgres, 55432, "postgres");
+    }
+
+    #[test]
+    #[ignore]
+    fn bulk_expression_mysql() {
+        bulk_expression_update(Kind::MySql, 53306, "test");
+    }
+
     #[test]
     #[ignore]
     fn index_advice_postgres() {

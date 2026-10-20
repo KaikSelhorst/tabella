@@ -411,13 +411,24 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             error_banner(ui, e);
         }
         let hints = index_suggestions(s, plan);
-        match plan_view::plan_view(ui, plan, &hints) {
+        let baseline = tab.editor().and_then(|ed| ed.pinned_plan.as_ref());
+        match plan_view::plan_view(ui, plan, baseline, &hints) {
             Some(plan_view::PlanAction::Close) => {
                 if let Some(ed) = tab.editor_mut() {
                     ed.plan = None;
                 }
             }
             Some(plan_view::PlanAction::OpenSql(sql)) => cx.request = Some(Request::Sql(sql)),
+            Some(plan_view::PlanAction::Pin) => {
+                if let Some(ed) = tab.editor_mut() {
+                    ed.pinned_plan = ed.plan.clone();
+                }
+            }
+            Some(plan_view::PlanAction::Unpin) => {
+                if let Some(ed) = tab.editor_mut() {
+                    ed.pinned_plan = None;
+                }
+            }
             None => {}
         }
         return;

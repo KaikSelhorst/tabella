@@ -131,6 +131,15 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
 - Sort by several columns: click a header to sort by it alone, `Shift+click` adds more (numbers
   in the headers show the order; each goes ascending, descending, then out). Saved with the session
   and used by the export
+- Bulk edit by expression: right-click a cell of a table → "Set <column> with an expression…"
+  (`price * 1.1`, `upper(name)`, `NULL`…) on the selected rows or on every row matching the
+  filter. It opens the UPDATE in an editor and shows how many rows and which ones would change;
+  nothing is written until you run it there
+- Plans can be compared: "Pin to compare" in the plan view keeps a plan, and the next one is shown
+  against it (time, cost, rows, tables read in full, scans that changed), e.g. before and after
+  creating an index
+- Star tables in the sidebar (right-click → "Star this table"): they are listed first; selecting a
+  cell lights the same value elsewhere in its column
 - Column widths dragged in a table are remembered for that table (per connection), across tabs
   and runs
 - Functions, procedures, triggers and sequences in the sidebar (views along with the tables):

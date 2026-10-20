@@ -27,6 +27,7 @@ mod session;
 mod settings;
 mod sql;
 mod sqlite;
+mod starred;
 mod store;
 mod tls;
 mod tunnel;

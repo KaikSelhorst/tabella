@@ -99,6 +99,9 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
     {
         app::handle_grid_event(tab, s, GridEvent::Commit(row, col, Some(key)), true);
     }
+    if let Some(sql) = bulk_dialog(ui.ctx(), tab, s) {
+        cx.request = Some(Request::PreviewUpdate(sql));
+    }
     if let Some(e) = fill_dialog(ui.ctx(), tab) {
         app::handle_grid_event(tab, s, e, true);
     }
@@ -598,6 +601,166 @@ pub(super) fn found_cells(
 }
 
 /// "Set value in the N cells": type the value (or choose NULL).
+/// The UPDATE the "Set with an expression" form describes, or what is wrong with it.
+fn bulk_sql(tab: &Tab, s: &Session, p: &app::BulkPrompt) -> Result<String, String> {
+    let (TabKind::Table(ts), Some(res)) = (&tab.kind, &tab.result) else {
+        return Err("Open a table first".into());
+    };
+    sql::check_expression(&p.expression)?;
+    let k = s.cfg.kind;
+    let pk = ts.pk_names();
+    if p.selected_only {
+        let sel = tab.selection().ok_or("Select the rows first")?;
+        let rows: Vec<Vec<Option<String>>> = (sel.r0..=sel.r1).map(|r| ts.row_key(res, r)).collect();
+        if pk.is_empty() {
+            return Err("This table has no primary key to name the rows by".into());
+        }
+        Ok(sql::bulk_update(
+            k,
+            &ts.schema,
+            &ts.table,
+            &p.column,
+            &p.expression,
+            &sql::BulkScope::Keys { pk: &pk, rows: &rows },
+        ))
+    } else {
+        Ok(sql::bulk_update(
+            k,
+            &ts.schema,
+            &ts.table,
+            &p.column,
+            &p.expression,
+            &sql::BulkScope::Filter(&ts.effective_filter(k)),
+        ))
+    }
+}
+
+/// "Set <column> with an expression": which column, the new value as SQL, and which rows. "Preview"
+/// opens the UPDATE in an editor and shows what it would change; nothing is written from here.
+pub(super) fn bulk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Option<String> {
+    tab.bulk_prompt.as_ref()?;
+    let t = theme::tokens();
+    let selected_rows = tab.selection().map_or(0, |r| r.r1 - r.r0 + 1);
+    let TabKind::Table(ts) = &tab.kind else {
+        tab.bulk_prompt = None;
+        return None;
+    };
+    let columns: Vec<String> = ts.cols.iter().filter(|c| !c.pk).map(|c| c.name.clone()).collect();
+    let (total, filtered) = (ts.total, !ts.effective_filter(s.cfg.kind).trim().is_empty());
+    let mut prompt = tab.bulk_prompt.take()?;
+    let built = bulk_sql(tab, s, &prompt);
+    let (mut preview, mut cancel) = (false, false);
+    let modal = egui::Modal::new(egui::Id::new(("bulk", tab.id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::LIGHTNING).size(16.0).color(t.lime));
+                ui.label(
+                    egui::RichText::new("Set a column with an expression")
+                        .size(15.0)
+                        .color(t.foreground),
+                );
+            });
+            ui.add_space(8.0);
+            egui::Grid::new("bulk_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                ui.label("Column");
+                egui::ComboBox::from_id_salt("bulk_col")
+                    .selected_text(&prompt.column)
+                    .show_ui(ui, |ui| {
+                        for c in &columns {
+                            ui.selectable_value(&mut prompt.column, c.clone(), c);
+                        }
+                    });
+                ui.end_row();
+                ui.label("New value");
+                let r = ui.add(
+                    TextEdit::singleline(&mut prompt.expression)
+                        .hint_text("price * 1.1   ·   upper(name)   ·   NULL   ·   'inactive'")
+                        .font(egui::FontId::monospace(12.5))
+                        .desired_width(f32::INFINITY),
+                );
+                r.request_focus();
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    preview = true;
+                }
+                ui.end_row();
+                ui.label("Rows");
+                ui.vertical(|ui| {
+                    ui.add_enabled_ui(selected_rows > 0, |ui| {
+                        ui.radio_value(
+                            &mut prompt.selected_only,
+                            true,
+                            format!("The {selected_rows} selected row(s)"),
+                        );
+                    });
+                    let all = match (total, filtered) {
+                        (Some(n), true) => format!("Every row matching the filter ({} rows)", palette::format_count(n)),
+                        (Some(n), false) => format!("Every row of the table ({} rows)", palette::format_count(n)),
+                        (None, true) => "Every row matching the filter".to_string(),
+                        (None, false) => "Every row of the table".to_string(),
+                    };
+                    ui.radio_value(&mut prompt.selected_only, false, all);
+                });
+                ui.end_row();
+            });
+            ui.add_space(8.0);
+            match &built {
+                Ok(sql) => {
+                    egui::Frame::new()
+                        .fill(t.sidebar)
+                        .inner_margin(egui::Margin::symmetric(8, 6))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            // A long list of keys is cut: the editor shows the whole statement.
+                            let shown: String = sql.chars().take(400).collect();
+                            let more = if sql.chars().count() > 400 { " …" } else { "" };
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{shown}{more}"))
+                                        .monospace()
+                                        .size(12.0)
+                                        .color(t.foreground),
+                                )
+                                .wrap(),
+                            );
+                        });
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Preview opens this UPDATE in an editor and shows how many rows and which ones it would \
+                             change. Nothing is written until you run it there.",
+                        )
+                        .size(11.0)
+                        .color(t.subtle),
+                    );
+                }
+                Err(e) => {
+                    ui.label(egui::RichText::new(e).size(12.0).color(t.muted_foreground));
+                }
+            }
+            ui.add_space(12.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add_enabled(built.is_ok(), theme::primary_button(None, "Preview"))
+                    .clicked()
+                {
+                    preview = true;
+                }
+                if ui.add(theme::outline_button("Cancel")).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if preview && let Ok(sql) = built {
+        return Some(sql);
+    }
+    if !(cancel || modal.should_close()) {
+        tab.bulk_prompt = Some(prompt);
+    }
+    None
+}
+
 pub(super) fn fill_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEvent> {
     let cells = tab.selection().map_or(0, |s| (s.r1 - s.r0 + 1) * s.cols.len());
     let value = tab.fill_prompt.as_mut()?;
