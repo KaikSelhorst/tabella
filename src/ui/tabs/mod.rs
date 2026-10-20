@@ -150,6 +150,7 @@ impl App {
             let (Some(s), Some(tab)) = (&self.session, self.tabs.get_mut(self.active)) else {
                 return;
             };
+            let body = ui.available_rect_before_wrap();
             let mut cx = Cx {
                 s,
                 show_detail: &mut self.show_detail,
@@ -160,9 +161,46 @@ impl App {
                 request: None,
             };
             tab_body(ui, tab, &mut cx);
-            cx.request
+            let request = cx.request;
+            self.edge_drop(ui, body);
+            request
         };
         self.handle_request(request);
+    }
+
+    /// A tab dragged onto the right edge of the content opens the split view with it there.
+    fn edge_drop(&mut self, ui: &mut egui::Ui, body: egui::Rect) {
+        let ctx = ui.ctx().clone();
+        let Some(id) = egui::DragAndDrop::payload::<u64>(&ctx).map(|p| *p) else {
+            return;
+        };
+        let Some(i) = self.tabs.iter().position(|t| t.id == id) else {
+            return;
+        };
+        // Alone in the strip, only an editor can go (as a copy); there is nothing else to leave.
+        if self.tabs.len() < 2 && self.tabs[i].editor().is_none() {
+            return;
+        }
+        let zone = egui::Rect::from_min_max(
+            egui::pos2(body.right() - (body.width() * 0.25).max(120.0), body.top()),
+            body.right_bottom(),
+        );
+        if !ctx.pointer_interact_pos().is_some_and(|p| zone.contains(p)) {
+            return;
+        }
+        let t = theme::tokens();
+        let half = egui::Rect::from_min_max(egui::pos2(body.center().x, body.top()), body.right_bottom());
+        ui.painter().rect_filled(half, 0.0, t.lime.gamma_multiply(0.12));
+        ui.painter().rect_stroke(
+            half,
+            0.0,
+            egui::Stroke::new(2.0, t.lime),
+            egui::StrokeKind::Inside,
+        );
+        if ctx.input(|i| i.pointer.any_released()) {
+            egui::DragAndDrop::clear_payload(&ctx);
+            self.drag_to_new_pane(i);
+        }
     }
 
     /// One pane's tab strip (`None`: the only one) and what was chosen in it. `false`: a tab was
@@ -172,6 +210,8 @@ impl App {
         let mut close = None;
         let mut action: Option<TabAction> = None;
         let mut dropped: Option<u64> = None;
+        // Where each tab of this strip is drawn, to tell where a dragged tab would go.
+        let mut rects: Vec<(u64, egui::Rect)> = Vec::new();
         let tag = side.map_or(2u8, u8::from);
         // The tab this strip shows as selected, and whether the pane has the focus.
         let sel = match side {
@@ -246,11 +286,15 @@ impl App {
                                     };
                                     let label = theme::tab_label(ui, glyph, &shown, Some(i) == sel);
                                     let label_rect = label.rect;
+                                    rects.push((tab.id, label_rect));
                                     if label.clicked() {
                                         self.active = i;
                                     }
                                     if label.drag_started() {
                                         label.dnd_set_drag_payload(tab.id);
+                                    }
+                                    if label.dragged() {
+                                        theme::tab_drag_ghost(ui, &label, glyph, &shown);
                                     }
                                     if follow && Some(i) == sel {
                                         label.scroll_to_me(None);
@@ -380,14 +424,34 @@ impl App {
                 }
             });
         let r = strip.response.rect;
-        if self.split.is_some() {
-            if strip.response.dnd_hover_payload::<u64>().is_some() {
+        // A dragged tab lands before the first tab whose middle is right of the pointer.
+        let before = |x: f32| rects.iter().find(|(_, r)| x < r.center().x).map(|(id, _)| *id);
+        let pointer_x = ui.input(|i| i.pointer.interact_pos()).map(|p| p.x);
+        if let (Some(id), Some(x)) = (strip.response.dnd_hover_payload::<u64>(), pointer_x) {
+            let from_here = self
+                .tabs
+                .iter()
+                .any(|t| t.id == *id && side.is_none_or(|r| t.right == r));
+            if from_here {
+                // Reordering: a line where it would land.
+                let at = match before(x) {
+                    Some(b) => rects.iter().find(|(i, _)| *i == b).map(|(_, r)| r.left() - 6.0),
+                    None => rects.last().map(|(_, r)| r.right() + 6.0),
+                };
+                if let Some(at) = at {
+                    ui.painter().vline(
+                        at,
+                        r.shrink2(egui::vec2(0.0, 6.0)).y_range(),
+                        egui::Stroke::new(2.0, t.lime),
+                    );
+                }
+            } else {
                 ui.painter()
                     .rect_stroke(r, 0.0, egui::Stroke::new(2.0, t.lime), egui::StrokeKind::Inside);
             }
-            if let Some(id) = strip.response.dnd_release_payload::<u64>() {
-                dropped = Some(*id);
-            }
+        }
+        if let Some(id) = strip.response.dnd_release_payload::<u64>() {
+            dropped = Some(*id);
         }
         ui.painter()
             .hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, t.border));
@@ -395,10 +459,9 @@ impl App {
             self.close_tab(i);
             return false;
         }
-        if let (Some(r), Some(id)) = (side, dropped)
-            && let Some(i) = self.tabs.iter().position(|t| t.id == id)
-        {
-            self.move_to_pane(i, r);
+        if let Some(id) = dropped {
+            let before = pointer_x.and_then(before);
+            self.reorder_tab(id, before, side);
         }
         match action {
             Some(TabAction::Rename(i, name)) => {

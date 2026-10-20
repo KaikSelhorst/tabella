@@ -63,6 +63,11 @@ impl App {
         if let Some(r) = restore {
             self.restore_tabs(r);
         }
+        if self.session.as_ref().is_some_and(|s| s.ready) && !self.launch_files.is_empty() {
+            for path in std::mem::take(&mut self.launch_files) {
+                self.open_file(path);
+            }
+        }
         for (tab, schema, table) in designed {
             self.after_design(tab, &schema, &table);
         }
@@ -102,6 +107,29 @@ impl App {
                 s.tables = c.tables;
                 s.canceller = Some(c.canceller);
                 self.notice = Notice::info(format!("Connected to {}", s.cfg.name));
+            }
+            Reply::Reconnected {
+                res: Ok(c),
+                rolled_back,
+            } => {
+                s.tables = c.tables;
+                s.canceller = Some(c.canceller);
+                if rolled_back {
+                    s.txn = TxState {
+                        manual: s.txn.manual,
+                        ..Default::default()
+                    };
+                }
+                let tx = if rolled_back {
+                    " The open transaction was lost: the server rolled it back."
+                } else {
+                    ""
+                };
+                self.notice =
+                    Notice::info(format!("Connection to {} was lost and restored.{tx}", s.cfg.name));
+            }
+            Reply::Reconnected { res: Err(e), .. } => {
+                self.notice = Notice::error(format!("Connection to {} was lost: {e}", s.cfg.name));
             }
             Reply::Connected(Err(e)) => {
                 self.notice = Notice::error(format!("Failed to connect: {e}"));

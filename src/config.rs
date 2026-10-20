@@ -116,6 +116,43 @@ fn save_at(path: &Path, list: &[ConnConfig], store: &mut SecretStore) -> Result<
     Ok(report)
 }
 
+/// The connections as a shareable file: no passwords, no ids (the importer makes its own).
+pub fn export_to(path: &Path, list: &[ConnConfig]) -> Result<usize, String> {
+    let clean: Vec<ConnConfig> = list
+        .iter()
+        .cloned()
+        .map(|mut c| {
+            c.password.clear();
+            c.id.clear();
+            c
+        })
+        .collect();
+    let json = serde_json::to_string_pretty(&clean).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
+    Ok(clean.len())
+}
+
+/// Reads a file made by `export_to` (or a `connections.json`). They get new ids, and a name
+/// already in use gets a number after it. Passwords are never read from the file.
+pub fn import_from(path: &Path, existing: &[ConnConfig]) -> Result<Vec<ConnConfig>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+    let mut list: Vec<ConnConfig> = serde_json::from_str(&text)
+        .map_err(|e| format!("{} is not a list of connections: {e}", path.display()))?;
+    let mut taken: Vec<ConnConfig> = existing.to_vec();
+    for c in &mut list {
+        c.id = new_id();
+        c.password.clear();
+        let base = c.name.trim().to_string();
+        let mut n = 1;
+        while name_taken(&taken, &c.name, None) {
+            n += 1;
+            c.name = format!("{base} ({n})");
+        }
+        taken.push(c.clone());
+    }
+    Ok(list)
+}
+
 /// Removes a deleted connection's password (under its id, and its name for older versions).
 pub fn forget(cfg: &ConnConfig, store: &mut SecretStore) -> Result<(), crate::secrets::SecretError> {
     store.delete(&cfg.id)?;
@@ -126,6 +163,33 @@ pub fn forget(cfg: &ConnConfig, store: &mut SecretStore) -> Result<(), crate::se
 mod tests {
     use super::*;
     use crate::db::Kind;
+
+    #[test]
+    fn connections_export_without_secrets_and_import_without_clashes() {
+        let mut a = ConnConfig::new(Kind::Postgres);
+        a.id = "keep-private".into();
+        a.name = "Prod".into();
+        a.password = "hunter2".into();
+        a.group = "Production".into();
+        let path = std::env::temp_dir().join(format!("tabella-conns-{}.json", std::process::id()));
+        assert_eq!(export_to(&path, std::slice::from_ref(&a)), Ok(1));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("hunter2") && !text.contains("keep-private"),
+            "{text}"
+        );
+        // Importing next to the original: same name gets a number, new id, no password.
+        let list = import_from(&path, std::slice::from_ref(&a)).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "Prod (2)");
+        assert_eq!(list[0].group, "Production");
+        assert!(list[0].password.is_empty() && !list[0].id.is_empty() && list[0].id != a.id);
+        assert!(
+            import_from(&path, &[]).is_err(),
+            "a missing file is an error, not a panic"
+        );
+    }
 
     #[test]
     fn ids_and_names() {

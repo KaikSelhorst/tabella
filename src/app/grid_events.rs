@@ -132,6 +132,24 @@ fn any_result_event(
             let shown = overlay.as_ref().map_or(res, |o| &o.result);
             Some(Effect::Copy(values::to_markdown(shown, &range, &kinds)))
         }
+        GridEvent::CopyInList(col) => {
+            if res.rows.is_empty() {
+                return ControlFlow::Break(None);
+            }
+            // The selected rows when the selection covers this column, else every row.
+            let rows = match tab.selection() {
+                Some(r) if r.cols.contains(col) => r.r0..=r.r1,
+                _ => 0..=res.rows.len() - 1,
+            };
+            let overlay = editable_ref(&tab.kind).and_then(|ts| ts.overlay(res));
+            let shown = overlay.as_ref().map_or(res, |o| &o.result);
+            let kind = values::column_kinds(shown, cols)[*col];
+            let (text, n) = values::to_in_list(k, shown, *col, rows, kind);
+            if n == 0 {
+                return ControlFlow::Break(None);
+            }
+            Some(Effect::Copy(text))
+        }
         GridEvent::CopyCells { headers } => {
             let Some(range) = tab.selection() else {
                 return ControlFlow::Break(None);
@@ -396,6 +414,7 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
         // Handled by `any_result_event`.
         GridEvent::Select(..)
         | GridEvent::CopyMarkdown
+        | GridEvent::CopyInList(..)
         | GridEvent::ColumnWidths(..)
         | GridEvent::FollowIncoming(..)
         | GridEvent::ColumnStats(..)

@@ -103,6 +103,12 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         app::handle_grid_event(tab, s, e, true);
     }
     let t = theme::tokens();
+    // "Load more" in the footer sets this; the grid below is still borrowing the result.
+    let more_id = egui::Id::new(("load_more", tab.id));
+    if ui.data_mut(|d| d.remove_temp::<bool>(more_id)).unwrap_or(false) {
+        app::load_more(tab, s);
+    }
+    let can_more = app::can_load_more(tab);
     if let Some(e) = &tab.error {
         error_banner(ui, e);
     }
@@ -177,6 +183,25 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
                             .small()
                             .color(t.muted_foreground),
                     );
+                    if can_more {
+                        let more = egui::Button::new(
+                            egui::RichText::new(format!(
+                                "Load {} more",
+                                crate::ui::palette::format_count(crate::db::max_rows() as i64)
+                            ))
+                            .small()
+                            .color(t.lime),
+                        )
+                        .frame(false);
+                        if ui
+                            .add(more)
+                            .on_hover_text("Runs the query again keeping more rows")
+                            .clicked()
+                        {
+                            ui.data_mut(|d| d.insert_temp(more_id, true));
+                            ui.ctx().request_repaint();
+                        }
+                    }
                     if let Some(hint) = &edit_hint {
                         ui.label(egui::RichText::new(hint).small().color(t.subtle));
                     }

@@ -391,8 +391,41 @@ pub fn tab_label(ui: &mut egui::Ui, glyph: &str, text: &str, active: bool) -> eg
     } else {
         (t.subtle, t.muted_foreground)
     };
-    let r = ui.add(egui::Label::new(icon_text(glyph, text, ic, tc)).sense(egui::Sense::click_and_drag()));
+    // Not selectable: dragging must move the tab, not select its name like text.
+    let r = ui.add(
+        egui::Label::new(icon_text(glyph, text, ic, tc))
+            .selectable(false)
+            .sense(egui::Sense::click_and_drag()),
+    );
     r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// While a tab is dragged: the original fades and a copy follows the pointer.
+pub fn tab_drag_ghost(ui: &egui::Ui, label: &egui::Response, glyph: &str, text: &str) {
+    let t = tokens();
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    ui.painter()
+        .rect_filled(label.rect.expand(2.0), 2.0, t.sidebar.gamma_multiply(0.7));
+    let Some(pos) = ui.ctx().pointer_interact_pos() else {
+        return;
+    };
+    egui::Area::new(egui::Id::new("tab_drag_ghost"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(pos + egui::vec2(8.0, 6.0))
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(t.card)
+                .stroke(Stroke::new(1.0, t.lime))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(icon_text(glyph, text, t.muted_foreground, t.foreground))
+                            .selectable(false),
+                    );
+                });
+        });
 }
 
 /// The line under the selected tab, across all of it: from its icon to its close button. Lime in

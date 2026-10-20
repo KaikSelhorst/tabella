@@ -17,6 +17,7 @@ impl App {
         if (s.zoom - ctx.zoom_factor()).abs() > 0.001 {
             ctx.set_zoom_factor(s.zoom);
         }
+        crate::db::set_max_rows(s.row_limit);
         if let Err(e) = settings::save(&s) {
             self.notice = crate::app::Notice::error(format!("Error saving preferences: {e}"));
         }
@@ -28,6 +29,20 @@ impl App {
         let s = Settings {
             light: !self.settings.light,
             system_theme: false,
+            ..self.settings.clone()
+        };
+        self.apply_settings(ctx, s);
+    }
+
+    /// Next of the row limits (back to the first after the last).
+    pub fn cycle_row_limit(&mut self, ctx: &egui::Context) {
+        let next = settings::ROW_LIMITS
+            .iter()
+            .copied()
+            .find(|n| *n > self.settings.row_limit)
+            .unwrap_or(settings::ROW_LIMITS[0]);
+        let s = Settings {
+            row_limit: next,
             ..self.settings.clone()
         };
         self.apply_settings(ctx, s);

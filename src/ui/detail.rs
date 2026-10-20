@@ -22,6 +22,9 @@ pub enum DetailAction {
     Close,
 }
 
+/// Space kept free on the right of the fields, where the (floating) scroll bar draws.
+const SCROLL_BAR_ROOM: f32 = 10.0;
+
 /// Values longer than this get a multi-line editor.
 const LONG_VALUE: usize = 48;
 
@@ -207,6 +210,9 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            // The scroll bar floats over the content: keep the fields clear of it.
+            ui.add_space(0.0);
+            ui.set_width(ui.available_width() - SCROLL_BAR_ROOM);
             for (ci, name) in res.columns.iter().enumerate() {
                 let value = &res.rows[row][ci];
                 let c = info[ci];

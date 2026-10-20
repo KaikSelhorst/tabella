@@ -1,6 +1,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod backup;
+mod cli;
 mod compare;
 mod config;
 mod db;
@@ -35,6 +37,16 @@ mod worker;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        eprintln!("{}", cli::USAGE);
+        return Ok(());
+    }
+    // A bad option is reported in the window (a Windows build has no console to print to).
+    let (launch, launch_error) = match cli::parse(args) {
+        Ok(l) => (l, None),
+        Err(e) => (cli::Launch::default(), Some(format!("{e}\n{}", cli::USAGE))),
+    };
     // Same size as when it was last closed.
     // Problems reading these files are reported by `App::new`, which reads them again.
     let size = session::load().value.window.unwrap_or([1100.0, 700.0]);
@@ -58,7 +70,11 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             ui::theme::apply(&cc.egui_ctx);
             cc.egui_ctx.set_zoom_factor(prefs.zoom);
-            Ok(Box::new(app::App::new(&cc.egui_ctx)))
+            let mut app = app::App::with_launch(&cc.egui_ctx, launch);
+            if let Some(e) = launch_error {
+                app.notice = app::Notice::error(e);
+            }
+            Ok(Box::new(app))
         }),
     )
 }

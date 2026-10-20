@@ -48,6 +48,17 @@ fn with_cert_hint(msg: String) -> String {
 }
 
 impl DbError {
+    /// The connection itself is gone (server restarted, network dropped, session killed), as
+    /// opposed to a statement the server refused.
+    pub fn is_connection_lost(&self) -> bool {
+        match self {
+            DbError::Postgres(e) => e.is_closed(),
+            DbError::MySql(mysql::Error::IoError(_)) => true,
+            DbError::MySql(mysql::Error::MySqlError(e)) => matches!(e.code, 1053 | 2006 | 2013),
+            _ => false,
+        }
+    }
+
     /// Where in `sql` (byte offset) the server says the problem is: Postgres reports the
     /// position; MySQL names the text after it (`near '…' at line N`) or the unknown column or
     /// table, looked up in the statement.

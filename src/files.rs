@@ -50,6 +50,66 @@ pub fn pick_new_database() -> Option<PathBuf> {
     None
 }
 
+/// A connections file to import.
+#[cfg(windows)]
+pub fn pick_connections() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Import connections")
+        .add_filter("JSON", &["json"])
+        .add_filter("All files", &["*"])
+        .pick_file()
+}
+
+#[cfg(not(windows))]
+pub fn pick_connections() -> Option<PathBuf> {
+    None
+}
+
+/// Where to write the exported connections.
+#[cfg(windows)]
+pub fn pick_connections_save() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Export connections")
+        .set_file_name("tabella-connections.json")
+        .add_filter("JSON", &["json"])
+        .save_file()
+}
+
+#[cfg(not(windows))]
+pub fn pick_connections_save() -> Option<PathBuf> {
+    None
+}
+
+/// A backup file to restore.
+#[cfg(windows)]
+pub fn pick_backup() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Restore backup")
+        .add_filter("Backups", &["sql", "dump", "backup"])
+        .add_filter("All files", &["*"])
+        .pick_file()
+}
+
+#[cfg(not(windows))]
+pub fn pick_backup() -> Option<PathBuf> {
+    None
+}
+
+/// Where to write a backup.
+#[cfg(windows)]
+pub fn pick_backup_save(suggested: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Back up database")
+        .set_file_name(suggested)
+        .add_filter("Backups", &["sql", "dump"])
+        .save_file()
+}
+
+#[cfg(not(windows))]
+pub fn pick_backup_save(_suggested: &str) -> Option<PathBuf> {
+    None
+}
+
 #[cfg(windows)]
 pub fn pick_save(suggested: &str) -> Option<PathBuf> {
     rfd::FileDialog::new()

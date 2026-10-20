@@ -46,6 +46,14 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Ctrl+\\",
                 "Split right: move the tab to the other pane (SQL tabs are copied)",
             ),
+            (
+                "Drag a tab",
+                "Along the strip to reorder; onto the right edge of the content to split; onto the other pane's strip to move",
+            ),
+            (
+                "Alt+←",
+                "Back: to where the last foreign key was followed from (also the mouse's back button)",
+            ),
             ("F1", "This screen"),
             (
                 "Ctrl + / Ctrl − / Ctrl 0",
@@ -98,7 +106,11 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+F", "Find in result (tables: searches the database)"),
             (
                 "Right-click the header",
-                "Filter values (like Excel), statistics, pin, hide columns",
+                "Filter values (like Excel), statistics, pin, hide columns, copy the values as a (…) list for IN",
+            ),
+            (
+                "Load more (below an editor result)",
+                "A result stops at the row limit (Ctrl+P → Row limit); this runs the read again for more",
             ),
         ],
     ),

@@ -160,6 +160,36 @@ pub fn to_tsv(res: &QueryResult, range: &CellRange, headers: bool) -> String {
     out
 }
 
+/// One column's distinct values as a SQL list, `(1, 2, 3)` or `('a', 'b')`, ready to paste after
+/// `IN`. NULLs are left out (they never match). Returns the text and how many values it holds.
+pub fn to_in_list(
+    kind: crate::db::Kind,
+    res: &QueryResult,
+    col: usize,
+    rows: std::ops::RangeInclusive<usize>,
+    value_kind: ValueKind,
+) -> (String, usize) {
+    let mut seen = std::collections::HashSet::new();
+    let items: Vec<String> = res.rows[rows]
+        .iter()
+        .filter_map(|r| r[col].as_deref())
+        .filter(|v| seen.insert(*v))
+        .map(|v| {
+            let plain_number = value_kind == ValueKind::Number
+                && !v.is_empty()
+                && v.chars()
+                    .all(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.' | 'e' | 'E'))
+                && v.parse::<f64>().is_ok();
+            if plain_number {
+                v.to_string()
+            } else {
+                kind.quote_str(v)
+            }
+        })
+        .collect();
+    (format!("({})", items.join(", ")), items.len())
+}
+
 /// The cells as a Markdown table (issues, docs, chat): numbers right-aligned, `|` escaped,
 /// line breaks as spaces, NULL as an empty cell.
 pub fn to_markdown(res: &QueryResult, range: &CellRange, kinds: &[ValueKind]) -> String {
@@ -582,6 +612,33 @@ pub fn diff_results(a: &QueryResult, b: &QueryResult, key: Option<&str>) -> Resu
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_column_becomes_an_in_list() {
+        use crate::db::Kind;
+        let res = QueryResult {
+            columns: vec!["id".into(), "name".into()],
+            rows: vec![
+                vec![Some("1".into()), Some("O'Neil".into())],
+                vec![Some("2".into()), None],
+                vec![Some("1".into()), Some("a\\b".into())],
+            ],
+            ..Default::default()
+        };
+        let (ids, n) = to_in_list(Kind::Postgres, &res, 0, 0..=2, ValueKind::Number);
+        assert_eq!((ids.as_str(), n), ("(1, 2)", 2), "distinct, bare numbers");
+        let (names, n) = to_in_list(Kind::Postgres, &res, 1, 0..=2, ValueKind::Text);
+        assert_eq!(
+            (names.as_str(), n),
+            ("('O''Neil', E'a\\\\b')", 2),
+            "no NULL, quotes escaped"
+        );
+        let (my, _) = to_in_list(Kind::MySql, &res, 1, 2..=2, ValueKind::Text);
+        assert_eq!(my, "('a\\\\b')");
+        // A number column holding something odd keeps it quoted.
+        let (odd, _) = to_in_list(Kind::Postgres, &res, 1, 0..=0, ValueKind::Number);
+        assert_eq!(odd, "('O''Neil')");
+    }
+
     #[test]
     fn tsv_round_trip() {
         let res = QueryResult {

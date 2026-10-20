@@ -173,22 +173,28 @@ impl App {
                     // few pixels wider than the panel, and the panel grew by that much every frame.
                     .width(ui.available_width())
                     .show_ui(ui, |ui| {
-                        for (i, c) in self.saved.iter().enumerate() {
-                            let r = ui.selectable_label(current == Some(i), conn_label(c));
-                            if r.clicked() {
-                                connect = Some(i);
-                                ui.close();
+                        for (group, indexes) in crate::db::by_group(&self.saved) {
+                            if !group.is_empty() {
+                                ui.label(egui::RichText::new(group).small().color(theme::tokens().subtle));
                             }
-                            r.context_menu(|ui| {
-                                if ui.button("Edit").clicked() {
-                                    edit = Some(i);
+                            for i in indexes {
+                                let c = &self.saved[i];
+                                let r = ui.selectable_label(current == Some(i), conn_label(c));
+                                if r.clicked() {
+                                    connect = Some(i);
                                     ui.close();
                                 }
-                                if ui.button("Delete").clicked() {
-                                    delete = Some(i);
-                                    ui.close();
-                                }
-                            });
+                                r.context_menu(|ui| {
+                                    if ui.button("Edit").clicked() {
+                                        edit = Some(i);
+                                        ui.close();
+                                    }
+                                    if ui.button("Delete").clicked() {
+                                        delete = Some(i);
+                                        ui.close();
+                                    }
+                                });
+                            }
                         }
                         if !self.saved.is_empty() {
                             ui.separator();

@@ -17,6 +17,12 @@ enum Cmd {
     Activity,
     Theme,
     SystemTheme,
+    RowLimit,
+    Back,
+    ExportConnections,
+    ImportConnections,
+    Backup,
+    Restore,
     Fps,
     /// +1 / -1 steps; 0 back to 100%.
     Zoom(i32),
@@ -170,9 +176,15 @@ impl App {
             items.push(Item {
                 icon: icon::DATABASE,
                 label: format!("Connect: {}", c.name),
-                detail: match c.kind {
-                    crate::db::Kind::Sqlite => format!("SQLite · {}", c.database),
-                    _ => format!("{} · {}:{}", c.kind.label(), c.host, c.port),
+                detail: {
+                    let place = match c.kind {
+                        crate::db::Kind::Sqlite => format!("SQLite · {}", c.database),
+                        _ => format!("{} · {}:{}", c.kind.label(), c.host, c.port),
+                    };
+                    match c.group.trim() {
+                        "" => place,
+                        group => format!("{group} · {place}"),
+                    }
                 },
                 cmd: Cmd::Connect(c.id.clone()),
             });
@@ -198,6 +210,53 @@ impl App {
             .into(),
             detail: "light or dark with the operating system".into(),
             cmd: Cmd::SystemTheme,
+        });
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.ready && s.cfg.kind != crate::db::Kind::Sqlite)
+        {
+            items.push(Item {
+                icon: icon::FLOPPY_DISK,
+                label: "Back up database".into(),
+                detail: "with pg_dump / mysqldump".into(),
+                cmd: Cmd::Backup,
+            });
+            items.push(Item {
+                icon: icon::ARROW_COUNTER_CLOCKWISE,
+                label: "Restore database".into(),
+                detail: "a backup, with psql / pg_restore / mysql".into(),
+                cmd: Cmd::Restore,
+            });
+        }
+        items.push(Item {
+            icon: icon::EXPORT,
+            label: "Export connections".into(),
+            detail: "a JSON file without passwords".into(),
+            cmd: Cmd::ExportConnections,
+        });
+        items.push(Item {
+            icon: icon::DOWNLOAD_SIMPLE,
+            label: "Import connections".into(),
+            detail: "from a file made by Export connections".into(),
+            cmd: Cmd::ImportConnections,
+        });
+        if self.can_go_back() {
+            items.push(Item {
+                icon: icon::ARROW_LEFT,
+                label: "Go back".into(),
+                detail: "Alt+← · to where the last foreign key was followed from".into(),
+                cmd: Cmd::Back,
+            });
+        }
+        items.push(Item {
+            icon: icon::LIST_NUMBERS,
+            label: "Row limit".into(),
+            detail: format!(
+                "now {} rows per query · pick the next",
+                format_count(self.settings.row_limit as i64)
+            ),
+            cmd: Cmd::RowLimit,
         });
         let zoom = format!("now {:.0}%", self.settings.zoom * 100.0);
         for (steps, glyph, label, keys) in [
@@ -466,6 +525,12 @@ impl App {
                 Cmd::Activity => self.open_activity(),
                 Cmd::Theme => self.toggle_theme(ctx),
                 Cmd::SystemTheme => self.toggle_system_theme(ctx),
+                Cmd::RowLimit => self.cycle_row_limit(ctx),
+                Cmd::Back => self.go_back(),
+                Cmd::Backup => self.backup_dialog(false),
+                Cmd::Restore => self.backup_dialog(true),
+                Cmd::ExportConnections => self.export_connections_dialog(),
+                Cmd::ImportConnections => self.import_connections_dialog(),
                 Cmd::Zoom(steps) => self.zoom_by(ctx, steps),
                 Cmd::History => self.open_history(),
                 Cmd::RunFile => self.pick_script(),

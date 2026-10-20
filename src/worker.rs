@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::search::{SearchHit, SearchTarget};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
@@ -22,6 +23,12 @@ pub enum Job {
     Query {
         tab: u64,
         sql: String,
+    },
+    /// A read run again keeping up to `limit` rows ("Load more").
+    MoreRows {
+        tab: u64,
+        sql: String,
+        limit: usize,
     },
     /// Runs `stmt`, then `refresh`, and reports the rows of `refresh`. With `expect_one`, a
     /// statement that touched no row (it was changed or deleted elsewhere) is reported as a notice.
@@ -228,6 +235,12 @@ pub struct Connected {
 
 pub enum Reply {
     Connected(DbResult<Connected>),
+    /// The connection dropped and a new one took its place (`rolled_back`: an open transaction
+    /// went with the old one), or could not be made.
+    Reconnected {
+        res: DbResult<Connected>,
+        rolled_back: bool,
+    },
     Tables(DbResult<Vec<TableRef>>),
     Rows {
         tab: u64,
@@ -352,6 +365,18 @@ pub enum Reply {
 }
 
 impl Reply {
+    /// The job failed because the connection is gone.
+    fn connection_lost(&self) -> bool {
+        match self {
+            Reply::Rows { res, .. } | Reply::Saved { res, .. } => {
+                res.as_ref().as_ref().is_err_and(DbError::is_connection_lost)
+            }
+            Reply::Count { res, .. } => res.as_ref().is_err_and(DbError::is_connection_lost),
+            Reply::Columns { res, .. } => res.as_ref().is_err_and(DbError::is_connection_lost),
+            _ => false,
+        }
+    }
+
     /// The tab a reply answers and whether it ends that tab's job (progress reports and the
     /// row count, which runs beside the page, don't); `None` for the connection's own.
     pub fn tab(&self) -> Option<(u64, bool)> {
@@ -379,6 +404,7 @@ impl Reply {
             | Reply::SearchProgress { tab, .. }
             | Reply::DumpProgress { tab, .. } => Some((*tab, false)),
             Reply::Connected(_)
+            | Reply::Reconnected { .. }
             | Reply::Tables(_)
             | Reply::AllColumns(_)
             | Reply::AllFks(_)
@@ -696,13 +722,24 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
             },
             pg: cfg.kind == crate::db::Kind::Postgres,
             cfg: &cfg,
+            via,
+            location: None,
+            last_job: Instant::now(),
             send: &send,
         };
         while let Ok(job) = job_rx.recv() {
             let before = w.tx;
+            w.ensure_alive(false);
             if let Some(reply) = w.handle(job) {
+                // A job that found the connection dead (MySQL can't tell beforehand): replace
+                // it now, so the run-again the user is about to do works.
+                let lost = reply.connection_lost();
                 send(reply);
+                if lost {
+                    w.ensure_alive(true);
+                }
             }
+            w.last_job = Instant::now();
             send_tx(&send, before, w.tx);
         }
     });
@@ -715,11 +752,61 @@ struct Worker<'a, S: Fn(Reply)> {
     tx: TxState,
     pg: bool,
     cfg: &'a ConnConfig,
+    /// Local port of the SSH tunnel, if any.
+    via: Option<u16>,
+    /// The schema or database picked with `UseSchema`: session state a new connection lacks.
+    location: Option<String>,
+    last_job: Instant,
     /// For replies sent before the job's own (progress, refreshed lists).
     send: &'a S,
 }
 
+/// MySQL isn't asked whether it is alive on every click, only after this long without a job.
+const PING_AFTER_IDLE: Duration = Duration::from_secs(30);
+/// Tries to get a dropped connection back, and the wait before each.
+const RECONNECT_WAITS: [Duration; 3] = [Duration::ZERO, Duration::from_secs(1), Duration::from_secs(3)];
+
 impl<S: Fn(Reply)> Worker<'_, S> {
+    /// A connection that dropped since the last job (idle timeout, restart, network) is replaced
+    /// before the next job runs, so it doesn't fail with "connection closed". Whatever the old
+    /// session held (an open transaction) is gone; the app is told.
+    fn ensure_alive(&mut self, ping: bool) {
+        if self
+            .conn
+            .is_alive(ping || self.last_job.elapsed() >= PING_AFTER_IDLE)
+        {
+            return;
+        }
+        let mut last_error = None;
+        for wait in RECONNECT_WAITS {
+            thread::sleep(wait);
+            match Conn::connect(self.cfg, self.via) {
+                Ok(mut conn) => {
+                    if let Some(name) = &self.location {
+                        let _ = conn.use_schema(name);
+                    }
+                    let canceller = Arc::new(conn.canceller(self.cfg, self.via));
+                    let rolled_back = self.tx.open;
+                    self.tx = TxState {
+                        manual: self.tx.manual,
+                        ..Default::default()
+                    };
+                    let res = conn.tables().map(|tables| Connected { tables, canceller });
+                    self.conn = conn;
+                    (self.send)(Reply::Reconnected { res, rolled_back });
+                    return;
+                }
+                Err(e) => last_error = Some(e),
+            }
+        }
+        if let Some(e) = last_error {
+            (self.send)(Reply::Reconnected {
+                res: Err(e),
+                rolled_back: false,
+            });
+        }
+    }
+
     /// Runs one job; `None` when it has no reply of its own.
     fn handle(&mut self, job: Job) -> Option<Reply> {
         let conn = &mut self.conn;
@@ -728,6 +815,11 @@ impl<S: Fn(Reply)> Worker<'_, S> {
             Job::Query { tab, sql } => Reply::Rows {
                 tab,
                 res: Box::new(run_user_sql(conn, &mut self.tx, self.pg, &sql)),
+                notice: None,
+            },
+            Job::MoreRows { tab, sql, limit } => Reply::Rows {
+                tab,
+                res: Box::new(conn.query_up_to(&sql, limit)),
                 notice: None,
             },
             Job::Preview { tab, sql } => Reply::Preview {
@@ -838,7 +930,13 @@ impl<S: Fn(Reply)> Worker<'_, S> {
                 }
                 Reply::Admin { done, res }
             }
-            Job::UseSchema(name) => Reply::Location(conn.use_schema(&name).and_then(|()| conn.location())),
+            Job::UseSchema(name) => {
+                let res = conn.use_schema(&name).and_then(|()| conn.location());
+                if res.is_ok() {
+                    self.location = Some(name);
+                }
+                Reply::Location(res)
+            }
             Job::Fks { tab } => Reply::Fks {
                 tab,
                 res: conn.all_fks(),
@@ -1330,6 +1428,86 @@ mod tests {
         assert_eq!(wait(&rows), "Anna", "undone");
         drop(jobs);
         let _ = std::fs::remove_file(&cfg.database);
+    }
+
+    /// A session killed on the server is replaced: the next job runs on a new connection, the
+    /// picked schema is back, and an open transaction is reported as lost.
+    fn reconnects_after_the_session_is_killed(kind: Kind, port: u16, db: &str) {
+        use std::time::Duration;
+        let mut cfg = ConnConfig::new(kind);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = port;
+        cfg.password = "pw".into();
+        cfg.database = db.into();
+        let mut other = Conn::connect(&cfg, None).expect("connect");
+        let (jobs, replies) = spawn(cfg, eframe::egui::Context::default());
+        let next = || {
+            replies
+                .recv_timeout(Duration::from_secs(15))
+                .expect("worker reply")
+        };
+        let rows = |sql: &str| {
+            jobs.send(Job::Query {
+                tab: 1,
+                sql: sql.into(),
+            })
+            .unwrap();
+            loop {
+                if let Reply::Rows { res, .. } = next() {
+                    return *res;
+                }
+            }
+        };
+        let id_sql = if kind == Kind::Postgres {
+            "SELECT pg_backend_pid()"
+        } else {
+            "SELECT CONNECTION_ID()"
+        };
+        let id = rows(id_sql).unwrap().rows[0][0].clone().unwrap();
+        other
+            .query(&if kind == Kind::Postgres {
+                format!("SELECT pg_terminate_backend({id})")
+            } else {
+                format!("KILL {id}")
+            })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        // Whatever this one does, a Reconnected reply follows; the next job runs on the new session.
+        let _ = rows("SELECT 1");
+        let mut seen = false;
+        jobs.send(Job::Query {
+            tab: 1,
+            sql: id_sql.into(),
+        })
+        .unwrap();
+        loop {
+            match next() {
+                Reply::Reconnected { res, .. } => {
+                    assert!(res.is_ok(), "{kind:?}");
+                    seen = true;
+                }
+                Reply::Rows { res, .. } => {
+                    if let Ok(r) = *res {
+                        let new_id = r.rows[0][0].clone().unwrap();
+                        assert!(seen && new_id != id, "{kind:?}: a new session after Reconnected");
+                        return;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn reconnect_postgres() {
+        reconnects_after_the_session_is_killed(Kind::Postgres, 55432, "postgres");
+    }
+
+    #[test]
+    #[ignore]
+    fn reconnect_mysql() {
+        reconnects_after_the_session_is_killed(Kind::MySql, 53306, "test");
     }
 
     #[test]

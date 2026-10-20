@@ -62,6 +62,7 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        self.poll_backup();
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -296,20 +297,47 @@ impl App {
         };
         let t = theme::tokens();
         let (mut ok, mut cancel) = (false, false);
-        let saving = p.save_tab.is_some();
+        let saving = p.save_tab.is_some()
+            || matches!(
+                p.purpose,
+                Some(crate::app::PathUse::ExportConnections | crate::app::PathUse::Backup)
+            );
+        let note = match p.purpose {
+            Some(crate::app::PathUse::Backup) => Some(
+                "Uses pg_dump / mysqldump: a .sql name is plain text; for PostgreSQL any other name is the compressed format.",
+            ),
+            Some(crate::app::PathUse::Restore) => Some(
+                "Runs the file against this database with psql / pg_restore / mysql. Objects that already exist cause errors.",
+            ),
+            _ => None,
+        };
         let modal = egui::Modal::new(egui::Id::new("path_prompt"))
             .frame(theme::modal_frame(16))
             .show(ctx, |ui| {
                 ui.set_width(480.0);
                 ui.label(
-                    egui::RichText::new(if saving { "Save as" } else { "Open SQL file" })
-                        .size(15.0)
-                        .color(t.foreground),
+                    egui::RichText::new(match (p.purpose, saving) {
+                        (Some(crate::app::PathUse::Backup), _) => "Back up database",
+                        (Some(crate::app::PathUse::Restore), _) => "Restore database",
+                        (Some(_), true) => "Export connections",
+                        (Some(_), false) => "Import connections",
+                        (None, true) => "Save as",
+                        (None, false) => "Open SQL file",
+                    })
+                    .size(15.0)
+                    .color(t.foreground),
                 );
+                if let Some(note) = note {
+                    ui.label(egui::RichText::new(note).size(11.0).color(t.subtle));
+                }
                 ui.add_space(8.0);
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut p.path)
-                        .hint_text("/path/to/file.sql")
+                        .hint_text(if p.purpose.is_some() {
+                            "/path/to/connections.json"
+                        } else {
+                            "/path/to/file.sql"
+                        })
                         .font(egui::FontId::monospace(12.5))
                         .desired_width(f32::INFINITY),
                 );
@@ -335,6 +363,13 @@ impl App {
             && let Some(Dialog::Path(p)) = self.dialog.take()
         {
             let path = std::path::PathBuf::from(p.path.trim());
+            match p.purpose {
+                Some(crate::app::PathUse::ExportConnections) => return self.export_connections(&path),
+                Some(crate::app::PathUse::ImportConnections) => return self.import_connections(&path),
+                Some(crate::app::PathUse::Backup) => return self.start_backup(&path, false),
+                Some(crate::app::PathUse::Restore) => return self.start_backup(&path, true),
+                None => {}
+            }
             match p
                 .save_tab
                 .and_then(|id| self.tabs.iter().position(|t| t.id == id))
@@ -489,6 +524,16 @@ impl App {
         }
         if split && ready && !self.tabs.is_empty() {
             self.split_tab(self.active);
+        }
+        // Alt+Left (or the mouse's back button) undoes "follow foreign key". Not while typing:
+        // text fields use Alt+Left themselves.
+        let typing = ctx.egui_wants_keyboard_input();
+        let back = ctx.input_mut(|i| {
+            let key = !typing && i.consume_key(Modifiers::ALT, Key::ArrowLeft);
+            key || i.pointer.button_pressed(egui::PointerButton::Extra1)
+        });
+        if back {
+            self.go_back();
         }
     }
 }
@@ -656,7 +701,79 @@ pub(crate) mod screenshots {
         harness.run();
         assert_eq!(
             harness.state().tabs.iter().map(|t| t.right).collect::<Vec<_>>(),
-            [true, false, true]
+            [false, true, true],
+            "it lands at the end of the other pane, after the tab already there"
+        );
+    }
+
+    #[test]
+    fn dragging_a_tab_along_its_strip_reorders_it() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        let titles =
+            |h: &Harness<crate::app::App>| h.state().tabs.iter().map(|t| t.title.clone()).collect::<Vec<_>>();
+        let before = titles(&harness);
+        assert_eq!(before.len(), 2);
+        let from = egui::pos2(290.0, 17.0);
+        let to = egui::pos2(1100.0, 17.0);
+        harness.hover_at(from);
+        harness.step();
+        harness.drag_at(from);
+        harness.step();
+        for i in 1..=10 {
+            harness.hover_at(from + (to - from) * (i as f32 / 10.0));
+            harness.step();
+        }
+        harness.event(egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+        harness.run();
+        assert_eq!(titles(&harness), [before[1].clone(), before[0].clone()]);
+        assert_eq!(harness.state().active, 1, "the moved tab is the active one");
+    }
+
+    #[test]
+    fn dragging_a_tab_to_the_right_edge_splits_the_view() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        assert!(harness.state().split.is_none());
+        let from = egui::pos2(290.0, 17.0);
+        let to = egui::pos2(1200.0, 400.0);
+        harness.hover_at(from);
+        harness.step();
+        harness.drag_at(from);
+        harness.step();
+        for i in 1..=10 {
+            harness.hover_at(from + (to - from) * (i as f32 / 10.0));
+            harness.step();
+        }
+        harness.event(egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+        harness.run();
+        assert!(harness.state().split.is_some(), "the split opened");
+        assert_eq!(
+            harness.state().tabs.iter().map(|t| t.right).collect::<Vec<_>>(),
+            [true, false],
+            "the dragged tab is alone on the right"
         );
     }
 
@@ -695,6 +812,91 @@ pub(crate) mod screenshots {
         let after = harness.state().col_widths_for("customers");
         assert!(after["name"] > 200.0, "{after:?}");
         assert_eq!(harness.state().tabs[0].col_widths["name"], after["name"]);
+    }
+
+    /// `TABELLA_SHOTS=<dir> cargo test tab_drag_shot -- --ignored`: a tab in the middle of a drag.
+    #[test]
+    #[ignore]
+    fn tab_drag_shot() {
+        let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .with_max_steps(8)
+            .wgpu()
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        let from = egui::pos2(290.0, 17.0);
+        harness.hover_at(from);
+        harness.step();
+        harness.drag_at(from);
+        harness.step();
+        for i in 1..=6 {
+            harness.hover_at(from + egui::vec2(40.0 * i as f32, 8.0));
+            harness.step();
+        }
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/tab-drag.png"))
+            .unwrap();
+    }
+
+    /// `TABELLA_SHOTS=<dir> cargo test detail_panel_shot -- --ignored`: awkward values in the row panel.
+    #[test]
+    #[ignore]
+    fn detail_panel_shot() {
+        let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .with_max_steps(8)
+            .wgpu()
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        let state = harness.state_mut();
+        state.active = 0;
+        let long = "https://cdn.example.com/assets/very/long/path/without/spaces/image_0123456789abcdef0123456789abcdef.png?token=abcdefghijklmnopqrstuvwxyz0123456789";
+        state.tabs[0].result = Some(QueryResult {
+            columns: vec![
+                "id".into(),
+                "name".into(),
+                "email".into(),
+                "url".into(),
+                "doc".into(),
+            ],
+            rows: vec![vec![
+                Some("1".into()),
+                Some("Customer with a rather long display name that keeps going".into()),
+                Some("customer1@example.com".into()),
+                Some(long.into()),
+                Some(format!(
+                    r#"{{"key_with_long_name_here":"{long}","items":[1,2,3]}}"#
+                )),
+            ]],
+            ..Default::default()
+        });
+        state.tabs[0].selected = Some((0, 0));
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/detail-long.png"))
+            .unwrap();
+        // Read-only (a view or no primary key) takes another path through the panel.
+        harness.state_mut().session.as_mut().unwrap().cfg.read_only = true;
+        harness.run();
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/detail-long-ro.png"))
+            .unwrap();
     }
 
     #[test]
@@ -1905,8 +2107,9 @@ pub(crate) mod screenshots {
             let tab = &mut app.tabs[1];
             let before = tab.result.clone().unwrap();
             let ed = tab.editor_mut().unwrap();
-            ed.last_query =
-                "SELECT id, name, email, active, balance, created_at FROM customers ORDER BY id".into();
+            ed.set_last_query(
+                "SELECT id, name, email, active, balance, created_at FROM customers ORDER BY id".into(),
+            );
             ed.pin(&before, None);
             ed.comparing = true;
             let mut now = before.clone();

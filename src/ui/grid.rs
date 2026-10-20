@@ -369,7 +369,7 @@ pub fn grid(
     }
 
     // Widths as drawn this frame, to notice a column being dragged (the last one just fills up).
-    let mut drawn: Vec<(String, f32)> = Vec::new();
+    let mut drawn: Vec<(&str, f32)> = Vec::new();
     table
         .header(HEADER_HEIGHT, |mut header| {
             header.col(|ui| {
@@ -393,7 +393,7 @@ pub fn grid(
                 header.col(|ui| {
                     cell_chrome(ui, table_rect, t);
                     if vi != last {
-                        drawn.push((name.clone(), ui.max_rect().width()));
+                        drawn.push((name.as_str(), ui.max_rect().width()));
                     }
                     if vi < pinned {
                         frozen.push(Frozen {
@@ -717,21 +717,37 @@ pub fn grid(
         let ctx = ui.ctx().clone();
         let seen_id = egui::Id::new(("grid_widths_seen", id));
         let moved_id = egui::Id::new(("grid_widths_moved", id));
-        let seen: Option<Vec<(String, f32)>> = ctx.data(|d| d.get_temp(seen_id));
-        let changed = seen.is_some_and(|p| {
-            p.len() == drawn.len()
-                && p.iter()
-                    .zip(&drawn)
-                    .any(|(a, b)| a.0 == b.0 && (a.1 - b.1).abs() > 0.5)
+        // What was drawn last frame: the column names as one hash, and the widths. Compared
+        // without building any strings, since this runs every frame.
+        let names = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            drawn.iter().for_each(|(n, _)| n.hash(&mut h));
+            h.finish()
+        };
+        let seen: Option<(u64, Vec<f32>)> = ctx.data(|d| d.get_temp(seen_id));
+        let changed = seen.as_ref().is_some_and(|(n, w)| {
+            *n == names && w.len() == drawn.len() && w.iter().zip(&drawn).any(|(a, b)| (a - b.1).abs() > 0.5)
         });
         let pending = changed || ctx.data(|d| d.get_temp::<bool>(moved_id)).unwrap_or(false);
-        ctx.data_mut(|d| d.insert_temp(seen_id, drawn.clone()));
+        if seen.as_ref().is_none_or(|(n, w)| {
+            *n != names || w.len() != drawn.len() || w.iter().zip(&drawn).any(|(a, b)| a != &b.1)
+        }) {
+            ctx.data_mut(|d| {
+                d.insert_temp(
+                    seen_id,
+                    (names, drawn.iter().map(|(_, w)| *w).collect::<Vec<f32>>()),
+                )
+            });
+        }
         if pending && ctx.input(|i| i.pointer.any_down()) {
             ctx.data_mut(|d| d.insert_temp(moved_id, true));
         } else if pending {
             ctx.data_mut(|d| d.remove::<bool>(moved_id));
             if event.is_none() {
-                event = Some(GridEvent::ColumnWidths(drawn));
+                event = Some(GridEvent::ColumnWidths(
+                    drawn.into_iter().map(|(n, w)| (n.to_string(), w)).collect(),
+                ));
             }
         }
     }
@@ -804,6 +820,14 @@ fn header_menu(
     ui.separator();
     if ui.button("Copy name").clicked() {
         ui.ctx().copy_text(name.clone());
+        ui.close();
+    }
+    if ui
+        .button("Copy values as (…) list")
+        .on_hover_text("The distinct values of the selection, or of the whole column: for IN (…)")
+        .clicked()
+    {
+        event = Some(GridEvent::CopyInList(ci));
         ui.close();
     }
     event

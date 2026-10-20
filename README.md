@@ -99,6 +99,28 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
 - Light or dark theme and interface zoom from `Ctrl+P` (zoom also with `Ctrl +`/`Ctrl −`/
   `Ctrl 0`); both are remembered. "Follow the system theme" (same palette; on by default on a
   first run) matches the operating system's light/dark setting where the system reports it
+- Row limit for editor results (`Ctrl+P` → "Row limit": 1 000 · 5 000 · 20 000 · 100 000); a
+  truncated read shows "Load N more" under the grid
+- "Copy values as (…) list" in a column's header menu: the distinct values of the selection (or the
+  whole column) as `(1, 2, 3)` / `('a', 'b')`, ready for `IN`
+- `Alt+←` (or the mouse's back button, or "Go back" in `Ctrl+P`) returns to where the last foreign
+  key was followed from, and restores the filter that table had
+- Tabs reorder by dragging along the strip (a line shows where it lands); dropping one on the
+  right edge of the content opens the split view with it there
+- Command line: `tabella [--conn NAME] [URL] [FILE.sql …]` connects to a saved connection (by name
+  or id) or to a `postgres://`/`mysql://`/`sqlite:` URL (not saved) and opens the files; without
+  arguments it resumes the last session. `tabella --help` prints the usage
+- A dropped connection is replaced before the next query (Postgres notices at once, MySQL after
+  a failed query or 30 s idle); the picked schema comes back, and an open transaction is reported
+  as lost
+- Connection groups ("Group" in the form) list connections together in the welcome screen, the
+  sidebar and `Ctrl+P`; "Confirm before any change" makes the editor ask before every statement
+  that changes data
+- `Ctrl+P` → "Export connections" / "Import connections": a JSON file without passwords (ids are
+  new on import, a repeated name gets a number)
+- `Ctrl+P` → "Back up database" / "Restore database": runs `pg_dump`/`pg_restore`/`psql` or
+  `mysqldump`/`mysql` (they must be installed; the password goes in the environment, not the
+  command line). A `.sql` name is plain text; other names are PostgreSQL's compressed format
 - Column widths dragged in a table are remembered for that table (per connection), across tabs
   and runs
 - Functions, procedures, triggers and sequences in the sidebar (views along with the tables):

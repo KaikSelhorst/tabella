@@ -15,10 +15,18 @@ mod catalog;
 mod server;
 mod structure;
 
-/// Rows kept in memory per result; protects against `SELECT *` on huge tables.
-/// Most rows kept from one query.
-fn max_rows() -> usize {
-    5000
+/// Default for the most rows kept from one query; protects against `SELECT *` on huge tables.
+pub const DEFAULT_MAX_ROWS: usize = 5000;
+
+static MAX_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_ROWS);
+
+/// Most rows kept from one query (a preference, see `set_max_rows`).
+pub fn max_rows() -> usize {
+    MAX_ROWS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_max_rows(n: usize) {
+    MAX_ROWS.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -107,6 +115,14 @@ pub struct ConnConfig {
     /// Environment color shown around the app while connected (e.g. red for production).
     #[serde(default)]
     pub color: Option<Tag>,
+    /// Where the connection is listed together with others ("Production", "Client X"); empty
+    /// for none.
+    #[serde(default)]
+    pub group: String,
+    /// The editor asks before running any statement that changes data, not only the
+    /// destructive ones.
+    #[serde(default)]
+    pub confirm_writes: bool,
     /// Statements running longer than this are stopped by the server. 0 = no limit.
     #[serde(default)]
     pub timeout_secs: u32,
@@ -187,10 +203,27 @@ impl std::fmt::Debug for ConnConfig {
             .field("preview_writes", &self.preview_writes)
             .field("read_only", &self.read_only)
             .field("color", &self.color)
+            .field("group", &self.group)
+            .field("confirm_writes", &self.confirm_writes)
             .field("timeout_secs", &self.timeout_secs)
             .field("ssh", &self.ssh)
             .finish()
     }
+}
+
+/// The saved connections by group, as indexes into `saved`: the ungrouped first, then each
+/// group in the order its first connection appears.
+pub fn by_group(saved: &[ConnConfig]) -> Vec<(&str, Vec<usize>)> {
+    let mut groups: Vec<(&str, Vec<usize>)> = vec![("", Vec::new())];
+    for (i, c) in saved.iter().enumerate() {
+        let name = c.group.trim();
+        match groups.iter_mut().find(|(g, _)| *g == name) {
+            Some((_, idx)) => idx.push(i),
+            None => groups.push((name, vec![i])),
+        }
+    }
+    groups.retain(|(_, idx)| !idx.is_empty());
+    groups
 }
 
 impl ConnConfig {
@@ -245,6 +278,8 @@ impl ConnConfig {
             ssl_insecure: false,
             read_only: false,
             color: None,
+            group: String::new(),
+            confirm_writes: false,
             timeout_secs: 0,
             ssh: None,
         }
@@ -571,6 +606,16 @@ impl Conn {
         }
     }
 
+    /// Whether the connection still works. Postgres knows without asking; MySQL is pinged
+    /// (a round trip), SQLite is a local file.
+    pub fn is_alive(&mut self, ping: bool) -> bool {
+        match self {
+            Conn::Pg(c) => !c.is_closed(),
+            Conn::My(c) => !ping || c.ping().is_ok(),
+            Conn::Lite(_) => true,
+        }
+    }
+
     pub fn kind(&self) -> Kind {
         match self {
             Conn::Pg(_) => Kind::Postgres,
@@ -601,6 +646,11 @@ impl Conn {
         };
         out.elapsed = start.elapsed();
         Ok(out)
+    }
+
+    /// Same as `query` with a bigger cap: "Load more" on a truncated result.
+    pub fn query_up_to(&mut self, sql: &str, limit: usize) -> DbResult<QueryResult> {
+        self.query_limit(sql, limit)
     }
 
     fn query_limit(&mut self, sql: &str, limit: usize) -> DbResult<QueryResult> {
@@ -861,6 +911,27 @@ fn my_value(v: Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connections_list_by_group() {
+        let c = |name: &str, group: &str| ConnConfig {
+            name: name.into(),
+            group: group.into(),
+            ..ConnConfig::new(Kind::Postgres)
+        };
+        let saved = [
+            c("a", "Prod"),
+            c("b", ""),
+            c("c", " Staging "),
+            c("d", "Prod"),
+            c("e", ""),
+        ];
+        assert_eq!(
+            by_group(&saved),
+            vec![("", vec![1, 4]), ("Prod", vec![0, 3]), ("Staging", vec![2])]
+        );
+        assert!(by_group(&[]).is_empty());
+    }
 
     fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
         let cfg = ConnConfig {

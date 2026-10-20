@@ -13,7 +13,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let TabKind::Sql(ed) = &mut tab.kind else {
         return;
     };
-    let tab_last_query = ed.last_query.clone();
+    let last_reads = ed.last_reads;
     let mut repeat_value = ed.repeat;
     let repeat = &mut repeat_value;
     let has_file = ed.file.is_some();
@@ -129,7 +129,6 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     explain = Some((one.clone(), analyze));
                 }
                 // "Repeat every": the last query again on a timer (reads only).
-                let last_reads = !tab_last_query.trim().is_empty() && !sql::script_risk(&tab_last_query).writes;
                 repeat_menu(ui, repeat, last_reads, compact);
                 if let Some(r) = file_menu(ui, s.cfg.read_only, has_file) {
                     file_menu_action = Some(r);
@@ -743,7 +742,7 @@ pub(super) fn run_now(tab: &mut Tab, s: &Session, sql: String, mode: RunMode) {
     let risk = sql::script_risk(&sql);
     if s.cfg.read_only && risk.writes {
         tab.error = Some("Read-only connection: only queries (SELECT, SHOW, EXPLAIN…) can run.".into());
-    } else if !risk.dangers.is_empty() {
+    } else if !risk.dangers.is_empty() || (s.cfg.confirm_writes && risk.writes) {
         tab.confirm_run = Some(sql);
     } else {
         app::run_sql(tab, s, sql);
@@ -990,11 +989,12 @@ pub(super) fn confirm_run(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             ui.set_width(440.0);
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::WARNING).size(16.0).color(t.destructive));
-                ui.label(
-                    egui::RichText::new("Destructive statement")
-                        .size(15.0)
-                        .color(t.foreground),
-                );
+                let title = if risk.dangers.is_empty() {
+                    "Confirm changes"
+                } else {
+                    "Destructive statement"
+                };
+                ui.label(egui::RichText::new(title).size(15.0).color(t.foreground));
             });
             ui.add_space(4.0);
             ui.label(egui::RichText::new(format!("On {}:", s.cfg.name)).color(t.muted_foreground));
@@ -1007,13 +1007,23 @@ pub(super) fn confirm_run(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 );
             }
             ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("This may delete or change a lot of data and can't be undone.")
-                    .color(t.muted_foreground),
-            );
+            let note = if risk.dangers.is_empty() {
+                format!(
+                    "This connection asks before changing data: {} statement(s) will run.",
+                    sql::statement_ranges(&sql, false).len()
+                )
+            } else {
+                "This may delete or change a lot of data and can't be undone.".to_string()
+            };
+            ui.label(egui::RichText::new(note).color(t.muted_foreground));
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                go = ui.add(danger_button("Run anyway")).clicked();
+                let label = if risk.dangers.is_empty() {
+                    "Run"
+                } else {
+                    "Run anyway"
+                };
+                go = ui.add(danger_button(label)).clicked();
                 cancel = ui.add(theme::outline_button("Cancel")).clicked();
             });
         });
@@ -1165,4 +1175,33 @@ pub(super) fn history_menu(
         });
     });
     picked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::fake_session;
+    use crate::db::Kind;
+
+    /// "Confirm before any change" asks for every writing statement, and only for those.
+    #[test]
+    fn a_connection_that_confirms_asks_before_writes() {
+        let (mut s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut tab = Tab::new(
+            1,
+            "t".into(),
+            TabKind::Sql(Box::new(app::Editor::new(String::new()))),
+        );
+        let write = "UPDATE t SET a = 1 WHERE id = 2";
+        run_now(&mut tab, &s, write.into(), RunMode::Run);
+        assert!(
+            tab.confirm_run.is_none(),
+            "off by default: a WHERE keeps it quiet"
+        );
+        s.cfg.confirm_writes = true;
+        run_now(&mut tab, &s, "SELECT 1".into(), RunMode::Run);
+        assert!(tab.confirm_run.is_none(), "reads never ask");
+        run_now(&mut tab, &s, write.into(), RunMode::Run);
+        assert_eq!(tab.confirm_run.as_deref(), Some(write));
+    }
 }

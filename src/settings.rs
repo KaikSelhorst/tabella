@@ -14,6 +14,8 @@ pub struct Settings {
     pub system_theme: bool,
     /// UI scale (Ctrl + / Ctrl − / Ctrl 0, or Ctrl+P).
     pub zoom: f32,
+    /// Most rows kept from one query; "Load more" goes past it.
+    pub row_limit: usize,
 }
 
 impl Default for Settings {
@@ -23,6 +25,7 @@ impl Default for Settings {
             // A first run follows the system.
             system_theme: true,
             zoom: 1.0,
+            row_limit: crate::db::DEFAULT_MAX_ROWS,
         }
     }
 }
@@ -31,10 +34,17 @@ impl Default for Settings {
 pub const ZOOM: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 pub const ZOOM_STEP: f32 = 0.1;
 
+/// Choices of the "Row limit" command, and the range a hand-edited file is pulled into.
+pub const ROW_LIMITS: [usize; 4] = [1_000, 5_000, 20_000, 100_000];
+const ROW_LIMIT_RANGE: std::ops::RangeInclusive<usize> = 100..=1_000_000;
+
 impl Settings {
     /// Values from a hand-edited (or older) file pulled into range.
     pub fn clamped(mut self) -> Self {
         self.zoom = self.zoom.clamp(*ZOOM.start(), *ZOOM.end());
+        self.row_limit = self
+            .row_limit
+            .clamp(*ROW_LIMIT_RANGE.start(), *ROW_LIMIT_RANGE.end());
         self
     }
 }

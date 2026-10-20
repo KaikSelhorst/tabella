@@ -476,6 +476,10 @@ pub struct Editor {
     /// "Repeat every": seconds between automatic re-runs of `last_query`.
     pub repeat: Option<u64>,
     pub last_query: String,
+    /// What `last_query` is, worked out once when it is set (not on every frame): a read, and a
+    /// single statement.
+    pub last_reads: bool,
+    pub last_single: bool,
     pub last_run: Option<Instant>,
     /// Where the last error is in `text` (chars), underlined until the text changes.
     pub error_at: Option<(usize, usize)>,
@@ -497,6 +501,13 @@ pub struct Pinned {
 }
 
 impl Editor {
+    /// Remembers the query that just ran, and what kind it is.
+    pub fn set_last_query(&mut self, sql: String) {
+        self.last_reads = !sql.trim().is_empty() && !sql::script_risk(&sql).writes;
+        self.last_single = sql::statement_ranges(&sql, false).len() == 1;
+        self.last_query = sql;
+    }
+
     /// Keeps `res` (what `sql` returned) to compare later results against.
     pub fn pin(&mut self, res: &QueryResult, key_hint: Option<String>) {
         self.pinned = Some(Box::new(Pinned {
@@ -526,6 +537,8 @@ impl Editor {
             close_armed: false,
             repeat: None,
             last_query: String::new(),
+            last_reads: false,
+            last_single: false,
             last_run: None,
             error_at: None,
             error_jump: false,
@@ -1100,6 +1113,8 @@ pub enum GridEvent {
     FollowIncoming(usize, usize),
     /// Copy the selection (or, without one, the whole result) as a Markdown table.
     CopyMarkdown,
+    /// The distinct values of a column as `(a, b, c)`.
+    CopyInList(usize),
     /// Ask for a value to put in every selected cell.
     AskFill,
     /// Every selected cell gets this value (`None`: NULL).
@@ -1113,6 +1128,15 @@ pub enum GridEvent {
 }
 
 /// What `handle_grid_event` needs the app (or the clipboard) to do.
+/// A jump to a filtered table, with what "Back" needs to undo it.
+struct NavStep {
+    /// The tab the jump started from.
+    from: u64,
+    /// The table tab that got the filter, and the filter it had (None: the jump opened it).
+    to: u64,
+    previous_filter: Option<String>,
+}
+
 pub enum Effect {
     Copy(String),
     /// Remember these column widths for the table.
@@ -1165,8 +1189,14 @@ pub struct App {
     pub filters: Vec<SavedFilter>,
     /// Column widths dragged by the user, per connection and table.
     col_widths: crate::widths::Store,
+    /// Foreign keys followed (and other jumps to a filtered table), for "Back".
+    nav_back: Vec<NavStep>,
     /// Tabs from the last run, reopened once their connection is ready.
     restore: Option<session::Saved>,
+    /// `.sql` files from the command line, opened once connected.
+    launch_files: Vec<std::path::PathBuf>,
+    /// A backup or restore running on its own thread.
+    backup: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// Current window size, saved on exit.
     pub window: Option<[f32; 2]>,
     /// Row detail panel on the right of the grid.
@@ -1188,7 +1218,13 @@ pub struct App {
 }
 
 impl App {
+    #[cfg(test)]
     pub fn new(ctx: &egui::Context) -> Self {
+        Self::with_launch(ctx, crate::cli::Launch::default())
+    }
+
+    /// Starts as the command line asked (see `cli`).
+    pub fn with_launch(ctx: &egui::Context, launch: crate::cli::Launch) -> Self {
         let mut secrets = SecretStore::detect();
         let conns = config::load(&secrets);
         let history = history::load();
@@ -1196,10 +1232,11 @@ impl App {
         let filters = filters::load();
         let col_widths = crate::widths::load();
         let settings = crate::settings::load();
+        crate::db::set_max_rows(settings.value.row_limit);
         let last = session::load();
         // Files that existed but couldn't be read were backed up; say so instead of starting
         // empty without a word.
-        let warnings: Vec<String> = [
+        let mut warnings: Vec<String> = [
             conns.warning,
             secrets.take_warning(),
             history.warning,
@@ -1233,7 +1270,10 @@ impl App {
             favorites: favorites.value,
             filters: filters.value,
             col_widths: col_widths.value,
+            nav_back: Vec::new(),
             restore: None,
+            launch_files: Vec::new(),
+            backup: None,
             window: None,
             show_detail: true,
             sort_by_size: false,
@@ -1257,13 +1297,47 @@ impl App {
         } else if vault_has_any {
             app.ask_master(AfterMaster::Nothing);
         }
-        // Pick up where the last run stopped: same connection, then its tabs (see `poll`).
+        app.launch_files = launch.files;
+        // What the command line asks for wins; else pick up where the last run stopped: same
+        // connection, then its tabs (see `poll`).
         let last = last.value;
-        if let Some(id) = last.conn.clone()
-            && app.find_saved(&id).is_some()
-        {
-            app.restore = Some(last);
-            app.connect_saved(&id);
+        let asked = launch.conn.as_deref().map(|name| {
+            app.saved
+                .iter()
+                .find(|c| c.id == name || c.name.eq_ignore_ascii_case(name))
+                .map(|c| c.id.clone())
+                .ok_or_else(|| format!("No saved connection named \"{name}\""))
+        });
+        match (launch.url, asked) {
+            (Some(url), _) => {
+                let mut cfg = ConnConfig::new(Kind::Postgres);
+                match crate::url::apply(&mut cfg, &url) {
+                    Ok(()) => {
+                        cfg.name = if cfg.kind == Kind::Sqlite {
+                            cfg.database.clone()
+                        } else {
+                            format!("{}/{}", cfg.host, cfg.database)
+                        };
+                        app.connect_cfg(cfg);
+                    }
+                    Err(e) => warnings.push(format!("Connection URL: {e}")),
+                }
+            }
+            (None, Some(Err(e))) => warnings.push(e),
+            (None, asked) => {
+                let id = match asked {
+                    Some(Ok(id)) => Some(id),
+                    _ => last.conn.clone(),
+                };
+                if let Some(id) = id
+                    && app.find_saved(&id).is_some()
+                {
+                    if last.conn.as_deref() == Some(id.as_str()) {
+                        app.restore = Some(last);
+                    }
+                    app.connect_saved(&id);
+                }
+            }
         }
         #[cfg(feature = "dev-conn")]
         app.add_dev_connections();
@@ -1429,6 +1503,7 @@ impl App {
                         save_tab: Some(t.id),
                         path: suggested,
                         run: false,
+                        purpose: None,
                     }));
                 }
             }
@@ -1446,6 +1521,7 @@ impl App {
                 save_tab: None,
                 path: String::new(),
                 run: false,
+                purpose: None,
             }));
         }
     }
@@ -1981,6 +2057,22 @@ impl App {
         self.sync_split();
     }
 
+    /// A tab dropped on the edge of the content: it goes alone to a new right pane (an editor
+    /// that is the only tab is copied there instead).
+    pub fn drag_to_new_pane(&mut self, i: usize) {
+        if self.split.is_some() || i >= self.tabs.len() {
+            return;
+        }
+        if self.tabs.len() < 2 {
+            self.split_tab(i);
+            return;
+        }
+        self.tabs[i].right = true;
+        self.active = i;
+        self.split = Some(Split { shown: [0, 0] });
+        self.sync_split();
+    }
+
     /// Moves tab `i` into a pane (and makes it the active one).
     pub fn move_to_pane(&mut self, i: usize, right: bool) {
         if self.split.is_none() {
@@ -1990,6 +2082,34 @@ impl App {
             t.right = right;
             self.active = i;
         }
+        self.sync_split();
+    }
+
+    /// Puts a tab (by id) before another one, or at the end when `before` is None, in the pane
+    /// `pane` (None: the only strip). The tab becomes the active one.
+    pub fn reorder_tab(&mut self, id: u64, before: Option<u64>, pane: Option<bool>) {
+        let Some(from) = self.tabs.iter().position(|t| t.id == id) else {
+            return;
+        };
+        if before == Some(id) {
+            self.active = from;
+            return;
+        }
+        let mut tab = self.tabs.remove(from);
+        if let (Some(r), true) = (pane, self.split.is_some()) {
+            tab.right = r;
+        }
+        let at = before
+            .and_then(|b| self.tabs.iter().position(|t| t.id == b))
+            .unwrap_or_else(|| {
+                // The end of its own pane.
+                self.tabs
+                    .iter()
+                    .rposition(|t| t.right == tab.right)
+                    .map_or(self.tabs.len(), |i| i + 1)
+            });
+        self.tabs.insert(at, tab);
+        self.active = at;
         self.sync_split();
     }
 
@@ -2274,8 +2394,149 @@ impl App {
                 save_tab: None,
                 path: String::new(),
                 run: true,
+                purpose: None,
             }));
         }
+    }
+
+    /// "Export connections": a JSON file without passwords, to share or back up.
+    pub fn export_connections_dialog(&mut self) {
+        if self.saved.is_empty() {
+            self.notice = Notice::error("There are no saved connections to export");
+        } else if crate::files::NATIVE_DIALOGS {
+            if let Some(path) = crate::files::pick_connections_save() {
+                self.export_connections(&path);
+            }
+        } else {
+            self.dialog = Some(Dialog::Path(PathPrompt {
+                save_tab: None,
+                path: "tabella-connections.json".into(),
+                run: false,
+                purpose: Some(PathUse::ExportConnections),
+            }));
+        }
+    }
+
+    pub fn import_connections_dialog(&mut self) {
+        if crate::files::NATIVE_DIALOGS {
+            if let Some(path) = crate::files::pick_connections() {
+                self.import_connections(&path);
+            }
+        } else {
+            self.dialog = Some(Dialog::Path(PathPrompt {
+                save_tab: None,
+                path: String::new(),
+                run: false,
+                purpose: Some(PathUse::ImportConnections),
+            }));
+        }
+    }
+
+    pub fn export_connections(&mut self, path: &std::path::Path) {
+        self.notice = match config::export_to(path, &self.saved) {
+            Ok(n) => Notice::info(format!(
+                "{n} connection(s) exported to {} (without passwords)",
+                path.display()
+            )),
+            Err(e) => Notice::error(e),
+        };
+    }
+
+    pub fn import_connections(&mut self, path: &std::path::Path) {
+        match config::import_from(path, &self.saved) {
+            Ok(list) if list.is_empty() => self.notice = Notice::error("The file has no connections"),
+            Ok(list) => {
+                let n = list.len();
+                self.saved.extend(list);
+                self.write_connections();
+                self.notice = Notice::info(format!(
+                    "{n} connection(s) imported: open each to enter its password"
+                ));
+            }
+            Err(e) => self.notice = Notice::error(e),
+        }
+    }
+
+    /// "Backup" / "Restore" with the database's own tools; asks for the file first.
+    pub fn backup_dialog(&mut self, restore: bool) {
+        let Some(s) = self.session.as_ref().filter(|s| s.ready) else {
+            return;
+        };
+        if s.cfg.kind == Kind::Sqlite {
+            self.notice = Notice::error("SQLite is a single file: copy it instead");
+            return;
+        }
+        let ext = if s.cfg.kind == Kind::Postgres {
+            "dump"
+        } else {
+            "sql"
+        };
+        let (purpose, path) = if restore {
+            (PathUse::Restore, String::new())
+        } else {
+            (PathUse::Backup, format!("{}.{ext}", s.cfg.database))
+        };
+        if crate::files::NATIVE_DIALOGS {
+            let picked = if restore {
+                crate::files::pick_backup()
+            } else {
+                crate::files::pick_backup_save(&path)
+            };
+            if let Some(file) = picked {
+                self.start_backup(&file, restore);
+            }
+        } else {
+            self.dialog = Some(Dialog::Path(PathPrompt {
+                save_tab: None,
+                path,
+                run: false,
+                purpose: Some(purpose),
+            }));
+        }
+    }
+
+    /// Runs the tool on a thread; the outcome arrives through `poll_backup`.
+    pub fn start_backup(&mut self, file: &std::path::Path, restore: bool) {
+        let Some(s) = &self.session else { return };
+        if self.backup.is_some() {
+            self.notice = Notice::error("A backup or restore is already running");
+            return;
+        }
+        let (cfg, file) = (s.cfg.clone(), file.to_path_buf());
+        let op = if restore {
+            crate::backup::Op::Restore
+        } else {
+            crate::backup::Op::Backup
+        };
+        self.notice = Notice::info(format!(
+            "{} {}…",
+            if restore { "Restoring" } else { "Backing up to" },
+            file.display()
+        ));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::backup::run(&cfg, op, &file));
+            ctx.request_repaint();
+        });
+        self.backup = Some(rx);
+    }
+
+    /// Reports a finished backup or restore. After a restore the tables may be different.
+    pub fn poll_backup(&mut self) {
+        let Some(rx) = &self.backup else { return };
+        let done = match rx.try_recv() {
+            Ok(res) => res,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("the backup tool stopped unexpectedly".into())
+            }
+        };
+        self.backup = None;
+        self.notice = match done {
+            Ok(msg) => Notice::info(msg),
+            Err(e) => Notice::error(e),
+        };
     }
 
     /// Opens (or focuses) the full query history.
@@ -2362,11 +2623,19 @@ impl App {
             .tabs
             .iter()
             .position(|t| matches!(&t.kind, TabKind::Table(ts) if ts.schema == schema && ts.table == table));
+        let from = self.tabs.get(self.active).map(|t| t.id);
         let Some(i) = existing else {
             self.open_table(schema, table);
             // Applied before the first page loads (that waits for the columns).
-            if let Some(TabKind::Table(ts)) = self.tabs.last_mut().map(|t| &mut t.kind) {
+            let mut opened = None;
+            if let Some(t) = self.tabs.last_mut()
+                && let TabKind::Table(ts) = &mut t.kind
+            {
                 ts.filter = filter;
+                opened = Some(t.id);
+            }
+            if let Some(to) = opened {
+                self.remember_jump(from, to, None);
             }
             return;
         };
@@ -2380,11 +2649,55 @@ impl App {
                     Some("This tab has pending changes: save or discard them before filtering.".into());
                 return;
             }
-            ts.filter = filter;
+            let previous = std::mem::replace(&mut ts.filter, filter);
             ts.search.clear();
             ts.page = 0;
+            let to = tab.id;
+            reload(tab, s);
+            self.remember_jump(from, to, Some(previous));
+            return;
         }
         reload(tab, s);
+    }
+
+    fn remember_jump(&mut self, from: Option<u64>, to: u64, previous_filter: Option<String>) {
+        const KEEP: usize = 50;
+        if let Some(from) = from {
+            self.nav_back.push(NavStep {
+                from,
+                to,
+                previous_filter,
+            });
+            if self.nav_back.len() > KEEP {
+                self.nav_back.remove(0);
+            }
+        }
+    }
+
+    pub fn can_go_back(&self) -> bool {
+        !self.nav_back.is_empty()
+    }
+
+    /// Undoes the last jump: back to the tab it started from, and the table it filtered gets its
+    /// earlier filter back. Steps whose tab was closed are skipped.
+    pub fn go_back(&mut self) {
+        while let Some(step) = self.nav_back.pop() {
+            let Some(origin) = self.tabs.iter().position(|t| t.id == step.from) else {
+                continue;
+            };
+            if let (Some(filter), Some(s)) = (step.previous_filter, &self.session)
+                && let Some(tab) = self.tabs.iter_mut().find(|t| t.id == step.to)
+                && let TabKind::Table(ts) = &mut tab.kind
+                && ts.changes.is_empty()
+            {
+                ts.filter = filter;
+                ts.search.clear();
+                ts.page = 0;
+                reload(tab, s);
+            }
+            self.active = origin;
+            return;
+        }
     }
 
     pub fn open_table(&mut self, schema: &str, table: &str) {
@@ -2862,6 +3175,16 @@ pub struct PathPrompt {
     pub path: String,
     /// Open it in a "run file" tab instead of the editor.
     pub run: bool,
+    /// What the file is for, when it isn't SQL for the editor.
+    pub purpose: Option<PathUse>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PathUse {
+    ExportConnections,
+    ImportConnections,
+    Backup,
+    Restore,
 }
 
 /// An editor tab whose text differs from its file.
@@ -2914,6 +3237,8 @@ pub fn apply_live_settings(s: &mut Session, edited: &ConnConfig) -> bool {
     s.cfg.name = edited.name.clone();
     s.cfg.color = edited.color;
     s.cfg.preview_writes = edited.preview_writes;
+    s.cfg.confirm_writes = edited.confirm_writes;
+    s.cfg.group = edited.group.clone();
     // The saved default; the session's own mode is switched in the "…" menu.
     s.cfg.manual_commit = edited.manual_commit;
     s.cfg.same_session_settings(edited)
@@ -2996,7 +3321,7 @@ pub fn run_sql(tab: &mut Tab, s: &Session, sql: String) {
         ed.source = None;
         ed.plan = None;
         ed.error_at = None;
-        ed.last_query = sql.clone();
+        ed.set_last_query(sql.clone());
         ed.last_run = Some(Instant::now());
     }
     tab.pending_sql = Some(sql.clone());
@@ -3237,6 +3562,29 @@ pub fn rerun(tab: &mut Tab, s: &Session) {
     let sql = ed.last_query.clone();
     let id = tab.id;
     tab.send_rows_job(s, Job::Query { tab: id, sql });
+}
+
+/// A truncated result that "Load more" can fetch the rest of: one plain read, which is safe to
+/// run again (a statement that writes, even with RETURNING, would repeat its effect).
+pub fn can_load_more(tab: &Tab) -> bool {
+    let Some(ed) = tab.editor() else { return false };
+    !tab.busy()
+        && ed.source.as_ref().is_none_or(|s| s.changes.is_empty())
+        && tab.result.as_ref().is_some_and(|r| r.truncated)
+        && ed.last_single
+        && ed.last_reads
+}
+
+/// Runs the tab's last query again keeping another `row_limit` rows.
+pub fn load_more(tab: &mut Tab, s: &Session) {
+    if !can_load_more(tab) {
+        return;
+    }
+    let Some(ed) = tab.editor() else { return };
+    let sql = ed.last_query.clone();
+    let limit = tab.result.as_ref().map_or(0, |r| r.rows.len()) + crate::db::max_rows();
+    let id = tab.id;
+    tab.send_rows_job(s, Job::MoreRows { tab: id, sql, limit });
 }
 
 /// Asks for the plan of one statement. ANALYZE runs it, so it is refused for anything but reads.
@@ -3861,6 +4209,71 @@ mod poll_tests {
         assert!(!app.tabs[0].busy(), "nothing stays stuck on Loading…");
     }
 
+    /// `--conn` with a name that isn't saved says so instead of connecting somewhere else.
+    #[test]
+    fn an_unknown_connection_on_the_command_line_is_reported() {
+        let ctx = egui::Context::default();
+        let dir = std::env::temp_dir().join("tabella-launch-tests-config");
+        // SAFETY: tests only point the config at a throwaway directory.
+        unsafe { std::env::set_var("TABELLA_CONFIG_DIR", &dir) };
+        let launch = crate::cli::Launch {
+            conn: Some("nowhere".into()),
+            ..Default::default()
+        };
+        let app = App::with_launch(&ctx, launch);
+        assert!(app.session.is_none());
+        let n = app.notice.as_ref().expect("a notice");
+        assert!(n.error && n.text.contains("nowhere"), "{}", n.text);
+        // A URL connects without being saved.
+        let launch = crate::cli::Launch {
+            url: Some("sqlite::memory:".into()),
+            ..Default::default()
+        };
+        let app = App::with_launch(&ctx, launch);
+        assert_eq!(app.session.as_ref().map(|s| s.cfg.kind), Some(Kind::Sqlite));
+        assert!(
+            app.saved
+                .iter()
+                .all(|c| c.kind != Kind::Sqlite || c.database != ":memory:")
+        );
+    }
+
+    /// "Back" returns to the tab a foreign key was followed from and puts the old filter back.
+    #[test]
+    fn going_back_undoes_following_a_foreign_key() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.open_table("public", "orders");
+        app.open_table("public", "customers");
+        let filter_of = |app: &App, i: usize| match &app.tabs[i].kind {
+            TabKind::Table(ts) => ts.filter.clone(),
+            _ => unreachable!(),
+        };
+        if let TabKind::Table(ts) = &mut app.tabs[1].kind {
+            ts.filter = "active".into();
+        }
+        app.active = 0;
+        assert!(!app.can_go_back());
+        // From orders to customers (already open): its filter changes.
+        app.open_table_filtered("public", "customers", "id = 7".into());
+        assert_eq!((app.active, filter_of(&app, 1).as_str()), (1, "id = 7"));
+        // And on to a table that wasn't open.
+        app.open_table_filtered("public", "regions", "id = 2".into());
+        assert_eq!(app.tabs.len(), 3);
+        app.go_back();
+        assert_eq!(app.active, 1, "back to customers");
+        app.go_back();
+        assert_eq!(app.active, 0, "back to orders");
+        assert_eq!(filter_of(&app, 1), "active", "the earlier filter returns");
+        assert!(!app.can_go_back());
+        // A closed origin is skipped.
+        app.active = 0;
+        app.open_table_filtered("public", "customers", "id = 1".into());
+        app.tabs.remove(0);
+        app.go_back();
+        assert!(!app.can_go_back());
+    }
+
     #[test]
     fn session_snapshot_restores_the_same_tabs() {
         let (s, _jobs, _replies) = fake_session(Kind::Postgres);
@@ -4221,6 +4634,28 @@ mod poll_tests {
         }
     }
 
+    /// "Load more" is offered for a truncated plain read, never for something that writes.
+    #[test]
+    fn load_more_only_for_a_truncated_read() {
+        let mut tab = Tab::new(1, "t".into(), TabKind::Sql(Box::new(Editor::new(String::new()))));
+        let set = |tab: &mut Tab, sql: &str, truncated: bool| {
+            tab.editor_mut().unwrap().set_last_query(sql.into());
+            tab.result = Some(QueryResult {
+                columns: vec!["a".into()],
+                truncated,
+                ..Default::default()
+            });
+        };
+        set(&mut tab, "SELECT a FROM t", true);
+        assert!(can_load_more(&tab));
+        set(&mut tab, "SELECT a FROM t", false);
+        assert!(!can_load_more(&tab), "nothing more to load");
+        set(&mut tab, "INSERT INTO t VALUES (1) RETURNING a", true);
+        assert!(!can_load_more(&tab), "running a write again would repeat it");
+        set(&mut tab, "SELECT 1; SELECT 2", true);
+        assert!(!can_load_more(&tab), "one statement only");
+    }
+
     /// Pinning picks what identifies a row: the primary key, else "id", else the first column.
     #[test]
     fn pinning_guesses_the_row_key() {
@@ -4229,7 +4664,7 @@ mod poll_tests {
             ..Default::default()
         };
         let mut ed = Editor::new("SELECT 1".into());
-        ed.last_query = "SELECT code, ID FROM t".into();
+        ed.set_last_query("SELECT code, ID FROM t".into());
         ed.pin(&res(&["code", "ID"]), Some("code".into()));
         assert_eq!(ed.compare_key.as_deref(), Some("code"));
         assert_eq!(ed.pinned.as_ref().unwrap().sql, "SELECT code, ID FROM t");

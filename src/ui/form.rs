@@ -203,8 +203,26 @@ impl App {
                             "In the editor, shows how many and which rows would change before running",
                         );
                         ui.end_row();
+                        ui.label("");
+                        ui.add_enabled(
+                            !c.read_only,
+                            egui::Checkbox::new(&mut c.confirm_writes, "Confirm before any change"),
+                        )
+                        .on_hover_text(
+                            "In the editor, every statement that changes data asks first (not only DROP, \
+                             TRUNCATE or DELETE without WHERE)",
+                        );
+                        ui.end_row();
                         ui.label("Color");
                         color_picker(ui, &mut c.color);
+                        ui.end_row();
+                        ui.label("Group");
+                        ui.add(
+                            TextEdit::singleline(&mut c.group)
+                                .hint_text("e.g. Production")
+                                .desired_width(180.0),
+                        )
+                        .on_hover_text("Connections with the same group are listed together");
                         ui.end_row();
                         if c.kind != Kind::Sqlite {
                             ui.label("Timeout");

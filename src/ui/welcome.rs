@@ -46,11 +46,18 @@ impl App {
 
             match &self.session {
                 None => {
-                    for c in &self.saved {
-                        if connection_card(ui, c).clicked() {
-                            connect = Some(c.id.clone());
+                    for (group, indexes) in crate::db::by_group(&self.saved) {
+                        if !group.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(group).small().color(t.subtle));
                         }
-                        ui.add_space(6.0);
+                        for i in indexes {
+                            let c = &self.saved[i];
+                            if connection_card(ui, c).clicked() {
+                                connect = Some(c.id.clone());
+                            }
+                            ui.add_space(6.0);
+                        }
                     }
                     ui.add_space(8.0);
                     new_conn = ui
