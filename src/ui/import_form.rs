@@ -56,7 +56,7 @@ pub fn import_form(
                     ui.label(RichText::new("Choose a file to see the preview.").color(t.subtle));
                 }
                 Some((_, _, Err(e))) => {
-                    ui.label(RichText::new(e).color(t.destructive));
+                    ui.label(RichText::new(e.to_string()).color(t.destructive));
                 }
                 Some((_, _, Ok(pv))) => {
                     let source = match (&pv.sheet, pv.delimiter) {

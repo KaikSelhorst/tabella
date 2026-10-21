@@ -124,9 +124,20 @@ pub fn pick_save(_suggested: &str) -> Option<PathBuf> {
     None
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum FileError {
+    #[error("couldn't open {}: {source}", path.display())]
+    Read { path: PathBuf, source: std::io::Error },
+    #[error("couldn't save {}: {source}", path.display())]
+    Write { path: PathBuf, source: std::io::Error },
+}
+
 /// The file's text: UTF-8 (BOM dropped), or Windows-1252/Latin-1 as older editors save it.
-pub fn read_sql(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("couldn't open {}: {e}", path.display()))?;
+pub fn read_sql(path: &Path) -> Result<String, FileError> {
+    let bytes = std::fs::read(path).map_err(|source| FileError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
     Ok(match std::str::from_utf8(bytes) {
         Ok(s) => s.to_string(),
@@ -135,14 +146,16 @@ pub fn read_sql(path: &Path) -> Result<String, String> {
 }
 
 /// Writes UTF-8. A path without extension gets `.sql`.
-pub fn write_sql(path: &Path, text: &str) -> Result<PathBuf, String> {
+pub fn write_sql(path: &Path, text: &str) -> Result<PathBuf, FileError> {
     let path = if path.extension().is_none() {
         path.with_extension("sql")
     } else {
         path.to_path_buf()
     };
-    std::fs::write(&path, text).map_err(|e| format!("couldn't save {}: {e}", path.display()))?;
-    Ok(path)
+    match std::fs::write(&path, text) {
+        Ok(()) => Ok(path),
+        Err(source) => Err(FileError::Write { path, source }),
+    }
 }
 
 /// Tab title for a file: its name.

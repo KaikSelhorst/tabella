@@ -156,7 +156,7 @@ impl App {
                     }
                 }
             }
-            Err(e) => self.notice = Notice::error(e),
+            Err(e) => self.notice = Notice::error(e.to_string()),
         }
     }
 
@@ -172,7 +172,7 @@ impl App {
                 ed.file = Some(written);
                 ed.close_armed = false;
             }
-            Err(e) => self.notice = Notice::error(e),
+            Err(e) => self.notice = Notice::error(e.to_string()),
         }
     }
 

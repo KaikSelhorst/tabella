@@ -49,7 +49,7 @@ pub struct MasterPrompt {
     pub error: Option<String>,
     pub then: AfterMaster,
     /// Key derivation running off the UI thread (Argon2 takes a noticeable moment).
-    pub working: Option<Receiver<Result<Derived, String>>>,
+    pub working: Option<Receiver<Result<Derived, VaultError>>>,
 }
 
 /// "Save query" dialog.

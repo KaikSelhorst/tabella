@@ -80,7 +80,7 @@ pub struct ImportForm {
     pub has_header: bool,
     pub empty_is_null: bool,
     /// Preview of `path` as last read (path and header flag it was read with).
-    pub preview: Option<(String, bool, Result<import::Preview, String>)>,
+    pub preview: Option<(String, bool, Result<import::Preview, import::ImportError>)>,
     /// For each file column, the table column it goes into.
     pub mapping: Vec<Option<String>>,
 }

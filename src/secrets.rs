@@ -187,6 +187,25 @@ pub enum SecretError {
     Unavailable,
 }
 
+/// Why the vault couldn't be created or unlocked. Shown to the user as is.
+#[derive(Debug, thiserror::Error)]
+pub enum VaultError {
+    #[error("Use at least 8 characters")]
+    TooShort,
+    #[error("Wrong master password")]
+    WrongPassword,
+    #[error("the vault hasn't been created yet")]
+    NotCreated,
+    #[error("corrupted vault")]
+    Corrupted,
+    #[error("failed to derive the key")]
+    Kdf,
+    #[error("encryption failed")]
+    Encryption,
+    #[error("couldn't save the vault: {0}")]
+    Save(#[from] StoreError),
+}
+
 #[derive(Serialize, Deserialize, Default)]
 struct VaultFile {
     salt: String,
@@ -210,7 +229,7 @@ pub struct KdfJob {
 
 impl KdfJob {
     /// Argon2id: deliberately slow (to resist guessing), so never on the UI thread.
-    pub fn run(self) -> Result<Derived, String> {
+    pub fn run(self) -> Result<Derived, VaultError> {
         let cipher = Vault::derive(&self.master, &self.salt)?;
         Ok(Derived {
             cipher,
@@ -268,26 +287,26 @@ impl Vault {
         self.file.as_ref().is_some_and(|f| f.entries.contains_key(name))
     }
 
-    fn derive(master: &str, salt: &[u8]) -> Result<ChaCha20Poly1305, String> {
+    fn derive(master: &str, salt: &[u8]) -> Result<ChaCha20Poly1305, VaultError> {
         let mut key = Zeroizing::new([0u8; 32]);
         Argon2::default()
             .hash_password_into(master.as_bytes(), salt, &mut *key)
-            .map_err(|e| format!("failed to derive the key: {e}"))?;
-        ChaCha20Poly1305::new_from_slice(&*key).map_err(|_| "failed to derive the key".into())
+            .map_err(|_| VaultError::Kdf)?;
+        ChaCha20Poly1305::new_from_slice(&*key).map_err(|_| VaultError::Kdf)
     }
 
     /// First half of create/unlock, cheap: checks the input and picks the salt. The slow key
     /// derivation runs in `KdfJob::run`, off the UI thread; `finish` applies its result.
-    pub fn kdf_job(&self, master: &str, create: bool) -> Result<KdfJob, String> {
+    pub fn kdf_job(&self, master: &str, create: bool) -> Result<KdfJob, VaultError> {
         let salt = if create {
             if master.chars().count() < 8 {
-                return Err("Use at least 8 characters".into());
+                return Err(VaultError::TooShort);
             }
             // A random 32-byte value; the key type is just a convenient generator.
             Key::<ChaCha20Poly1305>::generate().to_vec()
         } else {
-            let file = self.file.as_ref().ok_or("the vault hasn't been created yet")?;
-            B64.decode(&file.salt).map_err(|_| "corrupted vault")?
+            let file = self.file.as_ref().ok_or(VaultError::NotCreated)?;
+            B64.decode(&file.salt).map_err(|_| VaultError::Corrupted)?
         };
         Ok(KdfJob {
             master: master.into(),
@@ -296,7 +315,7 @@ impl Vault {
         })
     }
 
-    pub fn finish(&mut self, derived: Derived) -> Result<(), String> {
+    pub fn finish(&mut self, derived: Derived) -> Result<(), VaultError> {
         let Derived { cipher, salt, create } = derived;
         if create {
             let check = seal(&cipher, CHECK)?;
@@ -306,27 +325,27 @@ impl Vault {
                 entries: BTreeMap::new(),
             });
             self.cipher = Some(cipher);
-            return self.save().map_err(|e| e.to_string());
+            return Ok(self.save()?);
         }
-        let file = self.file.as_ref().ok_or("the vault hasn't been created yet")?;
+        let file = self.file.as_ref().ok_or(VaultError::NotCreated)?;
         match open(&cipher, &file.check) {
             Some(v) if *v == CHECK => {
                 self.cipher = Some(cipher);
                 Ok(())
             }
-            _ => Err("Wrong master password".into()),
+            _ => Err(VaultError::WrongPassword),
         }
     }
 
     /// Sets up a new vault with this master password (blocking; the UI uses `kdf_job`).
     #[cfg(test)]
-    pub fn create(&mut self, master: &str) -> Result<(), String> {
+    pub fn create(&mut self, master: &str) -> Result<(), VaultError> {
         let derived = self.kdf_job(master, true)?.run()?;
         self.finish(derived)
     }
 
     #[cfg(test)]
-    pub fn unlock(&mut self, master: &str) -> Result<(), String> {
+    pub fn unlock(&mut self, master: &str) -> Result<(), VaultError> {
         let derived = self.kdf_job(master, false)?.run()?;
         self.finish(derived)
     }
@@ -367,9 +386,11 @@ impl Vault {
     }
 }
 
-fn seal(cipher: &ChaCha20Poly1305, plain: &[u8]) -> Result<Sealed, String> {
+fn seal(cipher: &ChaCha20Poly1305, plain: &[u8]) -> Result<Sealed, VaultError> {
     let nonce = Nonce::generate();
-    let data = cipher.encrypt(&nonce, plain).map_err(|_| "encryption failed")?;
+    let data = cipher
+        .encrypt(&nonce, plain)
+        .map_err(|_| VaultError::Encryption)?;
     Ok(Sealed {
         nonce: B64.encode(nonce),
         data: B64.encode(data),
@@ -509,7 +530,10 @@ mod tests {
         let mut again = Vault::load(Some(path.clone()));
         assert!(again.exists() && !again.is_unlocked() && again.has("dev"));
         assert_eq!(again.get("dev"), None);
-        assert_eq!(again.unlock("wrong-wrong"), Err("Wrong master password".into()));
+        assert!(matches!(
+            again.unlock("wrong-wrong"),
+            Err(VaultError::WrongPassword)
+        ));
         again.unlock("good-master-password").unwrap();
         assert_eq!(again.get("dev").as_deref(), Some("s3cr3t café"));
         again.delete("dev").unwrap();

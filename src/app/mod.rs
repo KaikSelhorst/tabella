@@ -66,8 +66,8 @@ use crate::history::{self, Entry};
 use crate::import;
 use crate::plan::Plan;
 use crate::search::SearchHit;
-use crate::secrets::Secret;
 use crate::secrets::{Derived, SecretStore};
+use crate::secrets::{Secret, VaultError};
 use crate::session::{self, SavedTab};
 use crate::sql::{self, FilterOp, PageQuery, Stmt};
 use crate::values::{self, CellRange, ValueKind};
@@ -337,7 +337,7 @@ pub struct Connections {
     /// "Test connection" in the form: running, or its outcome for the settings it was run with.
     pub conn_test: Option<ConnTest>,
     /// A backup or restore running on its own thread.
-    backup: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    backup: Option<std::sync::mpsc::Receiver<Result<String, crate::backup::BackupError>>>,
 }
 
 /// What the user keeps across runs besides connections: history, favorites, filters and the

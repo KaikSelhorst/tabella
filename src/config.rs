@@ -117,7 +117,7 @@ fn save_at(path: &Path, list: &[ConnConfig], store: &mut SecretStore) -> Result<
 }
 
 /// The connections as a shareable file: no passwords, no ids (the importer makes its own).
-pub fn export_to(path: &Path, list: &[ConnConfig]) -> Result<usize, String> {
+pub fn export_to(path: &Path, list: &[ConnConfig]) -> Result<usize, StoreError> {
     let clean: Vec<ConnConfig> = list
         .iter()
         .cloned()
@@ -127,8 +127,8 @@ pub fn export_to(path: &Path, list: &[ConnConfig]) -> Result<usize, String> {
             c
         })
         .collect();
-    let json = serde_json::to_string_pretty(&clean).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
+    // Written like the app's own files: a failure mid-way never leaves half a file behind.
+    crate::store::write_private(path, &serde_json::to_string_pretty(&clean)?)?;
     Ok(clean.len())
 }
 
@@ -172,7 +172,7 @@ mod tests {
         a.password = "hunter2".into();
         a.group = "Production".into();
         let path = std::env::temp_dir().join(format!("tabella-conns-{}.json", std::process::id()));
-        assert_eq!(export_to(&path, std::slice::from_ref(&a)), Ok(1));
+        assert_eq!(export_to(&path, std::slice::from_ref(&a)).unwrap(), 1);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
             !text.contains("hunter2") && !text.contains("keep-private"),

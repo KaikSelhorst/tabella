@@ -43,15 +43,32 @@ pub struct ImportSpec {
     pub empty_is_null: bool,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ImportError {
+    #[error("couldn't read {}: {source}", path.display())]
+    Read { path: PathBuf, source: std::io::Error },
+    #[error("couldn't read the spreadsheet: {0}")]
+    Spreadsheet(#[from] calamine::Error),
+    #[error("the spreadsheet has no sheets")]
+    NoSheets,
+    #[error("couldn't read sheet {name}: {source}")]
+    Sheet { name: String, source: calamine::Error },
+    #[error("the file is empty")]
+    Empty,
+}
+
 /// Reads the start of the file: delimiter (`,`, `;` or tab, whichever the first line has most
 /// of), header and a few rows.
-pub fn preview(path: &Path, has_header: bool) -> Result<Preview, String> {
+pub fn preview(path: &Path, has_header: bool) -> Result<Preview, ImportError> {
     if is_spreadsheet(path) {
         let (sheet, mut rows) = sheet_rows(path)?;
         rows.truncate(PREVIEW_ROWS + 1);
         return finish_preview(rows, has_header, 0, Some(sheet));
     }
-    let bytes = read_start(path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+    let bytes = read_start(path).map_err(|source| ImportError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let text = decode(&bytes);
     let first = text.lines().next().unwrap_or("");
     let delimiter = b",;\t"
@@ -79,9 +96,9 @@ fn finish_preview(
     has_header: bool,
     delimiter: u8,
     sheet: Option<String>,
-) -> Result<Preview, String> {
+) -> Result<Preview, ImportError> {
     if rows.is_empty() {
-        return Err("the file is empty".into());
+        return Err(ImportError::Empty);
     }
     let width = rows.iter().map(Vec::len).max().unwrap_or(0);
     let headers = if has_header {
@@ -126,7 +143,7 @@ pub fn run(conn: &mut Conn, spec: &ImportSpec, nested: bool) -> DbResult<u64> {
     let names: Vec<String> = targets.iter().map(|(_, c)| c.clone()).collect();
     let per_batch = (MAX_PARAMS / names.len()).clamp(1, BATCH_ROWS);
     let records: Box<dyn Iterator<Item = Result<Vec<String>, String>>> = if is_spreadsheet(&spec.path) {
-        let (_, rows) = sheet_rows(&spec.path).map_err(DbError::Other)?;
+        let (_, rows) = sheet_rows(&spec.path).map_err(|e| DbError::Other(e.to_string()))?;
         Box::new(rows.into_iter().skip(usize::from(spec.has_header)).map(Ok))
     } else {
         let reader = csv::ReaderBuilder::new()
@@ -250,18 +267,14 @@ pub fn is_spreadsheet(path: &Path) -> bool {
 
 /// The first sheet's name and its cells as text: numbers as typed (`42`, `1520.3`), dates as
 /// `2026-10-14` / `2026-10-14 13:05:00`, booleans as `true`/`false`, errors and blanks empty.
-pub fn sheet_rows(path: &Path) -> Result<(String, Vec<Vec<String>>), String> {
+pub fn sheet_rows(path: &Path) -> Result<(String, Vec<Vec<String>>), ImportError> {
     use calamine::{Data, Reader};
-    let mut book =
-        calamine::open_workbook_auto(path).map_err(|e| format!("couldn't read the spreadsheet: {e}"))?;
-    let name = book
-        .sheet_names()
-        .first()
-        .cloned()
-        .ok_or("the spreadsheet has no sheets")?;
-    let range = book
-        .worksheet_range(&name)
-        .map_err(|e| format!("couldn't read sheet {name}: {e}"))?;
+    let mut book = calamine::open_workbook_auto(path)?;
+    let name = book.sheet_names().first().cloned().ok_or(ImportError::NoSheets)?;
+    let range = match book.worksheet_range(&name) {
+        Ok(r) => r,
+        Err(source) => return Err(ImportError::Sheet { name, source }),
+    };
     let cell = |c: &Data| match c {
         Data::Empty | Data::Error(_) => String::new(),
         Data::String(s) | Data::DateTimeIso(s) | Data::DurationIso(s) => s.clone(),

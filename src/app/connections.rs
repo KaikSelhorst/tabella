@@ -114,7 +114,7 @@ impl App {
                 p.error = None;
                 p.working = Some(rx);
             }
-            Err(e) => p.error = Some(e),
+            Err(e) => p.error = Some(e.to_string()),
         }
     }
 
@@ -142,7 +142,7 @@ impl App {
                 self.after_master(then);
             }
             Err(e) => {
-                p.error = Some(e);
+                p.error = Some(e.to_string());
                 p.password.clear();
                 p.confirm.clear();
             }
@@ -371,7 +371,7 @@ impl App {
                 crate::values::noun(n as u64, "connection"),
                 path.display()
             )),
-            Err(e) => Notice::error(e),
+            Err(e) => Notice::error(format!("couldn't write {}: {e}", path.display())),
         };
     }
 
@@ -464,14 +464,12 @@ impl App {
         let done = match rx.try_recv() {
             Ok(res) => res,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("the backup tool stopped unexpectedly".into())
-            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(crate::backup::BackupError::Stopped),
         };
         self.connections.backup = None;
         self.notice = match done {
             Ok(msg) => Notice::info(msg),
-            Err(e) => Notice::error(e),
+            Err(e) => Notice::error(e.to_string()),
         };
     }
 }

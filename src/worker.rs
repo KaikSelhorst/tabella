@@ -1108,7 +1108,7 @@ pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
         let tunnel = match &cfg.ssh {
             Some(ssh) => match Tunnel::open(ssh, &cfg.host, cfg.port) {
                 Ok(t) => Some(t),
-                Err(e) => return send(Reply::Connected(Err(DbError::Other(e)))),
+                Err(e) => return send(Reply::Connected(Err(DbError::Other(e.to_string())))),
             },
             None => None,
         };

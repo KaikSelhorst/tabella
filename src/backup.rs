@@ -2,7 +2,7 @@
 //! `mysqldump`, `mysql`), for what "Export database" doesn't cover: big databases and Postgres'
 //! compressed format. The password goes in the environment, never on the command line.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::db::{ConnConfig, Kind};
@@ -95,20 +95,43 @@ pub fn plan(cfg: &ConnConfig, op: Op, file: &Path) -> Option<Plan> {
     Some((program, args, env))
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum BackupError {
+    #[error("Backups through an SSH tunnel aren't supported: use Export database")]
+    ViaSsh,
+    #[error("SQLite is a single file: copy it instead")]
+    Sqlite,
+    #[error("{program} was not found: install the {client} client tools and try again")]
+    NotFound {
+        program: &'static str,
+        client: &'static str,
+    },
+    #[error("couldn't open {}: {source}", path.display())]
+    Open { path: PathBuf, source: std::io::Error },
+    #[error("couldn't start {program}: {source}")]
+    Start {
+        program: &'static str,
+        source: std::io::Error,
+    },
+    /// The tool ran and failed: the start of what it said, or its exit status.
+    #[error("{program} failed: {detail}")]
+    Failed { program: &'static str, detail: String },
+    #[error("the backup tool stopped unexpectedly")]
+    Stopped,
+}
+
 /// Runs the operation and waits for it. `Ok` carries a line to show; `Err` the tool's own
 /// complaint. Blocking: call it from a thread.
-pub fn run(cfg: &ConnConfig, op: Op, file: &Path) -> Result<String, String> {
+pub fn run(cfg: &ConnConfig, op: Op, file: &Path) -> Result<String, BackupError> {
     if cfg.ssh.is_some() {
-        return Err("Backups through an SSH tunnel aren't supported: use Export database".into());
+        return Err(BackupError::ViaSsh);
     }
     let Some((program, args, env)) = plan(cfg, op, file) else {
-        return Err("SQLite is a single file: copy it instead".into());
+        return Err(BackupError::Sqlite);
     };
-    let mut command = crate::programs::command(program).ok_or_else(|| {
-        format!(
-            "{program} was not found: install the {} client tools and try again",
-            cfg.kind.label()
-        )
+    let mut command = crate::programs::command(program).ok_or(BackupError::NotFound {
+        program,
+        client: cfg.kind.label(),
     })?;
     command.args(&args);
     for (k, v) in env {
@@ -116,8 +139,10 @@ pub fn run(cfg: &ConnConfig, op: Op, file: &Path) -> Result<String, String> {
     }
     let feeds_input = cfg.kind == Kind::MySql && op == Op::Restore;
     if feeds_input {
-        let input =
-            std::fs::File::open(file).map_err(|e| format!("couldn't open {}: {e}", file.display()))?;
+        let input = std::fs::File::open(file).map_err(|source| BackupError::Open {
+            path: file.to_path_buf(),
+            source,
+        })?;
         command.stdin(Stdio::from(input));
     } else {
         command.stdin(Stdio::null());
@@ -126,7 +151,7 @@ pub fn run(cfg: &ConnConfig, op: Op, file: &Path) -> Result<String, String> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| format!("couldn't start {program}: {e}"))?;
+        .map_err(|source| BackupError::Start { program, source })?;
     if out.status.success() {
         let what = match op {
             Op::Backup => format!("Backup written to {}", file.display()),
@@ -141,14 +166,14 @@ pub fn run(cfg: &ConnConfig, op: Op, file: &Path) -> Result<String, String> {
         .take(3)
         .collect::<Vec<_>>()
         .join(" · ");
-    Err(format!(
-        "{program} failed: {}",
-        if first.is_empty() {
+    Err(BackupError::Failed {
+        program,
+        detail: if first.is_empty() {
             out.status.to_string()
         } else {
             first
-        }
-    ))
+        },
+    })
 }
 
 #[cfg(test)]
