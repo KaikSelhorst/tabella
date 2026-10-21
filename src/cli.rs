@@ -61,10 +61,18 @@ mod tests {
     #[test]
     fn connection_url_and_files() {
         assert_eq!(parse(&[]).unwrap(), Launch::default());
-        let l = parse(&["--conn", "Northstar", "/tmp/a.sql", "postgres://u@h/db"]).unwrap();
+        // Absolute on every system (`/tmp/a.sql` lacks a drive on Windows, so it gets one).
+        let file = std::env::temp_dir().join("a.sql");
+        let l = parse(&[
+            "--conn",
+            "Northstar",
+            &file.to_string_lossy(),
+            "postgres://u@h/db",
+        ])
+        .unwrap();
         assert_eq!(l.conn.as_deref(), Some("Northstar"));
         assert_eq!(l.url.as_deref(), Some("postgres://u@h/db"));
-        assert_eq!(l.files, [PathBuf::from("/tmp/a.sql")]);
+        assert_eq!(l.files, [file]);
         assert_eq!(parse(&["-c", "x"]).unwrap().conn.as_deref(), Some("x"));
         assert_eq!(parse(&["--conn=y"]).unwrap().conn.as_deref(), Some("y"));
         assert!(parse(&["sqlite:shop.db"]).unwrap().url.is_some());
