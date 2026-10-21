@@ -615,6 +615,10 @@ pub struct StructState {
     pub schema: String,
     pub table: String,
     pub data: Option<TableStructure>,
+    /// A column to point at (Ctrl+click on it in the editor): its row is highlighted.
+    pub focus: Option<String>,
+    /// Bumped each time `focus` is asked for, so the view scrolls to it once per request.
+    pub focus_seq: u64,
 }
 
 /// How a column is filled in the "new row" form.
@@ -2888,6 +2892,11 @@ impl App {
 
 impl App {
     pub fn open_structure(&mut self, schema: &str, table: &str) {
+        self.open_structure_at(schema, table, None);
+    }
+
+    /// The structure of a table, pointing at `column` when given (the tab is reused if open).
+    pub fn open_structure_at(&mut self, schema: &str, table: &str, column: Option<&str>) {
         if self.session.is_none() {
             return;
         }
@@ -2896,12 +2905,20 @@ impl App {
         );
         if let Some(i) = existing {
             self.active = i;
+            if let TabKind::Structure(st) = &mut self.tabs[i].kind
+                && let Some(c) = column
+            {
+                st.focus = Some(c.to_string());
+                st.focus_seq += 1;
+            }
             return;
         }
         let st = StructState {
             schema: schema.into(),
             table: table.into(),
             data: None,
+            focus: column.map(str::to_string),
+            focus_seq: 1,
         };
         let i = self.push_tab(format!("{table} · structure"), TabKind::Structure(Box::new(st)));
         let Some(s) = &self.session else { return };

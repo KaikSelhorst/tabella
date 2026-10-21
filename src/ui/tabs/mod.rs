@@ -131,6 +131,8 @@ pub(super) enum Request {
     History,
     /// Remove one history entry: (connection, sql).
     ForgetHistory(String, String),
+    /// The structure of schema.table, pointing at a column.
+    StructureColumn(String, String, String),
     /// "Edit structure" of schema.table (its Structure tab has the data).
     Design(String, String),
     /// schema, table, name, filter
@@ -592,6 +594,9 @@ impl App {
     fn handle_request(&mut self, request: Option<Request>) {
         match request {
             Some(Request::Structure(schema, table)) => self.open_structure(&schema, &table),
+            Some(Request::StructureColumn(schema, table, column)) => {
+                self.open_structure_at(&schema, &table, Some(&column));
+            }
             Some(Request::Data(schema, table)) => self.open_table(&schema, &table),
             Some(Request::OpenFiltered(schema, table, filter)) => {
                 self.open_table_filtered(&schema, &table, filter)
@@ -668,7 +673,7 @@ fn tab_body(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 error_banner(ui, e);
             }
             let view = s.is_view(&st.schema, &st.table);
-            cx.request = match structure::structure_tab(ui, st, tab.busy(), view) {
+            cx.request = match structure::structure_tab(ui, st, tab.id, tab.busy(), view) {
                 Some(StructAction::OpenSql(ddl)) => Some(Request::Sql(ddl)),
                 Some(StructAction::ViewSource) => {
                     Some(Request::ViewSource(st.schema.clone(), st.table.clone()))

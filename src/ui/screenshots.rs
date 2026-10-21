@@ -669,6 +669,8 @@ fn screenshots() {
             schema: "public".into(),
             table: "customers".into(),
             data: Some(data),
+            focus: Some("email".into()),
+            focus_seq: 1,
         };
         let tab = Tab::new(
             3,

@@ -16,7 +16,13 @@ pub enum StructAction {
 }
 
 /// `is_view`: no designer and no table DDL (it would be a CREATE TABLE): the view's code.
-pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: bool) -> Option<StructAction> {
+pub fn structure_tab(
+    ui: &mut egui::Ui,
+    st: &StructState,
+    tab_id: u64,
+    busy: bool,
+    is_view: bool,
+) -> Option<StructAction> {
     let t = theme::tokens();
     let mut action = None;
     egui::Frame::new()
@@ -95,6 +101,9 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: b
             });
         });
     let Some(d) = &st.data else { return action };
+    // Scroll to the focused column once per request (the data may arrive frames later).
+    let scrolled_id = egui::Id::new(("struct_focus_scrolled", tab_id));
+    let scroll = st.focus.is_some() && ui.data(|m| m.get_temp::<u64>(scrolled_id)) != Some(st.focus_seq);
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -113,24 +122,53 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: b
                             }
                             ui.end_row();
                             for c in &d.columns {
-                                if c.pk {
+                                let focused = st.focus.as_deref() == Some(c.name.as_str());
+                                // Painted under the row once its size is known.
+                                let backdrop = ui.painter().add(egui::Shape::Noop);
+                                let first = if c.pk {
                                     ui.label(theme::icon(icon::KEY).size(12.0).color(t.warning))
-                                        .on_hover_text("Primary key");
+                                        .on_hover_text("Primary key")
+                                } else if focused {
+                                    ui.label(theme::icon(icon::ARROW_RIGHT).size(12.0).color(t.lime))
                                 } else {
-                                    ui.label("");
-                                }
-                                ui.label(RichText::new(&c.name).color(t.foreground));
+                                    ui.label("")
+                                };
+                                let name =
+                                    RichText::new(&c.name).color(if focused { t.lime } else { t.foreground });
+                                ui.label(if focused { name.strong() } else { name });
                                 ui.label(RichText::new(&c.data_type).monospace().size(12.0).color(t.number));
                                 ui.label(
                                     RichText::new(if c.nullable { "yes" } else { "no" })
                                         .color(t.muted_foreground),
                                 );
-                                match &c.default {
+                                let last = match &c.default {
                                     Some(v) => ui.label(
                                         RichText::new(v).monospace().size(12.0).color(t.muted_foreground),
                                     ),
                                     None => ui.label(RichText::new("—").color(t.subtle)),
                                 };
+                                if focused {
+                                    let row = egui::Rect::from_min_max(
+                                        egui::pos2(first.rect.left(), first.rect.top().min(last.rect.top())),
+                                        egui::pos2(
+                                            ui.max_rect().right().max(last.rect.right()),
+                                            first.rect.bottom().max(last.rect.bottom()),
+                                        ),
+                                    )
+                                    .expand2(egui::vec2(6.0, 3.0));
+                                    ui.painter().set(
+                                        backdrop,
+                                        egui::Shape::rect_filled(
+                                            row,
+                                            4.0,
+                                            theme::mix(t.lime, 0.14, t.background),
+                                        ),
+                                    );
+                                    if scroll {
+                                        ui.scroll_to_rect(row, Some(Align::Center));
+                                        ui.data_mut(|m| m.insert_temp(scrolled_id, st.focus_seq));
+                                    }
+                                }
                                 ui.end_row();
                             }
                         });

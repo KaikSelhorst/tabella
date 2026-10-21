@@ -882,3 +882,25 @@ fn a_zero_row_edit_is_reported() {
     );
     assert!(!app.tabs[0].busy() && app.session.is_some());
 }
+
+/// Ctrl+click on a column opens its table's structure pointing at it; on a structure tab that
+/// is already open, another column moves the pointer (and asks for a new scroll).
+#[test]
+fn a_column_opens_the_structure_pointing_at_it() {
+    let (s, jobs, _replies) = fake_session(Kind::Postgres);
+    let mut app = app_with(s);
+    let focus = |app: &App| match &app.tabs[app.active].kind {
+        TabKind::Structure(st) => (st.focus.clone(), st.focus_seq),
+        _ => (None, 0),
+    };
+    app.open_structure_at("public", "orders", Some("status"));
+    assert_eq!(focus(&app), (Some("status".into()), 1));
+    assert!(jobs.try_iter().any(|j| matches!(j, Job::Structure { .. })));
+    app.open_structure_at("public", "orders", Some("total"));
+    assert_eq!(app.tabs.len(), 1, "the open tab is reused");
+    assert_eq!(focus(&app), (Some("total".into()), 2));
+    assert!(jobs.try_iter().next().is_none(), "nothing is loaded again");
+    // Opening it plainly keeps the column it points at.
+    app.open_structure("public", "orders");
+    assert_eq!(focus(&app), (Some("total".into()), 2));
+}

@@ -322,8 +322,8 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                                     Request::Data(schema.clone(), name.clone())
                                 }
                                 definition::Target::Object(o) => Request::Object(o.clone()),
-                                definition::Target::Column { schema, table, .. } => {
-                                    Request::Structure(schema.clone(), table.clone())
+                                definition::Target::Column { schema, table, column } => {
+                                    Request::StructureColumn(schema.clone(), table.clone(), column.clone())
                                 }
                             });
                         }
