@@ -45,8 +45,8 @@ use eframe::egui;
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!("{}", cli::USAGE);
+    if let Some(text) = cli::info_request(&args) {
+        cli::show(&text);
         return Ok(());
     }
     // A bad option is reported in the window (a Windows build has no console to print to).

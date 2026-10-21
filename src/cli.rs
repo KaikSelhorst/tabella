@@ -2,11 +2,16 @@
 
 use std::path::PathBuf;
 
-pub const USAGE: &str = "Usage: tabella [--conn NAME] [URL] [FILE.sql ...]\n\
-  --conn NAME, -c NAME   connect to the saved connection with this name (or id)\n\
-  URL                    postgres://, mysql:// or sqlite: connection, not saved\n\
-                         (a password in a URL is visible to other programs on this computer)\n\
-  FILE.sql               open the file in an editor tab once connected";
+// `concat!` instead of `\` line continuations, which would drop the indentation.
+pub const USAGE: &str = concat!(
+    "Usage: tabella [--conn NAME] [URL] [FILE.sql ...]\n",
+    "  --help, -h             show this text\n",
+    "  --version, -V          show the version\n",
+    "  --conn NAME, -c NAME   connect to the saved connection with this name (or id)\n",
+    "  URL                    postgres://, mysql:// or sqlite: connection, not saved\n",
+    "                         (a password in a URL is visible to other programs on this computer)\n",
+    "  FILE.sql               open the file in an editor tab once connected",
+);
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Launch {
@@ -26,6 +31,28 @@ fn is_url(arg: &str) -> bool {
     ]
     .iter()
     .any(|p| lower.starts_with(p))
+}
+
+/// What `--help` or `--version` asks to be shown instead of starting the app.
+pub fn info_request(args: &[String]) -> Option<String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        Some(USAGE.to_string())
+    } else if args.iter().any(|a| a == "--version" || a == "-V") {
+        Some(format!("tabella {}", env!("CARGO_PKG_VERSION")))
+    } else {
+        None
+    }
+}
+
+/// Prints `text`, or shows it in a message box on Windows: the .exe has no console.
+pub fn show(text: &str) {
+    #[cfg(windows)]
+    rfd::MessageDialog::new()
+        .set_title("tabella")
+        .set_description(text)
+        .show();
+    #[cfg(not(windows))]
+    println!("{text}");
 }
 
 /// The arguments after the program name. Files become absolute paths, so they still mean the
@@ -79,5 +106,18 @@ mod tests {
         assert!(parse(&["relative.sql"]).unwrap().files[0].is_absolute());
         assert!(parse(&["--conn"]).is_err());
         assert!(parse(&["--nope"]).is_err());
+    }
+
+    #[test]
+    fn help_and_version_are_answered_before_parsing() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            info_request(&args(&["-c", "x", "--help"])).as_deref(),
+            Some(USAGE)
+        );
+        let v = info_request(&args(&["-V"])).unwrap();
+        assert!(v.ends_with(env!("CARGO_PKG_VERSION")), "{v}");
+        assert!(info_request(&args(&["--version"])).is_some());
+        assert_eq!(info_request(&args(&["postgres://u@h/db"])), None);
     }
 }
