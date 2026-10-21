@@ -697,6 +697,9 @@ pub(crate) fn forget_tab_caches(ctx: &egui::Context, id: u64) {
         d.remove::<(egui::Id, bool)>(egui::Id::new(("previewable", id)));
         d.remove::<(egui::Id, Vec<(usize, usize)>)>(egui::Id::new(("result_find_cache", id)));
         d.remove::<(egui::Id, Arc<crate::values::ResultDiff>)>(egui::Id::new(("result_diff", id)));
+        d.remove::<super::detail::DetailCache>(super::detail::cache_id(id));
+        // The editor's own state: its undo history holds copies of the whole text.
+        d.remove::<egui::text_edit::TextEditState>(egui::Id::new(("sql", id)));
     });
 }
 

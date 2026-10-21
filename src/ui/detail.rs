@@ -1,6 +1,7 @@
 //! Right-hand panel showing the selected row as a vertical form: easier to read and edit
 //! than a wide grid.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use eframe::egui::{self, FontId, RichText, TextEdit};
@@ -43,22 +44,43 @@ pub struct DetailRow<'a> {
 /// Children shown per object/array before "… N more".
 const JSON_CHILDREN: usize = 200;
 
+/// What the panel keeps between frames, per column: one entry each, replaced when the value
+/// changes, so browsing many rows doesn't pile up. One map per tab, dropped with it
+/// (`forget_tab_caches`).
+#[derive(Clone, Default)]
+pub(crate) struct DetailCache {
+    /// The value parsed as JSON (objects and arrays), by the value it came from.
+    json: HashMap<usize, (egui::Id, Option<Arc<Value>>)>,
+    /// What is typed in an editable field, by the row and value it started from.
+    text: HashMap<usize, (egui::Id, String)>,
+}
+
+pub(crate) fn cache_id(tab_id: u64) -> egui::Id {
+    egui::Id::new(("detail_cache", tab_id))
+}
+
 /// The value parsed as JSON when it is an object or array; cached, since this runs every frame.
-/// One entry per panel field (`slot`), replaced when the value changes, so browsing many rows
-/// doesn't pile up parsed documents.
-fn parsed_json(ctx: &egui::Context, slot: egui::Id, v: &str) -> Option<Arc<Value>> {
+fn parsed_json(ctx: &egui::Context, tab_id: u64, ci: usize, v: &str) -> Option<Arc<Value>> {
     let s = v.trim_start();
     if !(s.starts_with('{') || s.starts_with('[')) {
         return None;
     }
     let hash = egui::Id::new(v);
-    if let Some((h, cached)) = ctx.data(|d| d.get_temp::<(egui::Id, Option<Arc<Value>>)>(slot))
-        && h == hash
-    {
+    let cache = cache_id(tab_id);
+    if let Some(cached) = ctx.data_mut(|d| {
+        let c = d.get_temp_mut_or_default::<DetailCache>(cache);
+        c.json
+            .get(&ci)
+            .filter(|(h, _)| *h == hash)
+            .map(|(_, j)| j.clone())
+    }) {
         return cached;
     }
     let parsed = serde_json::from_str::<Value>(v).ok().map(Arc::new);
-    ctx.data_mut(|d| d.insert_temp(slot, (hash, parsed.clone())));
+    ctx.data_mut(|d| {
+        let c = d.get_temp_mut_or_default::<DetailCache>(cache);
+        c.json.insert(ci, (hash, parsed.clone()));
+    });
     parsed
 }
 
@@ -217,8 +239,7 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                 let value = res.rows.cell(row, ci);
                 let c = info[ci];
                 // JSON objects and arrays can be read as a tree (the default) or as text.
-                let slot = egui::Id::new(("json_parsed", tab_id, ci));
-                let json = value.and_then(|v| parsed_json(ui.ctx(), slot, v));
+                let json = value.and_then(|v| parsed_json(ui.ctx(), tab_id, ci, v));
                 let tree_id = egui::Id::new(("json_tree", tab_id, ci));
                 let as_text = ui.data(|d| d.get_temp::<bool>(tree_id)).unwrap_or(false);
                 ui.add_space(6.0);
@@ -358,11 +379,15 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                         action = Some(DetailAction::Commit(ci, v));
                     }
                 } else if can_edit {
-                    // The buffer is keyed by the current value, so it resets after the row is refreshed.
-                    let id = egui::Id::new(("detail", tab_id, row, ci, value));
+                    // The buffer is keyed by the row and current value, so it resets after the row
+                    // is refreshed or another one is shown.
+                    let key = egui::Id::new((row, value));
                     let original = value.unwrap_or_default().to_owned();
                     let mut text = ui
-                        .data_mut(|d| d.get_temp::<String>(id))
+                        .data_mut(|d| {
+                            let c = d.get_temp_mut_or_default::<DetailCache>(cache_id(tab_id));
+                            c.text.get(&ci).filter(|(k, _)| *k == key).map(|(_, t)| t.clone())
+                        })
                         .unwrap_or_else(|| original.clone());
                     let long = original.len() > LONG_VALUE || original.contains('\n');
                     let edit = if long {
@@ -378,7 +403,10 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                     if r.lost_focus() && text != original {
                         action = Some(DetailAction::Commit(ci, Some(text.clone())));
                     }
-                    ui.data_mut(|d| d.insert_temp(id, text));
+                    ui.data_mut(|d| {
+                        let c = d.get_temp_mut_or_default::<DetailCache>(cache_id(tab_id));
+                        c.text.insert(ci, (key, text));
+                    });
                 } else {
                     let shown = match value {
                         Some(v) => RichText::new(display_value(kinds[ci], v))

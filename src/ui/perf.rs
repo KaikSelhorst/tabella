@@ -373,19 +373,21 @@ fn closed_tabs_free_their_caches() {
     h.frame();
     h.frame();
     let held = |h: &Driver| {
-        h.ctx.data(|d| {
+        h.ctx.data_mut(|d| {
             (
                 d.get_temp::<(egui::Id, std::sync::Arc<egui::Galley>)>(egui::Id::new(("editor_galley", id)))
                     .is_some(),
                 d.get_temp::<(egui::Id, Vec<(usize, usize)>)>(egui::Id::new(("statement_ranges", id)))
+                    .is_some(),
+                d.get_persisted::<egui::text_edit::TextEditState>(egui::Id::new(("sql", id)))
                     .is_some(),
             )
         })
     };
     assert_eq!(
         held(&h),
-        (true, true),
-        "an open editor keeps its layout and statements"
+        (true, true, true),
+        "an open editor keeps its layout, statements and undo history"
     );
     {
         let app = h.state_mut();
@@ -394,5 +396,21 @@ fn closed_tabs_free_their_caches() {
         app.active = 0;
     }
     h.frame();
-    assert_eq!(held(&h), (false, false), "gone with the tab");
+    assert_eq!(held(&h), (false, false, false), "gone with the tab");
+}
+
+/// Browsing rows with the detail panel open keeps one buffer per field, not one per row seen.
+#[test]
+fn browsing_rows_in_the_detail_panel_keeps_memory_flat() {
+    let mut h = Driver::new();
+    h.state_mut().active = 0;
+    let mut entries = Vec::new();
+    for r in 0..40 {
+        h.state_mut().tabs[0].selected = Some((r, 1));
+        h.frame();
+        if r == 1 || r == 39 {
+            entries.push(h.ctx.data(|d| d.len()));
+        }
+    }
+    assert_eq!(entries[0], entries[1], "egui memory after 2 rows and after 40");
 }
