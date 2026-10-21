@@ -9,6 +9,28 @@ use std::time::{Duration, Instant};
 
 use crate::db::SshConfig;
 
+#[cfg(test)]
+thread_local! {
+    static KNOWN_HOSTS: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Tests: tunnels opened by this thread use `file` as known_hosts (the environment is shared
+/// by tests running in parallel).
+#[cfg(test)]
+fn use_known_hosts_in_this_thread(file: std::path::PathBuf) {
+    KNOWN_HOSTS.with(|k| *k.borrow_mut() = Some(file));
+}
+
+/// A known_hosts file other than the user's, when one is asked for.
+fn known_hosts_override() -> Option<std::ffi::OsString> {
+    #[cfg(test)]
+    if let Some(f) = KNOWN_HOSTS.with(|k| k.borrow().clone()) {
+        return Some(f.into_os_string());
+    }
+    std::env::var_os("TABELLA_SSH_KNOWN_HOSTS")
+}
+
 /// How long to wait for the tunnel to accept connections.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -45,7 +67,7 @@ impl Tunnel {
         .arg("-L")
         .arg(format!("127.0.0.1:{local_port}:{db_host}:{db_port}"));
         // Tests point this at a throwaway file instead of the user's ~/.ssh/known_hosts.
-        if let Some(known) = std::env::var_os("TABELLA_SSH_KNOWN_HOSTS") {
+        if let Some(known) = known_hosts_override() {
             cmd.arg("-o")
                 .arg(format!("UserKnownHostsFile={}", known.to_string_lossy()));
         }
@@ -188,8 +210,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        // SAFETY: test-only override, set before ssh is spawned.
-        unsafe { std::env::set_var("TABELLA_SSH_KNOWN_HOSTS", dir.join("known_hosts")) };
+        use_known_hosts_in_this_thread(dir.join("known_hosts"));
 
         let ssh = SshConfig {
             host: "127.0.0.1".into(),

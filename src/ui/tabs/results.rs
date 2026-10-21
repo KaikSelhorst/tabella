@@ -1310,7 +1310,7 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
                 }
                 let font = egui::FontId::monospace(12.5);
                 let mut job = if json {
-                    syntax::highlight_json(buf.as_str(), font)
+                    syntax::highlight_json(buf.as_str(), &font)
                 } else {
                     egui::text::LayoutJob::simple(buf.as_str().to_string(), font, t.foreground, wrap)
                 };

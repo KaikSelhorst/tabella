@@ -18,8 +18,24 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
 }
 
-/// Where tabella keeps its files. `TABELLA_CONFIG_DIR` overrides it (tests, portable setups).
+#[cfg(test)]
+thread_local! {
+    static TEST_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Tests: the calling thread (and no other: tests run in parallel) keeps its files in `dir`.
+/// Changing the environment instead would be seen, half-way, by every other test.
+#[cfg(test)]
+pub fn use_dir_in_this_thread(dir: PathBuf) {
+    TEST_DIR.with(|d| *d.borrow_mut() = Some(dir));
+}
+
+/// Where tabella keeps its files. `TABELLA_CONFIG_DIR` overrides it (portable setups).
 pub fn dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(d) = TEST_DIR.with(|d| d.borrow().clone()) {
+        return Some(d);
+    }
     match std::env::var_os("TABELLA_CONFIG_DIR") {
         Some(d) => Some(PathBuf::from(d)),
         None => dirs::config_dir().map(|d| migrated(&d)),

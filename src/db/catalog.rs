@@ -89,7 +89,7 @@ impl Conn {
     /// is in `udt_name`.
     pub fn columns(&mut self, schema: &str, table: &str) -> DbResult<Vec<ColumnInfo>> {
         let stmt = match self.kind() {
-            Kind::Sqlite => return self.column_rows(crate::sqlite::columns(table)),
+            Kind::Sqlite => return self.column_rows(&crate::sqlite::columns(table)),
             Kind::Postgres => Stmt::new(
                 "SELECT c.column_name, CASE c.data_type WHEN 'USER-DEFINED' THEN c.udt_name WHEN 'ARRAY' THEN substr(c.udt_name, 2) || '[]' ELSE c.data_type END, EXISTS (\
                    SELECT 1 FROM information_schema.table_constraints tc \
@@ -116,7 +116,7 @@ impl Conn {
             .sql(table_col)
             .value(Some(table))
             .sql(order);
-        let mut cols = self.column_rows(stmt)?;
+        let mut cols = self.column_rows(&stmt)?;
         if self.kind() == Kind::Postgres {
             self.fill_enum_values(schema, table, &mut cols)?;
         }
@@ -150,8 +150,8 @@ impl Conn {
     }
 
     /// `(name, type, pk, nullable YES/NO, has default)` rows as columns.
-    fn column_rows(&mut self, stmt: Stmt) -> DbResult<Vec<ColumnInfo>> {
-        let r = self.execute(&stmt)?;
+    fn column_rows(&mut self, stmt: &Stmt) -> DbResult<Vec<ColumnInfo>> {
+        let r = self.execute(stmt)?;
         r.rows
             .into_iter()
             .map(|row| {

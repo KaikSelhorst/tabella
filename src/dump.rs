@@ -770,7 +770,7 @@ mod tests {
         let mut dst = Conn::connect(
             &ConnConfig {
                 database: "dbl_restore".into(),
-                ..cfg.clone()
+                ..cfg
             },
             None,
         )

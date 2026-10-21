@@ -711,7 +711,7 @@ mod tests {
         }
     }
 
-    fn advice(sql: &str, st: TableStructure) -> Result<Advice, String> {
+    fn advice(sql: &str, st: &TableStructure) -> Result<Advice, String> {
         let plans = parse(sql)?;
         advise(Kind::Postgres, "public", &plans, |_, _| Some(st.clone()))
     }
@@ -727,7 +727,7 @@ mod tests {
         );
         let a = advice(
             "SELECT * FROM orders WHERE customer_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 20",
-            st,
+            &st,
         )
         .unwrap();
         assert_eq!(a.columns, ["customer_id", "status", "created_at"]);
@@ -742,7 +742,7 @@ mod tests {
         let st = table(&["id", "customer_id", "total", "created_at"], &[]);
         let a = advice(
             "SELECT id FROM orders WHERE created_at >= $1 AND customer_id = $2 AND total > $3 ORDER BY total",
-            st,
+            &st,
         )
         .unwrap();
         assert_eq!(
@@ -761,7 +761,7 @@ mod tests {
                 "CREATE UNIQUE INDEX users_email_key ON public.users USING btree (email)",
             )],
         );
-        let err = advice("SELECT * FROM users WHERE email = $1", st).unwrap_err();
+        let err = advice("SELECT * FROM users WHERE email = $1", &st).unwrap_err();
         assert!(err.contains("users_email_key"), "{err}");
     }
 
@@ -771,7 +771,7 @@ mod tests {
             &["id", "a", "b"],
             &[("t_a", "CREATE INDEX t_a ON public.t USING btree (a)")],
         );
-        let a = advice("SELECT * FROM t WHERE a = $1 AND b = $2", st).unwrap();
+        let a = advice("SELECT * FROM t WHERE a = $1 AND b = $2", &st).unwrap();
         assert_eq!(a.columns, ["a", "b"]);
         assert!(a.reason.contains("t_a (a)"), "{}", a.reason);
         // Order among the equality columns doesn't matter for an existing index.
@@ -779,7 +779,7 @@ mod tests {
             &["a", "b"],
             &[("t_ba", "CREATE INDEX t_ba ON public.t USING btree (b, a)")],
         );
-        assert!(advice("SELECT * FROM t WHERE a = $1 AND b = $2", st).is_err());
+        assert!(advice("SELECT * FROM t WHERE a = $1 AND b = $2", &st).is_err());
     }
 
     #[test]

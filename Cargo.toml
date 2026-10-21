@@ -2,6 +2,8 @@
 name = "tabella"
 version = "0.2.0"
 edition = "2024"
+# What the dependencies ask for (egui 0.36 needs 1.95); checked by CI.
+rust-version = "1.95"
 authors = ["Kaik Selhorst"]
 
 [dependencies]
@@ -27,6 +29,15 @@ sqlformat = "0.5.0"
 thiserror = "2.0.21"
 tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
 webpki-roots = { version = "1.0.9", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+redundant_clone = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
 
 [profile.release]
 opt-level = "s"

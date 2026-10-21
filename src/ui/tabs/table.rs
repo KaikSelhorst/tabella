@@ -394,7 +394,7 @@ pub(super) fn confirm_save(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             ui.set_width(ui.available_width());
             egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
                 for st in &stmts {
-                    let job = syntax::highlight(&format!("{};", st.render(k)), egui::FontId::monospace(12.0));
+                    let job = syntax::highlight(&format!("{};", st.render(k)), &egui::FontId::monospace(12.0));
                     ui.add(egui::Label::new(job).wrap());
                 }
             });

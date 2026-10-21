@@ -112,7 +112,7 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        let job = syntax::highlight(&e.sql, egui::FontId::monospace(12.5));
+                        let job = syntax::highlight(&e.sql, &egui::FontId::monospace(12.5));
                         ui.add(egui::Label::new(job).selectable(true));
                     });
             });

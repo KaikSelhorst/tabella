@@ -240,7 +240,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         {
                             return g;
                         }
-                        let mut job = syntax::highlight(buf.as_str(), egui::FontId::monospace(13.0));
+                        let mut job = syntax::highlight(buf.as_str(), &egui::FontId::monospace(13.0));
                         if let Some(r) = error_bytes.clone() {
                             syntax::mark_error(&mut job, r);
                         }
@@ -893,7 +893,7 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    let job = syntax::highlight(&p.sql, egui::FontId::monospace(12.0));
+                    let job = syntax::highlight(&p.sql, &egui::FontId::monospace(12.0));
                     ui.add(egui::Label::new(job).wrap());
                 });
             ui.add_space(8.0);

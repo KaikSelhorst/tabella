@@ -102,7 +102,7 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
                             if script.is_empty() {
                                 ui.label(RichText::new("Nothing changed yet").color(t.subtle));
                             } else {
-                                let job = syntax::highlight(&script, egui::FontId::monospace(12.5));
+                                let job = syntax::highlight(&script, &egui::FontId::monospace(12.5));
                                 ui.add(egui::Label::new(job).selectable(true));
                             }
                         });

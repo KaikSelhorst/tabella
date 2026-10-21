@@ -693,6 +693,7 @@ pub(super) fn error_banner(ui: &mut egui::Ui, e: &str) {
 }
 
 /// What the "Export" dropdown asked for.
+#[derive(Clone, Copy)]
 pub(super) enum ExportChoice {
     /// A file; `true`: the whole table, not just what is on screen.
     File(Format, bool),

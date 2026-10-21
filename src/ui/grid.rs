@@ -611,7 +611,7 @@ pub fn grid(
                             let (shown, color) = match val {
                                 None => ("NULL".to_string(), t.subtle),
                                 Some(v) => (
-                                    display_value(kind, v).to_string(),
+                                    display_value(kind, v),
                                     match kind {
                                         ValueKind::Number => t.number,
                                         ValueKind::Bool => t.boolean,
@@ -1042,6 +1042,7 @@ fn cell_menu(
 }
 
 /// What a cell is showing besides its value.
+#[derive(Clone, Copy)]
 struct CellState {
     selected: bool,
     in_range: bool,

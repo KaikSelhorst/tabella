@@ -195,13 +195,13 @@ pub fn sql_line_layouter(
     size: f32,
 ) -> impl FnMut(&egui::Ui, &dyn egui::TextBuffer, f32) -> std::sync::Arc<egui::Galley> {
     move |ui, buf, _wrap| {
-        let mut job = highlight(buf.as_str(), FontId::monospace(size));
+        let mut job = highlight(buf.as_str(), &FontId::monospace(size));
         job.wrap.max_width = f32::INFINITY;
         ui.fonts_mut(|f| f.layout_job(job))
     }
 }
 
-pub fn highlight(text: &str, font: FontId) -> LayoutJob {
+pub fn highlight(text: &str, font: &FontId) -> LayoutJob {
     let t = theme::tokens();
     let mut job = LayoutJob::default();
     for (kind, s) in tokens(text) {
@@ -213,7 +213,7 @@ pub fn highlight(text: &str, font: FontId) -> LayoutJob {
 }
 
 /// JSON in color: keys, strings, numbers, true/false/null, punctuation.
-pub fn highlight_json(text: &str, font: FontId) -> LayoutJob {
+pub fn highlight_json(text: &str, font: &FontId) -> LayoutJob {
     let t = theme::tokens();
     let mut job = LayoutJob::default();
     let fmt = |c: Color32| TextFormat::simple(font.clone(), c);
@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn json_colors_cover_every_byte() {
         let text = "{\"name\": \"Zoë \\\"Zed\\\" Brontë\", \"v\": -1.5e3, \"ok\": true, \"x\": null, \"l\": [1, \"é\"]}";
-        let job = highlight_json(text, FontId::monospace(12.0));
+        let job = highlight_json(text, &FontId::monospace(12.0));
         let covered: String = job
             .sections
             .iter()
@@ -338,6 +338,6 @@ mod tests {
             .collect();
         assert_eq!(covered, text);
         // Unterminated strings (while typing) don't panic either.
-        let _ = highlight_json("{\"a\": \"no end \\", FontId::monospace(12.0));
+        let _ = highlight_json("{\"a\": \"no end \\", &FontId::monospace(12.0));
     }
 }

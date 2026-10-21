@@ -151,7 +151,7 @@ pub fn structure_tab(ui: &mut egui::Ui, st: &StructState, busy: bool, is_view: b
                         .inner_margin(egui::Margin::same(12))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            let job = syntax::highlight(&d.ddl, egui::FontId::monospace(12.5));
+                            let job = syntax::highlight(&d.ddl, &egui::FontId::monospace(12.5));
                             ui.add(egui::Label::new(job).selectable(true));
                         });
                     ui.add_space(12.0);

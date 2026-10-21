@@ -129,9 +129,9 @@ pub fn chart(
         .iter()
         .filter_map(|r| {
             let y = r[spec.y].as_deref()?.trim().parse::<f64>().ok()?;
-            let x = r[spec.x].as_deref().map_or("NULL".to_string(), |v| {
-                display_value(kinds[spec.x], v).to_string()
-            });
+            let x = r[spec.x]
+                .as_deref()
+                .map_or("NULL".to_string(), |v| display_value(kinds[spec.x], v));
             Some((x, y))
         })
         .collect();
