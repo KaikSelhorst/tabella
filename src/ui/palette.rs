@@ -396,6 +396,89 @@ impl App {
         }
     }
 
+    /// The items matching `query`, best first: tables (recent ones higher), connections and
+    /// actions, then columns from two letters on.
+    fn palette_matches(&self, query: &str) -> Vec<Item> {
+        let mut scored: Vec<(i32, Item)> = self
+            .palette_items()
+            .into_iter()
+            .filter_map(|it| {
+                let mut score = fuzzy_score(query, &it.label)?;
+                if let Cmd::OpenTable(schema, table) = &it.cmd
+                    && let Some(rank) = self.recent_rank(schema, table)
+                {
+                    score += RECENT_BONUS - rank as i32;
+                }
+                Some((score, it))
+            })
+            .collect();
+        // Columns ("where is the ssn column?") from two letters on, below tables and actions
+        // that match as well.
+        if query.trim().chars().count() >= 2
+            && let Some(s) = self.session.as_ref().filter(|s| s.ready)
+        {
+            scored.extend(s.schema_cols.iter().filter_map(|c| {
+                let label = format!("{}.{}", c.table, c.column);
+                let score = fuzzy_score(query, &label)?;
+                Some((
+                    score - COLUMN_PENALTY,
+                    Item {
+                        icon: icon::COLUMNS,
+                        label,
+                        detail: format!("column · {} · {}", c.data_type, c.schema),
+                        cmd: Cmd::OpenTable(c.schema.clone(), c.table.clone()),
+                    },
+                ))
+            }));
+        }
+        scored.sort_by_key(|m| std::cmp::Reverse(m.0));
+        scored.truncate(MAX_RESULTS);
+        let items: Vec<Item> = scored.into_iter().map(|(_, it)| it).collect();
+        items
+    }
+
+    /// Carries out what was picked in the palette.
+    fn run_command(&mut self, ctx: &egui::Context, cmd: Cmd) {
+        match cmd {
+            Cmd::OpenTable(schema, table) => self.open_table(&schema, &table),
+            Cmd::Connect(id) => self.connect_saved(&id),
+            Cmd::NewSql => self.open_sql(String::new()),
+            Cmd::OpenSql(sql) => self.open_sql(sql),
+            Cmd::NewConnection => {
+                self.connections.form = Some(ConnForm {
+                    editing: None,
+                    cfg: ConnConfig::new(Kind::Postgres),
+                })
+            }
+            Cmd::Activity => self.open_activity(),
+            Cmd::Theme => self.toggle_theme(ctx),
+            Cmd::SystemTheme => self.toggle_system_theme(ctx),
+            Cmd::RowLimit => self.cycle_row_limit(ctx),
+            Cmd::Back => self.go_back(),
+            Cmd::Backup => self.backup_dialog(false),
+            Cmd::Restore => self.backup_dialog(true),
+            Cmd::ExportConnections => self.export_connections_dialog(),
+            Cmd::ImportConnections => self.import_connections_dialog(),
+            Cmd::Zoom(steps) => self.zoom_by(ctx, steps),
+            Cmd::History => self.open_history(),
+            Cmd::RunFile => self.pick_script(),
+            Cmd::Fps => {
+                self.fps.show = !self.fps.show;
+                // Hidden, it shouldn't keep redrawing at full rate either.
+                self.fps.max &= self.fps.show;
+            }
+            Cmd::Dump => self.open_dump(crate::app::DumpScope::Database),
+            Cmd::Compare => self.open_compare(None),
+            Cmd::Diagram => self.open_diagram(None),
+            Cmd::Search => self.open_search(),
+            Cmd::NewTable => self.open_new_table(None),
+            Cmd::Help => self.dialog = Some(Dialog::Help),
+            Cmd::Disconnect => {
+                self.disconnect();
+            }
+        }
+    }
+
     pub fn palette_ui(&mut self, ctx: &egui::Context) {
         let cache_id = egui::Id::new("palette_results");
         if let Some(Dialog::Palette(p)) = &mut self.dialog
@@ -415,41 +498,7 @@ impl App {
         let matches = match cached {
             Some((_, items)) => items,
             None => {
-                let mut scored: Vec<(i32, Item)> = self
-                    .palette_items()
-                    .into_iter()
-                    .filter_map(|it| {
-                        let mut score = fuzzy_score(&p.query, &it.label)?;
-                        if let Cmd::OpenTable(schema, table) = &it.cmd
-                            && let Some(rank) = self.recent_rank(schema, table)
-                        {
-                            score += RECENT_BONUS - rank as i32;
-                        }
-                        Some((score, it))
-                    })
-                    .collect();
-                // Columns ("where is the ssn column?") from two letters on, below tables and actions
-                // that match as well.
-                if p.query.trim().chars().count() >= 2
-                    && let Some(s) = self.session.as_ref().filter(|s| s.ready)
-                {
-                    scored.extend(s.schema_cols.iter().filter_map(|c| {
-                        let label = format!("{}.{}", c.table, c.column);
-                        let score = fuzzy_score(&p.query, &label)?;
-                        Some((
-                            score - COLUMN_PENALTY,
-                            Item {
-                                icon: icon::COLUMNS,
-                                label,
-                                detail: format!("column · {} · {}", c.data_type, c.schema),
-                                cmd: Cmd::OpenTable(c.schema.clone(), c.table.clone()),
-                            },
-                        ))
-                    }));
-                }
-                scored.sort_by_key(|m| std::cmp::Reverse(m.0));
-                scored.truncate(MAX_RESULTS);
-                let items: Vec<Item> = scored.into_iter().map(|(_, it)| it).collect();
+                let items = self.palette_matches(&p.query);
                 ctx.data_mut(|d| d.insert_temp(cache_id, (p.query.clone(), items.clone())));
                 items
             }
@@ -512,38 +561,7 @@ impl App {
                 if r.clicked() {
                     run = Some(it.cmd.clone());
                 }
-                let painter = ui.painter();
-                if selected {
-                    painter.rect_filled(rect, 0.0, t.selection);
-                    painter.vline(rect.left() + 1.0, rect.y_range(), egui::Stroke::new(2.0, t.lime));
-                }
-                let mid = rect.center().y;
-                let ic = if selected { t.lime } else { t.subtle };
-                painter.text(
-                    egui::pos2(rect.left() + 12.0, mid),
-                    egui::Align2::LEFT_CENTER,
-                    it.icon,
-                    egui::FontId::new(14.0, theme::icon_family()),
-                    ic,
-                );
-                painter.text(
-                    egui::pos2(rect.left() + 36.0, mid),
-                    egui::Align2::LEFT_CENTER,
-                    &it.label,
-                    egui::FontId::proportional(13.0),
-                    if selected {
-                        t.foreground
-                    } else {
-                        t.muted_foreground
-                    },
-                );
-                painter.text(
-                    egui::pos2(rect.right() - 12.0, mid),
-                    egui::Align2::RIGHT_CENTER,
-                    &it.detail,
-                    egui::FontId::proportional(11.0),
-                    t.subtle,
-                );
+                result_row(ui.painter(), rect, it, selected);
             }
             ui.add_space(6.0);
             ui.label(
@@ -558,50 +576,49 @@ impl App {
 
         if let Some(cmd) = run {
             self.dialog = None;
-            match cmd {
-                Cmd::OpenTable(schema, table) => self.open_table(&schema, &table),
-                Cmd::Connect(id) => self.connect_saved(&id),
-                Cmd::NewSql => self.open_sql(String::new()),
-                Cmd::OpenSql(sql) => self.open_sql(sql),
-                Cmd::NewConnection => {
-                    self.connections.form = Some(ConnForm {
-                        editing: None,
-                        cfg: ConnConfig::new(Kind::Postgres),
-                    })
-                }
-                Cmd::Activity => self.open_activity(),
-                Cmd::Theme => self.toggle_theme(ctx),
-                Cmd::SystemTheme => self.toggle_system_theme(ctx),
-                Cmd::RowLimit => self.cycle_row_limit(ctx),
-                Cmd::Back => self.go_back(),
-                Cmd::Backup => self.backup_dialog(false),
-                Cmd::Restore => self.backup_dialog(true),
-                Cmd::ExportConnections => self.export_connections_dialog(),
-                Cmd::ImportConnections => self.import_connections_dialog(),
-                Cmd::Zoom(steps) => self.zoom_by(ctx, steps),
-                Cmd::History => self.open_history(),
-                Cmd::RunFile => self.pick_script(),
-                Cmd::Fps => {
-                    self.fps.show = !self.fps.show;
-                    // Hidden, it shouldn't keep redrawing at full rate either.
-                    self.fps.max &= self.fps.show;
-                }
-                Cmd::Dump => self.open_dump(crate::app::DumpScope::Database),
-                Cmd::Compare => self.open_compare(None),
-                Cmd::Diagram => self.open_diagram(None),
-                Cmd::Search => self.open_search(),
-                Cmd::NewTable => self.open_new_table(None),
-                Cmd::Help => self.dialog = Some(Dialog::Help),
-                Cmd::Disconnect => {
-                    self.disconnect();
-                }
-            }
+            self.run_command(ctx, cmd);
         }
     }
 
     pub fn open_palette(&mut self) {
         self.dialog = Some(Dialog::Palette(Palette::default()));
     }
+}
+
+/// One result: its icon, label and detail, lit when selected.
+fn result_row(painter: &egui::Painter, rect: egui::Rect, it: &Item, selected: bool) {
+    let t = theme::tokens();
+    if selected {
+        painter.rect_filled(rect, 0.0, t.selection);
+        painter.vline(rect.left() + 1.0, rect.y_range(), egui::Stroke::new(2.0, t.lime));
+    }
+    let mid = rect.center().y;
+    let ic = if selected { t.lime } else { t.subtle };
+    painter.text(
+        egui::pos2(rect.left() + 12.0, mid),
+        egui::Align2::LEFT_CENTER,
+        it.icon,
+        egui::FontId::new(14.0, theme::icon_family()),
+        ic,
+    );
+    painter.text(
+        egui::pos2(rect.left() + 36.0, mid),
+        egui::Align2::LEFT_CENTER,
+        &it.label,
+        egui::FontId::proportional(13.0),
+        if selected {
+            t.foreground
+        } else {
+            t.muted_foreground
+        },
+    );
+    painter.text(
+        egui::pos2(rect.right() - 12.0, mid),
+        egui::Align2::RIGHT_CENTER,
+        &it.detail,
+        egui::FontId::proportional(11.0),
+        t.subtle,
+    );
 }
 
 #[cfg(test)]
