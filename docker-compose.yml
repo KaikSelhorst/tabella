@@ -1,6 +1,6 @@
 # Databases for tabella.
 #
-#   docker compose --profile test up -d --wait   # what `cargo test -- --ignored` expects
+#   docker compose --profile test up -d --wait   # what `cargo itest` expects
 #   docker compose --profile dev up -d --wait    # heavy sample data (millions of rows; ~3 min to seed)
 #   docker compose --profile company up -d --wait  # Northstar Global, a fictional multinational (English)
 #
@@ -13,7 +13,7 @@ services:
     image: postgres:16-alpine
     environment: { POSTGRES_PASSWORD: pw }
     ports: ["55432:5432"]
-    # For the "consultas lentas" view.
+    # For the "slow queries" view.
     command: ["-c", "shared_preload_libraries=pg_stat_statements"]
     healthcheck: &pg-health
       test: ["CMD", "pg_isready", "-U", "postgres"]

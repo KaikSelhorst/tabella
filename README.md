@@ -251,11 +251,26 @@ plugin, AppRun and the AppImage runtime) to versioned releases checked by SHA-25
 ## Databases for development and tests
 
 ```sh
-docker compose --profile dev up -d --wait     # heavy sample data: Postgres :5432, MySQL :3307 (~4 min)
+docker compose --profile dev up -d --wait     # heavy sample data: Postgres :5432, MySQL :3307 (a few minutes)
+docker compose --profile company up -d --wait # Northstar Global, a fictional multinational: Postgres :5432
 docker compose --profile test up -d --wait    # databases for the integration tests
 cargo test                                    # unit and UI tests
-cargo test -- --ignored db:: worker:: tunnel::   # tests against the real databases (and SSH)
+cargo itest                                   # tests against the real databases (and SSH)
 ```
+
+| Profile   | Service       | Port  | User / password       | Database   |
+|-----------|---------------|-------|-----------------------|------------|
+| `dev`     | Postgres      | 5432  | `postgres`/`postgres` | `postgres` |
+| `dev`     | MySQL         | 3307  | `root`/`mysql`        | `shop`     |
+| `company` | Postgres      | 5432 (`COMPANY_PG_PORT`) | `postgres`/`postgres` | `northstar` |
+| `test`    | Postgres      | 55432 | `postgres`/`pw`       | `postgres` |
+| `test`    | Postgres, TLS | 55433 | `postgres`/`pw`       | `postgres` |
+| `test`    | MySQL         | 53306 | `root`/`pw`           | `test`     |
+| `test`    | SSH           | 52222 | `tunnel`, key in `dev/ssh/` | |
+
+`dev` and `company` both use port 5432: run one at a time, or set `COMPANY_PG_PORT`.
+`cargo itest` is an alias (`.cargo/config.toml`) that runs the ignored tests of the modules that
+talk to the test databases; a test checks that every such module is listed there.
 
 The sample data is large on purpose: in Postgres, `customers` (1M), `orders` (5M), `events`
 (300k, a wide table with JSON, arrays and IPs) and 200 small tables in the `archive` schema; in
