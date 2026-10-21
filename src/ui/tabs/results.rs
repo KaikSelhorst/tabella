@@ -121,31 +121,13 @@ pub(super) fn summary(res: &QueryResult) -> String {
 
 pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editable: bool) {
     let s = cx.s;
-    stats_dialog(ui.ctx(), tab, s);
-    if let Some(e) = value_dialog(ui.ctx(), tab) {
-        // Saved: a pending change like any other edit.
-        if let Some(Effect::Copy(text)) = app::handle_grid_event(tab, s, e, true) {
-            ui.ctx().copy_text(text);
-        }
-    }
-    value_filter_dialog(ui.ctx(), tab, s);
-    // A value picked for a cell is an edit like any other (insert-form picks are the form's).
-    if tab.value_editor.is_none()
-        && !matches!(&tab.kind, TabKind::Table(ts) if ts.insert.is_some())
-        && let Some((app::PickFor::Cell(row, col), key)) = fk_dialog(ui.ctx(), tab, s)
-    {
-        app::handle_grid_event(tab, s, GridEvent::Commit(row, col, Some(key)), true);
-    }
-    if let Some(sql) = bulk_dialog(ui.ctx(), tab, s) {
-        cx.request = Some(Request::PreviewUpdate(sql));
-    }
-    if let Some(e) = fill_dialog(ui.ctx(), tab) {
-        app::handle_grid_event(tab, s, e, true);
-    }
+    result_dialogs(ui, tab, cx);
     let t = theme::tokens();
     // "Load more" in the footer sets this; the grid below is still borrowing the result.
-    let more_id = egui::Id::new(("load_more", tab.id));
-    if ui.data_mut(|d| d.remove_temp::<bool>(more_id)).unwrap_or(false) {
+    if ui
+        .data_mut(|d| d.remove_temp::<bool>(load_more_id(tab.id)))
+        .unwrap_or(false)
+    {
         app::load_more(tab, s);
     }
     let can_more = app::can_load_more(tab);
@@ -158,47 +140,12 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         tab.show_set(i);
     }
     let Some(res) = &tab.result else {
-        if tab.busy() {
-            ui.add_space(48.0);
-            ui.vertical_centered(|ui| {
-                ui.spinner();
-                ui.label(egui::RichText::new("Loading…").color(t.subtle));
-            });
-        } else if !editable && tab.error.is_none() {
-            ui.add_space(48.0);
-            ui.vertical_centered(|ui| {
-                ui.label(theme::icon(icon::PLAY).size(20.0).color(t.subtle));
-                ui.label(egui::RichText::new("Run a query to see the result here").color(t.subtle));
-            });
-        }
+        empty_result(ui, tab, editable);
         return;
     };
     // Editor results can be charted (kept in egui memory per tab).
     let is_sql = matches!(tab.kind, TabKind::Sql(_));
-    // Editor results from one table say whether they can be edited, and why not.
-    let edit_hint = match tab.editor().and_then(|ed| ed.source.as_deref()) {
-        Some(src) if !src.cols.is_empty() => {
-            let pk = src.pk_names();
-            if s.cfg.read_only {
-                None
-            } else if pk.is_empty() {
-                Some(format!("· {} has no primary key: read-only", src.table))
-            } else if pk.iter().all(|p| res.columns.contains(p)) {
-                Some(format!(
-                    "· editable ({}) · double-click edits · Ctrl+S saves",
-                    src.table
-                ))
-            } else {
-                Some(format!(
-                    "· include {} in the SELECT to be able to edit",
-                    pk.join(", ")
-                ))
-            }
-        }
-        _ => None,
-    };
-    let chart_id = egui::Id::new(("chart", tab.id));
-    let mut chart_spec: Option<chart::ChartSpec> = ui.data(|d| d.get_temp(chart_id)).flatten();
+    let mut chart_spec: Option<chart::ChartSpec> = ui.data(|d| d.get_temp(chart_id(tab.id))).flatten();
     let result_kinds = values::column_kinds(res, &[]);
     // A new result may not have the chosen columns any more: pick again.
     if let Some(c) = chart_spec
@@ -208,128 +155,21 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
     {
         chart_spec = chart::default_spec(res, &result_kinds);
     }
-    let (pinned_at, comparing) = match &tab.kind {
-        TabKind::Sql(ed) => (ed.pinned.as_ref().map(|p| p.at), ed.comparing),
-        _ => (None, false),
+    let pin_action = if editable {
+        None
+    } else {
+        summary_bar(ui, tab, s, res, can_more, &result_kinds, &mut chart_spec)
     };
-    let mut pin_action: Option<PinAction> = None;
-    if !editable {
-        egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(8, 2))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(summary(res))
-                            .small()
-                            .color(t.muted_foreground),
-                    );
-                    if tab.timings.len() > 1 {
-                        timings_menu(ui, &tab.timings);
-                    }
-                    if can_more {
-                        let more = egui::Button::new(
-                            egui::RichText::new(format!(
-                                "Load {} more",
-                                crate::ui::palette::format_count(crate::db::max_rows() as i64)
-                            ))
-                            .small()
-                            .color(t.lime),
-                        )
-                        .frame(false);
-                        if ui
-                            .add(more)
-                            .on_hover_text("Runs the query again keeping more rows")
-                            .clicked()
-                        {
-                            ui.data_mut(|d| d.insert_temp(more_id, true));
-                            ui.ctx().request_repaint();
-                        }
-                    }
-                    if let Some(hint) = &edit_hint {
-                        ui.label(egui::RichText::new(hint).small().color(t.subtle));
-                    }
-                    let chartable =
-                        is_sql && chart::default_spec(res, &result_kinds).is_some() && !res.rows.is_empty();
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if is_sql {
-                            pin_action = pin_buttons(ui, pinned_at, comparing);
-                        }
-                        if chartable {
-                            let on = chart_spec.is_some();
-                            let color = if on { t.lime } else { t.muted_foreground };
-                            let b = egui::Button::new(theme::icon_text(
-                                icon::CHART_BAR,
-                                "Chart",
-                                color,
-                                t.foreground,
-                            ))
-                            .frame(false);
-                            if ui
-                                .add(b)
-                                .on_hover_text("Bars or line of a numeric column")
-                                .clicked()
-                            {
-                                chart_spec = if on {
-                                    None
-                                } else {
-                                    chart::default_spec(res, &result_kinds)
-                                };
-                            }
-                        }
-                    });
-                });
-            });
-    }
     // Pin / compare / unpin, then the comparison in place of the grid while it is on.
-    if let TabKind::Sql(ed) = &mut tab.kind {
-        match pin_action {
-            Some(PinAction::Pin) => {
-                let key = ed.source.as_ref().and_then(|src| {
-                    let pk = src.pk_names();
-                    (pk.len() == 1).then(|| pk[0].clone())
-                });
-                ed.pin(res, key);
-            }
-            Some(PinAction::Compare(on)) => ed.comparing = on,
-            Some(PinAction::Unpin) => {
-                ed.pinned = None;
-                ed.comparing = false;
-            }
-            None => {}
-        }
-        if ed.comparing
-            && let Some(p) = &ed.pinned
-        {
-            let done =
-                super::result_diff::diff_view(ui, tab.id, p, res, &mut ed.compare_key, &mut ed.hide_equal);
-            if done {
-                ed.comparing = false;
-            }
-            return;
-        }
+    if let TabKind::Sql(ed) = &mut tab.kind
+        && pin_and_compare(ui, tab.id, ed, res, pin_action)
+    {
+        return;
     }
     if res.columns.is_empty() {
         return;
     }
-    let mut close_chart = false;
-    if is_sql && let Some(spec) = &mut chart_spec {
-        egui::Panel::top(egui::Id::new(("chart_panel", tab.id)))
-            .resizable(true)
-            .default_size(280.0)
-            .size_range(160.0..=640.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(t.background)
-                    .inner_margin(egui::Margin::symmetric(8, 4)),
-            )
-            .show(ui, |ui| {
-                close_chart = !chart::chart(ui, tab.id, res, &result_kinds, spec);
-            });
-    }
-    if close_chart {
-        chart_spec = None;
-    }
-    ui.data_mut(|d| d.insert_temp(chart_id, chart_spec));
+    chart_panel(ui, tab.id, res, &result_kinds, is_sql, chart_spec);
 
     // Pending changes are shown in place: edited values, deleted rows struck through.
     let overlay = app::editable_ref(&tab.kind).and_then(|ts| ts.overlay(res));
@@ -375,35 +215,21 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
     let editing = edit.is_some() || option_pick.is_some();
 
     // Row detail on the right, for the selected row.
-    let mut detail_event = None;
-    if *cx.show_detail
-        && let Some((row, _)) = selected
-        && tab.detail_hidden != Some(row)
-    {
-        egui::Panel::right(egui::Id::new(("detail", tab.id)))
-            .frame(
-                egui::Frame::new()
-                    .fill(t.sidebar)
-                    .inner_margin(egui::Margin::symmetric(12, 8)),
-            )
-            .resizable(true)
-            .default_size(320.0)
-            .size_range(240.0..=640.0)
-            .show(ui, |ui| {
-                detail_event = detail::detail_panel(
-                    ui,
-                    &detail::DetailRow {
-                        tab_id: tab.id,
-                        res: shown,
-                        cols,
-                        kinds: &kinds,
-                        row,
-                        row_number: row_offset + row + 1,
-                        can_edit,
-                    },
-                );
-            });
-    }
+    let detail_event = match selected {
+        Some((row, _)) if *cx.show_detail && tab.detail_hidden != Some(row) => detail_side(
+            ui,
+            &detail::DetailRow {
+                tab_id: tab.id,
+                res: shown,
+                cols,
+                kinds: &kinds,
+                row,
+                row_number: row_offset + row + 1,
+                can_edit,
+            },
+        ),
+        _ => None,
+    };
 
     let typing = ui.ctx().egui_wants_keyboard_input();
     let key_event = if !editing && !typing {
@@ -419,47 +245,12 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         selection_stats(ui, tab.id, shown, &kinds, range);
     }
 
-    // Ctrl+F: tables search the database (the toolbar box); editor results are searched here.
-    let find_id = egui::Id::new(("result_find", tab.id));
-    if !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F)) {
-        if editable {
-            ui.memory_mut(|m| m.request_focus(egui::Id::new(("table_search", tab.id))));
-        } else {
-            ui.data_mut(|d| {
-                let st = d.get_temp_mut_or_default::<Option<find::FindState>>(find_id);
-                st.get_or_insert_with(Default::default).focus = true;
-            });
-        }
+    let found = result_find(ui, tab.id, shown, &kinds, &view, editable, typing);
+    if let Some((r, c)) = found.goto {
+        tab.selected = Some((r, c));
+        tab.anchor = None;
+        scroll_to = Some(r);
     }
-    let mut result_find: Option<find::FindState> = ui.data(|d| d.get_temp(find_id)).flatten();
-    let found = result_find
-        .as_ref()
-        .map(|f| found_cells(ui.ctx(), tab.id, shown, &kinds, &view, &f.query));
-    let mut found_current = None;
-    if let (Some(st), Some(found)) = (&mut result_find, &found) {
-        let order = found;
-        match find::find_bar(ui, st, order.len()) {
-            Some(find::FindAction::Close) => {
-                result_find = None;
-            }
-            Some(find::FindAction::Goto) => {
-                if let Some(&(r, c)) = order.get(st.current.min(order.len().saturating_sub(1))) {
-                    tab.selected = Some((r, c));
-                    tab.anchor = None;
-                    scroll_to = Some(r);
-                }
-            }
-            _ => {}
-        }
-        if let Some(st) = &result_find {
-            found_current = order.get(st.current.min(order.len().saturating_sub(1))).copied();
-        }
-    }
-    ui.data_mut(|d| d.insert_temp(find_id, result_find.clone()));
-    let found_set: Option<HashSet<(usize, usize)>> = result_find
-        .as_ref()
-        .and(found.as_ref())
-        .map(|order| order.iter().copied().collect());
     let selected = tab
         .selected
         .filter(|(r, c)| *r < res.rows.len() && *c < res.columns.len());
@@ -479,8 +270,8 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         range: range.as_ref(),
         view: &view,
         pinned,
-        found: found_set.as_ref(),
-        found_current,
+        found: found.cells.as_ref(),
+        found_current: found.current,
         incoming,
         filtered: &filtered,
     };
@@ -537,6 +328,312 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
             cx.request = Some(Request::ColumnWidths(schema, table, widths));
         }
         None => {}
+    }
+}
+
+/// The dialogs over a result: statistics, a value, value filter, foreign-key picker, bulk
+/// update and fill.
+fn result_dialogs(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
+    let s = cx.s;
+    stats_dialog(ui.ctx(), tab, s);
+    if let Some(e) = value_dialog(ui.ctx(), tab) {
+        // Saved: a pending change like any other edit.
+        if let Some(Effect::Copy(text)) = app::handle_grid_event(tab, s, e, true) {
+            ui.ctx().copy_text(text);
+        }
+    }
+    value_filter_dialog(ui.ctx(), tab, s);
+    // A value picked for a cell is an edit like any other (insert-form picks are the form's).
+    if tab.value_editor.is_none()
+        && !matches!(&tab.kind, TabKind::Table(ts) if ts.insert.is_some())
+        && let Some((app::PickFor::Cell(row, col), key)) = fk_dialog(ui.ctx(), tab, s)
+    {
+        app::handle_grid_event(tab, s, GridEvent::Commit(row, col, Some(key)), true);
+    }
+    if let Some(sql) = bulk_dialog(ui.ctx(), tab, s) {
+        cx.request = Some(Request::PreviewUpdate(sql));
+    }
+    if let Some(e) = fill_dialog(ui.ctx(), tab) {
+        app::handle_grid_event(tab, s, e, true);
+    }
+}
+
+/// Set by "Load more" in the summary bar, acted on next frame (the grid borrows the result).
+fn load_more_id(tab_id: u64) -> egui::Id {
+    egui::Id::new(("load_more", tab_id))
+}
+
+/// No result yet: loading, or what to do to get one.
+fn empty_result(ui: &mut egui::Ui, tab: &Tab, editable: bool) {
+    let t = theme::tokens();
+    if tab.busy() {
+        ui.add_space(48.0);
+        ui.vertical_centered(|ui| {
+            ui.spinner();
+            ui.label(egui::RichText::new("Loading…").color(t.subtle));
+        });
+    } else if !editable && tab.error.is_none() {
+        ui.add_space(48.0);
+        ui.vertical_centered(|ui| {
+            ui.label(theme::icon(icon::PLAY).size(20.0).color(t.subtle));
+            ui.label(egui::RichText::new("Run a query to see the result here").color(t.subtle));
+        });
+    }
+}
+
+/// Editor results from one table say whether they can be edited, and why not.
+fn edit_hint(tab: &Tab, s: &Session, res: &QueryResult) -> Option<String> {
+    match tab.editor().and_then(|ed| ed.source.as_deref()) {
+        Some(src) if !src.cols.is_empty() => {
+            let pk = src.pk_names();
+            if s.cfg.read_only {
+                None
+            } else if pk.is_empty() {
+                Some(format!("· {} has no primary key: read-only", src.table))
+            } else if pk.iter().all(|p| res.columns.contains(p)) {
+                Some(format!(
+                    "· editable ({}) · double-click edits · Ctrl+S saves",
+                    src.table
+                ))
+            } else {
+                Some(format!(
+                    "· include {} in the SELECT to be able to edit",
+                    pk.join(", ")
+                ))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The line over the grid: rows and time, "Load more", whether it can be edited, and the
+/// chart and pin buttons. Returns a pin action.
+fn summary_bar(
+    ui: &mut egui::Ui,
+    tab: &Tab,
+    s: &Session,
+    res: &QueryResult,
+    can_more: bool,
+    kinds: &[values::ValueKind],
+    chart_spec: &mut Option<chart::ChartSpec>,
+) -> Option<PinAction> {
+    let t = theme::tokens();
+    let is_sql = matches!(tab.kind, TabKind::Sql(_));
+    let edit_hint = edit_hint(tab, s, res);
+    let (pinned_at, comparing) = match &tab.kind {
+        TabKind::Sql(ed) => (ed.pinned.as_ref().map(|p| p.at), ed.comparing),
+        _ => (None, false),
+    };
+    let mut pin_action = None;
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(summary(res))
+                        .small()
+                        .color(t.muted_foreground),
+                );
+                if tab.timings.len() > 1 {
+                    timings_menu(ui, &tab.timings);
+                }
+                if can_more {
+                    let more = egui::Button::new(
+                        egui::RichText::new(format!(
+                            "Load {} more",
+                            crate::ui::palette::format_count(crate::db::max_rows() as i64)
+                        ))
+                        .small()
+                        .color(t.lime),
+                    )
+                    .frame(false);
+                    if ui
+                        .add(more)
+                        .on_hover_text("Runs the query again keeping more rows")
+                        .clicked()
+                    {
+                        ui.data_mut(|d| d.insert_temp(load_more_id(tab.id), true));
+                        ui.ctx().request_repaint();
+                    }
+                }
+                if let Some(hint) = &edit_hint {
+                    ui.label(egui::RichText::new(hint).small().color(t.subtle));
+                }
+                let chartable = is_sql && chart::default_spec(res, kinds).is_some() && !res.rows.is_empty();
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if is_sql {
+                        pin_action = pin_buttons(ui, pinned_at, comparing);
+                    }
+                    if chartable {
+                        let on = chart_spec.is_some();
+                        let color = if on { t.lime } else { t.muted_foreground };
+                        let b = egui::Button::new(theme::icon_text(
+                            icon::CHART_BAR,
+                            "Chart",
+                            color,
+                            t.foreground,
+                        ))
+                        .frame(false);
+                        if ui
+                            .add(b)
+                            .on_hover_text("Bars or line of a numeric column")
+                            .clicked()
+                        {
+                            *chart_spec = if on { None } else { chart::default_spec(res, kinds) };
+                        }
+                    }
+                });
+            });
+        });
+    pin_action
+}
+
+/// Applies a pin action, and shows the comparison with the pinned result while it is on (then
+/// true: it takes the grid's place).
+fn pin_and_compare(
+    ui: &mut egui::Ui,
+    tab_id: u64,
+    ed: &mut app::Editor,
+    res: &QueryResult,
+    pin_action: Option<PinAction>,
+) -> bool {
+    match pin_action {
+        Some(PinAction::Pin) => {
+            let key = ed.source.as_ref().and_then(|src| {
+                let pk = src.pk_names();
+                (pk.len() == 1).then(|| pk[0].clone())
+            });
+            ed.pin(res, key);
+        }
+        Some(PinAction::Compare(on)) => ed.comparing = on,
+        Some(PinAction::Unpin) => {
+            ed.pinned = None;
+            ed.comparing = false;
+        }
+        None => {}
+    }
+    if ed.comparing
+        && let Some(p) = &ed.pinned
+    {
+        let done = super::result_diff::diff_view(ui, tab_id, p, res, &mut ed.compare_key, &mut ed.hide_equal);
+        if done {
+            ed.comparing = false;
+        }
+        return true;
+    }
+    false
+}
+
+/// The chart over an editor result, and the choice kept (per tab) for the next frame.
+fn chart_panel(
+    ui: &mut egui::Ui,
+    tab_id: u64,
+    res: &QueryResult,
+    kinds: &[values::ValueKind],
+    is_sql: bool,
+    mut chart_spec: Option<chart::ChartSpec>,
+) {
+    let t = theme::tokens();
+    let mut close_chart = false;
+    if is_sql && let Some(spec) = &mut chart_spec {
+        egui::Panel::top(egui::Id::new(("chart_panel", tab_id)))
+            .resizable(true)
+            .default_size(280.0)
+            .size_range(160.0..=640.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(t.background)
+                    .inner_margin(egui::Margin::symmetric(8, 4)),
+            )
+            .show(ui, |ui| {
+                close_chart = !chart::chart(ui, tab_id, res, kinds, spec);
+            });
+    }
+    if close_chart {
+        chart_spec = None;
+    }
+    ui.data_mut(|d| d.insert_temp(chart_id(tab_id), chart_spec));
+}
+
+fn chart_id(tab_id: u64) -> egui::Id {
+    egui::Id::new(("chart", tab_id))
+}
+
+/// The selected row's values in a panel on the right.
+fn detail_side(ui: &mut egui::Ui, row: &detail::DetailRow) -> Option<DetailAction> {
+    let t = theme::tokens();
+    egui::Panel::right(egui::Id::new(("detail", row.tab_id)))
+        .frame(
+            egui::Frame::new()
+                .fill(t.sidebar)
+                .inner_margin(egui::Margin::symmetric(12, 8)),
+        )
+        .resizable(true)
+        .default_size(320.0)
+        .size_range(240.0..=640.0)
+        .show(ui, |ui| detail::detail_panel(ui, row))
+        .inner
+}
+
+/// Found cells and where "find in result" is, for the grid.
+struct Found {
+    cells: Option<HashSet<(usize, usize)>>,
+    current: Option<(usize, usize)>,
+    /// The match to select and scroll to.
+    goto: Option<(usize, usize)>,
+}
+
+/// Ctrl+F: tables search the database (the toolbar box); editor results are searched here,
+/// with a find bar over the grid.
+fn result_find(
+    ui: &mut egui::Ui,
+    tab_id: u64,
+    shown: &QueryResult,
+    kinds: &[values::ValueKind],
+    view: &[usize],
+    editable: bool,
+    typing: bool,
+) -> Found {
+    let find_id = egui::Id::new(("result_find", tab_id));
+    if !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F)) {
+        if editable {
+            ui.memory_mut(|m| m.request_focus(egui::Id::new(("table_search", tab_id))));
+        } else {
+            ui.data_mut(|d| {
+                let st = d.get_temp_mut_or_default::<Option<find::FindState>>(find_id);
+                st.get_or_insert_with(Default::default).focus = true;
+            });
+        }
+    }
+    let mut result_find: Option<find::FindState> = ui.data(|d| d.get_temp(find_id)).flatten();
+    let found = result_find
+        .as_ref()
+        .map(|f| found_cells(ui.ctx(), tab_id, shown, kinds, view, &f.query));
+    let (mut found_current, mut goto) = (None, None);
+    if let (Some(st), Some(found)) = (&mut result_find, &found) {
+        let order = found;
+        match find::find_bar(ui, st, order.len()) {
+            Some(find::FindAction::Close) => {
+                result_find = None;
+            }
+            Some(find::FindAction::Goto) => {
+                goto = order.get(st.current.min(order.len().saturating_sub(1))).copied();
+            }
+            _ => {}
+        }
+        if let Some(st) = &result_find {
+            found_current = order.get(st.current.min(order.len().saturating_sub(1))).copied();
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(find_id, result_find.clone()));
+    let cells: Option<HashSet<(usize, usize)>> = result_find
+        .as_ref()
+        .and(found.as_ref())
+        .map(|order| order.iter().copied().collect());
+    Found {
+        cells,
+        current: found_current,
+        goto,
     }
 }
 

@@ -280,6 +280,33 @@ pub struct Frozen {
     pub col: Option<usize>,
 }
 
+/// What every cell of one frame's grid reads.
+struct Paint<'a> {
+    id: u64,
+    res: &'a QueryResult,
+    opts: &'a GridOpts<'a>,
+    info: Vec<Option<&'a ColumnInfo>>,
+    t: &'static theme::Tokens,
+    cell_font: FontId,
+    table_rect: egui::Rect,
+    /// The selected cell's value (NULL and empty excluded): the same value elsewhere in its
+    /// column is lit, to spot repeats. Not while a range is selected.
+    same: Option<(usize, &'a str)>,
+    /// Dragging across cells selects a range: set when a drag starts on a cell, until release.
+    drag_id: egui::Id,
+    dragging: bool,
+    /// The row under the pointer, told by its cells for the next frame.
+    hover_id: egui::Id,
+    /// The last shown column, which takes the remaining width.
+    last: usize,
+}
+
+impl Paint<'_> {
+    fn in_range(&self, ri: usize, ci: usize) -> bool {
+        self.opts.range.is_some_and(|r| r.contains(ri, ci))
+    }
+}
+
 /// Result grid. Returns at most one user action per frame.
 pub fn grid(
     ui: &mut egui::Ui,
@@ -291,45 +318,18 @@ pub fn grid(
     frozen: &mut Vec<Frozen>,
 ) -> Option<GridEvent> {
     let GridOpts {
-        can_edit,
         selected,
-        scroll_to,
-        order,
-        row_offset,
-        option_pick,
-        widths,
-        kinds,
-        changed,
-        uncommitted,
-        deleted,
         range,
         view,
-        pinned,
-        found,
-        found_current,
-        filtered,
+        widths,
         ..
     } = *opts;
-    let in_range = |ri: usize, ci: usize| range.is_some_and(|r| r.contains(ri, ci));
-    // The selected cell's value (NULL and empty excluded): the same value elsewhere in its
-    // column is lit, to spot repeats. Not while a range is selected.
-    let same: Option<(usize, &str)> = selected
-        .filter(|_| range.is_none())
-        .and_then(|(r, c)| Some((c, res.rows.get(r)?.get(c)??)))
-        .filter(|(_, v)| !v.is_empty());
-    // Dragging across cells selects a range: set when a drag starts on a cell, until release.
     let drag_id = egui::Id::new(("grid_drag", id));
     let dragging = ui.ctx().data(|d| d.get_temp::<bool>(drag_id)).unwrap_or(false);
     if dragging && !ui.input(|i| i.pointer.primary_down()) {
         ui.ctx().data_mut(|d| d.remove::<bool>(drag_id));
     }
-    let mut event = None;
     let t = theme::tokens();
-    let cell_font = FontId::monospace(cell_font_size());
-
-    let info = column_info(res, cols);
-    let sample = res.rows.range(..res.rows.len().min(SAMPLE_ROWS));
-
     ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
     // The last column takes what's left, but the table adds a column gap on top: without this
     // it ends a gap's width past the visible area and right-aligned numbers get cut.
@@ -345,9 +345,84 @@ pub fn grid(
         header_band.bottom() - 0.5,
         egui::Stroke::new(1.0, t.border),
     );
+    let g = Paint {
+        id,
+        res,
+        opts,
+        info: column_info(res, cols),
+        t,
+        cell_font: FontId::monospace(cell_font_size()),
+        table_rect,
+        same: selected
+            .filter(|_| range.is_none())
+            .and_then(|(r, c)| Some((c, res.rows.get(r)?.get(c)??)))
+            .filter(|(_, v)| !v.is_empty()),
+        drag_id,
+        dragging,
+        hover_id: egui::Id::new(("grid_hover_row", id)),
+        last: view.len().saturating_sub(1),
+    };
+    let mut event = None;
+    // Widths as drawn this frame, to notice a column being dragged (the last one just fills up).
+    let mut drawn: Vec<(&str, f32)> = Vec::new();
+    table_with_columns(ui, &g)
+        .header(HEADER_HEIGHT, |mut header| {
+            header.col(|ui| gutter_header(ui, &g, frozen));
+            for (vi, &ci) in view.iter().enumerate() {
+                header.col(|ui| header_cell(ui, &g, vi, ci, frozen, &mut drawn, &mut event));
+            }
+        })
+        .body(|mut body| {
+            // The cells take the pointer, so the table can't see which row it is over: the cell
+            // under it says so (for the next frame) and the row is highlighted from that.
+            let ctx = body.ui_mut().ctx().clone();
+            let hovered_row: Option<usize> = ctx.data_mut(|d| d.remove_temp(g.hover_id));
+            body.rows(row_height(), res.rows.len(), |mut row| {
+                let ri = row.index();
+                if hovered_row == Some(ri) {
+                    row.set_hovered(true);
+                }
+                row.col(|ui| gutter_cell(ui, &g, ri, frozen));
+                for (vi, &ci) in view.iter().enumerate() {
+                    row.col(|ui| {
+                        cell_chrome(ui, table_rect, t);
+                        match edit.as_deref_mut().filter(|e| e.row == ri && e.col == ci) {
+                            Some(e) => edit_cell(ui, &g, e, &mut event),
+                            None => data_cell(ui, &g, (ri, vi, ci), frozen, &mut event),
+                        }
+                    });
+                }
+            });
+            // The pointer is over another row now (rows shifted under a still pointer): one more
+            // frame shows it. (Leaving the grid comes with pointer events, which redraw anyway.)
+            let now = ctx.data(|d| d.get_temp::<usize>(g.hover_id));
+            if now.is_some() && now != hovered_row {
+                ctx.request_repaint();
+            }
+        });
+    if widths.is_some()
+        && let Some(e) = dragged_widths(ui.ctx(), id, drawn)
+        && event.is_none()
+    {
+        event = Some(e);
+    }
+    event
+}
+
+/// The table and its columns: the row-number gutter, then each shown column at the width the
+/// user gave it or one worked out from the content.
+fn table_with_columns<'a>(ui: &'a mut egui::Ui, g: &Paint) -> TableBuilder<'a> {
+    let GridOpts {
+        scroll_to,
+        row_offset,
+        widths,
+        view,
+        ..
+    } = *g.opts;
+    let res = g.res;
     let mut table = TableBuilder::new(ui)
         // Column widths are stored by position: a different set of columns starts afresh.
-        .id_salt(("grid", id, view))
+        .id_salt(("grid", g.id, view))
         .striped(false)
         .resizable(true)
         .sense(Sense::click())
@@ -358,10 +433,10 @@ pub fn grid(
     // Row-number gutter sized to the largest number on the page.
     let digits = (row_offset + res.rows.len()).max(1).to_string().len() as f32;
     table = table.column(Column::exact((digits * char_width() + 12.0).max(32.0)));
-    let last = view.len().saturating_sub(1);
+    let sample = res.rows.range(..res.rows.len().min(SAMPLE_ROWS));
     for (vi, &ci) in view.iter().enumerate() {
         let name = &res.columns[ci];
-        let ty = info[ci].map(|c| c.data_type.as_str());
+        let ty = g.info[ci].map(|c| c.data_type.as_str());
         // A width the user dragged to wins over the one worked out from the content.
         let w = widths.and_then(|w| w.get(name).copied()).unwrap_or_else(|| {
             column_width(
@@ -370,411 +445,434 @@ pub fn grid(
                 sample.clone().map(|r| r.cell(ci).map(|v| v.chars().count())),
             )
         });
-        table = table.column(if vi == last {
+        table = table.column(if vi == g.last {
             // The last column absorbs the remaining width so the grid fills the panel.
             Column::remainder().at_least(w).clip(true)
         } else {
             Column::initial(w).at_least(40.0).clip(true)
         });
     }
-
-    // Widths as drawn this frame, to notice a column being dragged (the last one just fills up).
-    let mut drawn: Vec<(&str, f32)> = Vec::new();
     table
-        .header(HEADER_HEIGHT, |mut header| {
-            header.col(|ui| {
-                cell_chrome(ui, table_rect, t);
-                if pinned > 0 {
-                    frozen.push(Frozen {
-                        rect: full_cell(ui),
-                        clip: ui.clip_rect(),
-                        text: String::new(),
-                        font: cell_font.clone(),
-                        color: t.subtle,
-                        bg: t.card,
-                        right_align: false,
-                        row: None,
-                        col: None,
-                    });
-                }
-            });
-            for (vi, &ci) in view.iter().enumerate() {
-                let name = &res.columns[ci];
-                header.col(|ui| {
-                    cell_chrome(ui, table_rect, t);
-                    if vi != last {
-                        drawn.push((name.as_str(), ui.max_rect().width()));
-                    }
-                    if vi < pinned {
-                        frozen.push(Frozen {
-                            rect: full_cell(ui),
-                            clip: ui.clip_rect(),
-                            text: name.clone(),
-                            font: egui::TextStyle::Body.resolve(ui.style()),
-                            color: t.foreground,
-                            bg: t.card,
-                            right_align: false,
-                            row: None,
-                            col: Some(ci),
-                        });
-                    }
-                    let c = info[ci];
-                    if c.is_some_and(|c| c.pk) {
-                        ui.label(theme::icon(icon::KEY).color(t.warning).size(12.0));
-                    }
-                    let r = ui.add(
-                        egui::Label::new(RichText::new(name).color(t.foreground))
-                            .truncate()
-                            .sense(Sense::click()),
-                    );
-                    let place = order.iter().position(|(c, _)| c == name);
-                    if let Some(pos) = place {
-                        let a = if order[pos].1 {
-                            icon::ARROW_UP
-                        } else {
-                            icon::ARROW_DOWN
-                        };
-                        ui.label(theme::icon(a).color(t.lime).size(12.0));
-                        // Which of several sort columns this is.
-                        if order.len() > 1 {
-                            ui.label(RichText::new((pos + 1).to_string()).color(t.lime).size(10.0));
-                        }
-                    }
-                    if filtered.contains(name)
-                        && ui
-                            .add(
-                                egui::Label::new(theme::icon(icon::FUNNEL).color(t.lime).size(12.0))
-                                    .sense(Sense::click()),
-                            )
-                            .on_hover_text("Filtered by values: click to change")
-                            .clicked()
-                    {
-                        event = Some(GridEvent::FilterValues(ci));
-                    }
-                    // Type sits on the right, dimmed; it is the first thing to go when the column is narrow.
-                    if let Some(c) = c {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add(
-                                egui::Label::new(RichText::new(&c.data_type).size(11.0).color(t.subtle))
-                                    .truncate(),
-                            );
-                        });
-                    }
-                    let r = r.on_hover_text(match c {
-                        Some(c) => format!(
-                            "{name}: {}{}\nClick sorts; Shift+click adds a sort column",
-                            c.data_type,
-                            if c.pk { " (primary key)" } else { "" }
-                        ),
-                        None => name.clone(),
-                    });
-                    if can_edit && r.clicked() {
-                        // Shift adds the column to the sort instead of replacing it.
-                        event = Some(if ui.input(|i| i.modifiers.shift) {
-                            GridEvent::SortAlso(name.clone())
-                        } else {
-                            GridEvent::Sort(name.clone())
-                        });
-                    }
-                    r.context_menu(|ui| {
-                        if let Some(e) = header_menu(ui, res, opts, vi, ci) {
-                            event = Some(e);
-                        }
-                    });
-                });
-            }
-        })
-        .body(|mut body| {
-            // The cells take the pointer, so the table can't see which row it is over: the cell
-            // under it says so (for the next frame) and the row is highlighted from that.
-            let ctx = body.ui_mut().ctx().clone();
-            let hover_id = egui::Id::new(("grid_hover_row", id));
-            let hovered_row: Option<usize> = ctx.data_mut(|d| d.remove_temp(hover_id));
-            body.rows(row_height(), res.rows.len(), |mut row| {
-                let ri = row.index();
-                if hovered_row == Some(ri) {
-                    row.set_hovered(true);
-                }
-                row.col(|ui| {
-                    row_background(ui, table_rect, t);
-                    cell_chrome(ui, table_rect, t);
-                    ui.with_layout(
-                        Layout::centered_and_justified(egui::Direction::LeftToRight),
-                        |ui| {
-                            ui.label(
-                                RichText::new((row_offset + ri + 1).to_string())
-                                    .font(cell_font.clone())
-                                    .color(t.subtle),
-                            );
-                        },
-                    );
-                    if pinned > 0 {
-                        frozen.push(Frozen {
-                            rect: full_cell(ui),
-                            clip: ui.clip_rect(),
-                            text: (row_offset + ri + 1).to_string(),
-                            font: cell_font.clone(),
-                            color: t.subtle,
-                            bg: t.background,
-                            right_align: false,
-                            row: Some(ri),
-                            col: None,
-                        });
-                    }
-                });
-                for (vi, &ci) in view.iter().enumerate() {
-                    let kind = kinds[ci];
-                    row.col(|ui| {
-                        cell_chrome(ui, table_rect, t);
-                        if let Some(e) = edit.as_deref_mut().filter(|e| e.row == ri && e.col == ci) {
-                            let r = ui.add(
-                                TextEdit::singleline(&mut e.text)
-                                    .font(cell_font.clone())
-                                    .margin(egui::Margin::symmetric(2, 0))
-                                    .desired_width(f32::INFINITY),
-                            );
-                            if !e.focused {
-                                r.request_focus();
-                                e.focused = true;
-                            }
-                            if ui.input(|i| i.key_pressed(Key::Escape)) {
-                                event = Some(GridEvent::CancelEdit);
-                            } else if r.lost_focus() {
-                                // Enter or clicking elsewhere both confirm, if something changed.
-                                event = Some(if e.text == e.original {
-                                    GridEvent::CancelEdit
-                                } else {
-                                    GridEvent::Commit(ri, ci, Some(e.text.clone()))
-                                });
-                            }
-                            return;
-                        }
-                        let row_deleted = deleted.is_some_and(|d| d.contains(&ri));
-                        let is_selected = selected == Some((ri, ci));
-                        let fill = cell_fill(
-                            t,
-                            CellState {
-                                selected: is_selected,
-                                in_range: in_range(ri, ci),
-                                found: found
-                                    .is_some_and(|f| f.contains(&(ri, ci)))
-                                    .then_some(found_current == Some((ri, ci))),
-                                deleted: row_deleted,
-                                changed: changed.is_some_and(|c| c.contains(&(ri, ci))),
-                                uncommitted: uncommitted.is_some_and(|c| c.contains(&(ri, ci))),
-                                same_value: same.is_some_and(|(c, v)| {
-                                    c == ci && selected != Some((ri, ci)) && res.rows.cell(ri, ci) == Some(v)
-                                }),
-                            },
-                        );
-                        if let Some(fill) = fill {
-                            let rect = full_cell(ui);
-                            let painter = gap_painter(ui, table_rect);
-                            painter.rect_filled(rect, 0.0, fill);
-                            if is_selected {
-                                painter.rect_stroke(
-                                    rect.shrink(0.5),
-                                    0.0,
-                                    egui::Stroke::new(1.0, t.ring),
-                                    egui::StrokeKind::Inside,
-                                );
-                            }
-                        }
-                        let val = res.rows.cell(ri, ci);
-                        // Foreign keys read as links: Ctrl+click opens the referenced row.
-                        let fk = info[ci]
-                            .and_then(|c| c.references.as_ref())
-                            .filter(|_| val.is_some());
-                        let text = match val {
-                            None => RichText::new("NULL")
-                                .font(cell_font.clone())
-                                .color(t.subtle)
-                                .italics(),
-                            Some(v) => {
-                                let color = match kind {
-                                    _ if fk.is_some() => t.info,
-                                    ValueKind::Number => t.number,
-                                    ValueKind::Bool => t.boolean,
-                                    ValueKind::Date => t.date,
-                                    ValueKind::Text => t.foreground,
-                                };
-                                // Postgres sends booleans as t/f and MySQL as 1/0; show them as words.
-                                let shown = display_value(kind, v);
-                                let color = if shown == "false" {
-                                    t.muted_foreground
-                                } else {
-                                    color
-                                };
-                                RichText::new(shown).font(cell_font.clone()).color(color)
-                            }
-                        };
-                        if vi < pinned {
-                            let bg = fill.unwrap_or(t.background);
-                            let (shown, color) = match val {
-                                None => ("NULL".to_string(), t.subtle),
-                                Some(v) => (
-                                    display_value(kind, v),
-                                    match kind {
-                                        ValueKind::Number => t.number,
-                                        ValueKind::Bool => t.boolean,
-                                        ValueKind::Date => t.date,
-                                        ValueKind::Text => t.foreground,
-                                    },
-                                ),
-                            };
-                            frozen.push(Frozen {
-                                rect: full_cell(ui),
-                                clip: ui.clip_rect(),
-                                text: shown,
-                                font: cell_font.clone(),
-                                color,
-                                bg,
-                                right_align: kind == ValueKind::Number,
-                                row: Some(ri),
-                                col: Some(ci),
-                            });
-                        }
-                        // Rows going away read as struck through.
-                        let text = if row_deleted {
-                            text.strikethrough().color(t.subtle)
-                        } else {
-                            text
-                        };
-                        // The text only draws; the whole cell takes the clicks, double clicks, drags
-                        // and the context menu (short values and NULLs left little to aim at).
-                        let label = egui::Label::new(text).truncate().selectable(false);
-                        if kind == ValueKind::Number {
-                            // A little room before the column's edge, like the left-aligned text has.
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.add_space(NUMBER_PAD);
-                                ui.add(label);
-                            });
-                        } else {
-                            ui.add(label);
-                        }
-                        let cell = full_cell(ui);
-                        let mut r =
-                            ui.interact(cell, ui.id().with(("cell", ri, ci)), Sense::click_and_drag());
-                        if r.contains_pointer() {
-                            ui.ctx().data_mut(|d| d.insert_temp(hover_id, ri));
-                        }
-                        // A value cut with "…" shows whole under the pointer.
-                        if r.hovered()
-                            && let Some(v) = val
-                        {
-                            let width = ui
-                                .painter()
-                                .layout_no_wrap(v.to_string(), cell_font.clone(), t.foreground)
-                                .size()
-                                .x;
-                            if width > cell.width() - 8.0 {
-                                r = r.on_hover_text(egui::RichText::new(v).monospace());
-                            }
-                        }
-                        if option_pick == Some((ri, ci)) {
-                            let nullable = info[ci].is_none_or(|c| c.nullable);
-                            let cell = full_cell(ui);
-                            let (options, current) = match info[ci] {
-                                Some(c) if !c.enum_values.is_empty() => {
-                                    (enum_options(&c.enum_values, nullable), val)
-                                }
-                                _ => (
-                                    bool_options(nullable),
-                                    val.and_then(crate::sql::parse_bool)
-                                        .map(|b| if b { "true" } else { "false" }),
-                                ),
-                            };
-                            if let Some(e) = option_picker(ui, (id, ri, ci), cell, current, &options) {
-                                event = Some(e);
-                            }
-                        }
-                        let r = match fk {
-                            Some(f) => r
-                                .on_hover_text(format!(
-                                    "Ctrl+click opens {}.{} ({} = this value)",
-                                    f.schema, f.table, f.column
-                                ))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand),
-                            None => r,
-                        };
-                        let shift = ui.input(|i| i.modifiers.shift);
-                        if fk.is_some() && r.clicked() && ui.input(|i| i.modifiers.command) {
-                            event = Some(GridEvent::FollowFk(ri, ci));
-                        // A click to select and a quick double click after it reach egui as a
-                        // triple click: that one edits too.
-                        } else if can_edit && (r.double_clicked() || r.triple_clicked()) {
-                            event = Some(GridEvent::StartEdit(ri, ci));
-                        } else if r.clicked() && shift {
-                            event = Some(GridEvent::Extend(ri, ci));
-                        } else if r.drag_started() {
-                            ui.ctx().data_mut(|d| d.insert_temp(drag_id, true));
-                            event = Some(if shift {
-                                GridEvent::Extend(ri, ci)
-                            } else {
-                                GridEvent::Select(ri, ci)
-                            });
-                        } else if dragging && selected != Some((ri, ci)) && r.contains_pointer() {
-                            event = Some(GridEvent::Extend(ri, ci));
-                        } else if r.clicked() || (r.secondary_clicked() && !in_range(ri, ci)) {
-                            // Right-clicking inside the range keeps it, for "Copy selection".
-                            event = Some(GridEvent::Select(ri, ci));
-                        }
-                        r.context_menu(|ui| {
-                            if let Some(e) = cell_menu(ui, res, opts, (ri, ci), fk, row_deleted) {
-                                event = Some(e);
-                            }
-                        });
-                    });
-                }
-            });
-            // The pointer is over another row now (rows shifted under a still pointer): one more
-            // frame shows it. (Leaving the grid comes with pointer events, which redraw anyway.)
-            let now = ctx.data(|d| d.get_temp::<usize>(hover_id));
-            if now.is_some() && now != hovered_row {
-                ctx.request_repaint();
-            }
+}
+
+/// The empty header over the row numbers.
+fn gutter_header(ui: &mut egui::Ui, g: &Paint, frozen: &mut Vec<Frozen>) {
+    let t = g.t;
+    cell_chrome(ui, g.table_rect, t);
+    if g.opts.pinned > 0 {
+        frozen.push(Frozen {
+            rect: full_cell(ui),
+            clip: ui.clip_rect(),
+            text: String::new(),
+            font: g.cell_font.clone(),
+            color: t.subtle,
+            bg: t.card,
+            right_align: false,
+            row: None,
+            col: None,
         });
-    // A column dragged to a new width is reported once the pointer is let go (not on every frame
-    // of the drag), so the caller can remember it.
-    if widths.is_some() {
-        let ctx = ui.ctx().clone();
-        let seen_id = egui::Id::new(("grid_widths_seen", id));
-        let moved_id = egui::Id::new(("grid_widths_moved", id));
-        // What was drawn last frame: the column names as one hash, and the widths. Compared
-        // without building any strings, since this runs every frame.
-        let names = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            drawn.iter().for_each(|(n, _)| n.hash(&mut h));
-            h.finish()
+    }
+}
+
+/// A column's header: key icon, name, sort arrow, values filter, type, and its menu.
+fn header_cell<'a>(
+    ui: &mut egui::Ui,
+    g: &Paint<'a>,
+    vi: usize,
+    ci: usize,
+    frozen: &mut Vec<Frozen>,
+    drawn: &mut Vec<(&'a str, f32)>,
+    event: &mut Option<GridEvent>,
+) {
+    let (t, opts) = (g.t, g.opts);
+    let name = &g.res.columns[ci];
+    cell_chrome(ui, g.table_rect, t);
+    if vi != g.last {
+        drawn.push((name.as_str(), ui.max_rect().width()));
+    }
+    if vi < opts.pinned {
+        frozen.push(Frozen {
+            rect: full_cell(ui),
+            clip: ui.clip_rect(),
+            text: name.clone(),
+            font: egui::TextStyle::Body.resolve(ui.style()),
+            color: t.foreground,
+            bg: t.card,
+            right_align: false,
+            row: None,
+            col: Some(ci),
+        });
+    }
+    let c = g.info[ci];
+    if c.is_some_and(|c| c.pk) {
+        ui.label(theme::icon(icon::KEY).color(t.warning).size(12.0));
+    }
+    let r = ui.add(
+        egui::Label::new(RichText::new(name).color(t.foreground))
+            .truncate()
+            .sense(Sense::click()),
+    );
+    let order = opts.order;
+    if let Some(pos) = order.iter().position(|(c, _)| c == name) {
+        let a = if order[pos].1 {
+            icon::ARROW_UP
+        } else {
+            icon::ARROW_DOWN
         };
-        let seen: Option<(u64, Vec<f32>)> = ctx.data(|d| d.get_temp(seen_id));
-        let changed = seen.as_ref().is_some_and(|(n, w)| {
-            *n == names && w.len() == drawn.len() && w.iter().zip(&drawn).any(|(a, b)| (a - b.1).abs() > 0.5)
-        });
-        let pending = changed || ctx.data(|d| d.get_temp::<bool>(moved_id)).unwrap_or(false);
-        if seen.as_ref().is_none_or(|(n, w)| {
-            *n != names || w.len() != drawn.len() || w.iter().zip(&drawn).any(|(a, b)| a != &b.1)
-        }) {
-            ctx.data_mut(|d| {
-                d.insert_temp(
-                    seen_id,
-                    (names, drawn.iter().map(|(_, w)| *w).collect::<Vec<f32>>()),
-                )
-            });
-        }
-        if pending && ctx.input(|i| i.pointer.any_down()) {
-            ctx.data_mut(|d| d.insert_temp(moved_id, true));
-        } else if pending {
-            ctx.data_mut(|d| d.remove::<bool>(moved_id));
-            if event.is_none() {
-                event = Some(GridEvent::ColumnWidths(
-                    drawn.into_iter().map(|(n, w)| (n.to_string(), w)).collect(),
-                ));
-            }
+        ui.label(theme::icon(a).color(t.lime).size(12.0));
+        // Which of several sort columns this is.
+        if order.len() > 1 {
+            ui.label(RichText::new((pos + 1).to_string()).color(t.lime).size(10.0));
         }
     }
-    event
+    if opts.filtered.contains(name)
+        && ui
+            .add(egui::Label::new(theme::icon(icon::FUNNEL).color(t.lime).size(12.0)).sense(Sense::click()))
+            .on_hover_text("Filtered by values: click to change")
+            .clicked()
+    {
+        *event = Some(GridEvent::FilterValues(ci));
+    }
+    // Type sits on the right, dimmed; it is the first thing to go when the column is narrow.
+    if let Some(c) = c {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add(egui::Label::new(RichText::new(&c.data_type).size(11.0).color(t.subtle)).truncate());
+        });
+    }
+    let r = r.on_hover_text(match c {
+        Some(c) => format!(
+            "{name}: {}{}\nClick sorts; Shift+click adds a sort column",
+            c.data_type,
+            if c.pk { " (primary key)" } else { "" }
+        ),
+        None => name.clone(),
+    });
+    if opts.can_edit && r.clicked() {
+        // Shift adds the column to the sort instead of replacing it.
+        *event = Some(if ui.input(|i| i.modifiers.shift) {
+            GridEvent::SortAlso(name.clone())
+        } else {
+            GridEvent::Sort(name.clone())
+        });
+    }
+    r.context_menu(|ui| {
+        if let Some(e) = header_menu(ui, g.res, opts, vi, ci) {
+            *event = Some(e);
+        }
+    });
+}
+
+/// A row's number.
+fn gutter_cell(ui: &mut egui::Ui, g: &Paint, ri: usize, frozen: &mut Vec<Frozen>) {
+    let t = g.t;
+    let number = (g.opts.row_offset + ri + 1).to_string();
+    row_background(ui, g.table_rect, t);
+    cell_chrome(ui, g.table_rect, t);
+    ui.with_layout(
+        Layout::centered_and_justified(egui::Direction::LeftToRight),
+        |ui| {
+            ui.label(RichText::new(&number).font(g.cell_font.clone()).color(t.subtle));
+        },
+    );
+    if g.opts.pinned > 0 {
+        frozen.push(Frozen {
+            rect: full_cell(ui),
+            clip: ui.clip_rect(),
+            text: number,
+            font: g.cell_font.clone(),
+            color: t.subtle,
+            bg: t.background,
+            right_align: false,
+            row: Some(ri),
+            col: None,
+        });
+    }
+}
+
+/// The cell being edited: a text field; Enter or clicking elsewhere confirms, Esc cancels.
+fn edit_cell(ui: &mut egui::Ui, g: &Paint, e: &mut Edit, event: &mut Option<GridEvent>) {
+    let r = ui.add(
+        TextEdit::singleline(&mut e.text)
+            .font(g.cell_font.clone())
+            .margin(egui::Margin::symmetric(2, 0))
+            .desired_width(f32::INFINITY),
+    );
+    if !e.focused {
+        r.request_focus();
+        e.focused = true;
+    }
+    if ui.input(|i| i.key_pressed(Key::Escape)) {
+        *event = Some(GridEvent::CancelEdit);
+    } else if r.lost_focus() {
+        // Enter or clicking elsewhere both confirm, if something changed.
+        *event = Some(if e.text == e.original {
+            GridEvent::CancelEdit
+        } else {
+            GridEvent::Commit(e.row, e.col, Some(e.text.clone()))
+        });
+    }
+}
+
+/// A value: its background (selection, edits, matches), its text, and what clicking, dragging
+/// and its menu do.
+fn data_cell(
+    ui: &mut egui::Ui,
+    g: &Paint,
+    (ri, vi, ci): (usize, usize, usize),
+    frozen: &mut Vec<Frozen>,
+    event: &mut Option<GridEvent>,
+) {
+    let (t, opts, res) = (g.t, g.opts, g.res);
+    let kind = opts.kinds[ci];
+    let selected = opts.selected;
+    let row_deleted = opts.deleted.is_some_and(|d| d.contains(&ri));
+    let is_selected = selected == Some((ri, ci));
+    let fill = cell_fill(
+        t,
+        CellState {
+            selected: is_selected,
+            in_range: g.in_range(ri, ci),
+            found: opts
+                .found
+                .is_some_and(|f| f.contains(&(ri, ci)))
+                .then_some(opts.found_current == Some((ri, ci))),
+            deleted: row_deleted,
+            changed: opts.changed.is_some_and(|c| c.contains(&(ri, ci))),
+            uncommitted: opts.uncommitted.is_some_and(|c| c.contains(&(ri, ci))),
+            same_value: g.same.is_some_and(|(c, v)| {
+                c == ci && selected != Some((ri, ci)) && res.rows.cell(ri, ci) == Some(v)
+            }),
+        },
+    );
+    if let Some(fill) = fill {
+        let rect = full_cell(ui);
+        let painter = gap_painter(ui, g.table_rect);
+        painter.rect_filled(rect, 0.0, fill);
+        if is_selected {
+            painter.rect_stroke(
+                rect.shrink(0.5),
+                0.0,
+                egui::Stroke::new(1.0, t.ring),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    let val = res.rows.cell(ri, ci);
+    // Foreign keys read as links: Ctrl+click opens the referenced row.
+    let fk = g.info[ci]
+        .and_then(|c| c.references.as_ref())
+        .filter(|_| val.is_some());
+    if vi < opts.pinned {
+        frozen.push(frozen_value(ui, g, (ri, ci), val, fill));
+    }
+    let text = cell_text(g, kind, val, fk.is_some());
+    // Rows going away read as struck through.
+    let text = if row_deleted {
+        text.strikethrough().color(t.subtle)
+    } else {
+        text
+    };
+    // The text only draws; the whole cell takes the clicks, double clicks, drags
+    // and the context menu (short values and NULLs left little to aim at).
+    let label = egui::Label::new(text).truncate().selectable(false);
+    if kind == ValueKind::Number {
+        // A little room before the column's edge, like the left-aligned text has.
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add_space(NUMBER_PAD);
+            ui.add(label);
+        });
+    } else {
+        ui.add(label);
+    }
+    let cell = full_cell(ui);
+    let mut r = ui.interact(cell, ui.id().with(("cell", ri, ci)), Sense::click_and_drag());
+    if r.contains_pointer() {
+        ui.ctx().data_mut(|d| d.insert_temp(g.hover_id, ri));
+    }
+    // A value cut with "…" shows whole under the pointer.
+    if r.hovered()
+        && let Some(v) = val
+    {
+        let width = ui
+            .painter()
+            .layout_no_wrap(v.to_string(), g.cell_font.clone(), t.foreground)
+            .size()
+            .x;
+        if width > cell.width() - 8.0 {
+            r = r.on_hover_text(egui::RichText::new(v).monospace());
+        }
+    }
+    if opts.option_pick == Some((ri, ci)) {
+        let nullable = g.info[ci].is_none_or(|c| c.nullable);
+        let (options, current) = match g.info[ci] {
+            Some(c) if !c.enum_values.is_empty() => (enum_options(&c.enum_values, nullable), val),
+            _ => (
+                bool_options(nullable),
+                val.and_then(crate::sql::parse_bool)
+                    .map(|b| if b { "true" } else { "false" }),
+            ),
+        };
+        if let Some(e) = option_picker(ui, (g.id, ri, ci), cell, current, &options) {
+            *event = Some(e);
+        }
+    }
+    let r = match fk {
+        Some(f) => r
+            .on_hover_text(format!(
+                "Ctrl+click opens {}.{} ({} = this value)",
+                f.schema, f.table, f.column
+            ))
+            .on_hover_cursor(egui::CursorIcon::PointingHand),
+        None => r,
+    };
+    if let Some(e) = cell_click(ui, g, &r, (ri, ci), fk.is_some()) {
+        *event = Some(e);
+    }
+    r.context_menu(|ui| {
+        if let Some(e) = cell_menu(ui, res, opts, (ri, ci), fk, row_deleted) {
+            *event = Some(e);
+        }
+    });
+}
+
+/// A value as the grid shows it: NULL in italics, numbers, booleans and dates in their colors,
+/// foreign keys as links.
+fn cell_text(g: &Paint, kind: ValueKind, val: Option<&str>, fk: bool) -> RichText {
+    let t = g.t;
+    match val {
+        None => RichText::new("NULL")
+            .font(g.cell_font.clone())
+            .color(t.subtle)
+            .italics(),
+        Some(v) => {
+            let color = match kind {
+                _ if fk => t.info,
+                ValueKind::Number => t.number,
+                ValueKind::Bool => t.boolean,
+                ValueKind::Date => t.date,
+                ValueKind::Text => t.foreground,
+            };
+            // Postgres sends booleans as t/f and MySQL as 1/0; show them as words.
+            let shown = display_value(kind, v);
+            let color = if shown == "false" {
+                t.muted_foreground
+            } else {
+                color
+            };
+            RichText::new(shown).font(g.cell_font.clone()).color(color)
+        }
+    }
+}
+
+/// A pinned column's value, for repainting over the left edge when scrolled sideways.
+fn frozen_value(
+    ui: &egui::Ui,
+    g: &Paint,
+    (ri, ci): (usize, usize),
+    val: Option<&str>,
+    fill: Option<egui::Color32>,
+) -> Frozen {
+    let t = g.t;
+    let kind = g.opts.kinds[ci];
+    let (shown, color) = match val {
+        None => ("NULL".to_string(), t.subtle),
+        Some(v) => (
+            display_value(kind, v),
+            match kind {
+                ValueKind::Number => t.number,
+                ValueKind::Bool => t.boolean,
+                ValueKind::Date => t.date,
+                ValueKind::Text => t.foreground,
+            },
+        ),
+    };
+    Frozen {
+        rect: full_cell(ui),
+        clip: ui.clip_rect(),
+        text: shown,
+        font: g.cell_font.clone(),
+        color,
+        bg: fill.unwrap_or(t.background),
+        right_align: kind == ValueKind::Number,
+        row: Some(ri),
+        col: Some(ci),
+    }
+}
+
+/// What a click, double click or drag on a value asks for.
+fn cell_click(
+    ui: &egui::Ui,
+    g: &Paint,
+    r: &egui::Response,
+    (ri, ci): (usize, usize),
+    fk: bool,
+) -> Option<GridEvent> {
+    let selected = g.opts.selected;
+    let shift = ui.input(|i| i.modifiers.shift);
+    if fk && r.clicked() && ui.input(|i| i.modifiers.command) {
+        Some(GridEvent::FollowFk(ri, ci))
+    // A click to select and a quick double click after it reach egui as a
+    // triple click: that one edits too.
+    } else if g.opts.can_edit && (r.double_clicked() || r.triple_clicked()) {
+        Some(GridEvent::StartEdit(ri, ci))
+    } else if r.clicked() && shift {
+        Some(GridEvent::Extend(ri, ci))
+    } else if r.drag_started() {
+        ui.ctx().data_mut(|d| d.insert_temp(g.drag_id, true));
+        Some(if shift {
+            GridEvent::Extend(ri, ci)
+        } else {
+            GridEvent::Select(ri, ci)
+        })
+    } else if g.dragging && selected != Some((ri, ci)) && r.contains_pointer() {
+        Some(GridEvent::Extend(ri, ci))
+    } else if r.clicked() || (r.secondary_clicked() && !g.in_range(ri, ci)) {
+        // Right-clicking inside the range keeps it, for "Copy selection".
+        Some(GridEvent::Select(ri, ci))
+    } else {
+        None
+    }
+}
+
+/// A column dragged to a new width is reported once the pointer is let go (not on every frame
+/// of the drag), so the caller can remember it. `drawn`: this frame's widths by column.
+fn dragged_widths(ctx: &egui::Context, id: u64, drawn: Vec<(&str, f32)>) -> Option<GridEvent> {
+    let seen_id = egui::Id::new(("grid_widths_seen", id));
+    let moved_id = egui::Id::new(("grid_widths_moved", id));
+    // What was drawn last frame: the column names as one hash, and the widths. Compared
+    // without building any strings, since this runs every frame.
+    let names = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        drawn.iter().for_each(|(n, _)| n.hash(&mut h));
+        h.finish()
+    };
+    let seen: Option<(u64, Vec<f32>)> = ctx.data(|d| d.get_temp(seen_id));
+    let changed = seen.as_ref().is_some_and(|(n, w)| {
+        *n == names && w.len() == drawn.len() && w.iter().zip(&drawn).any(|(a, b)| (a - b.1).abs() > 0.5)
+    });
+    let pending = changed || ctx.data(|d| d.get_temp::<bool>(moved_id)).unwrap_or(false);
+    if seen.as_ref().is_none_or(|(n, w)| {
+        *n != names || w.len() != drawn.len() || w.iter().zip(&drawn).any(|(a, b)| a != &b.1)
+    }) {
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                seen_id,
+                (names, drawn.iter().map(|(_, w)| *w).collect::<Vec<f32>>()),
+            )
+        });
+    }
+    if pending && ctx.input(|i| i.pointer.any_down()) {
+        ctx.data_mut(|d| d.insert_temp(moved_id, true));
+        None
+    } else if pending {
+        ctx.data_mut(|d| d.remove::<bool>(moved_id));
+        Some(GridEvent::ColumnWidths(
+            drawn.into_iter().map(|(n, w)| (n.to_string(), w)).collect(),
+        ))
+    } else {
+        None
+    }
 }
 
 /// A column header's context menu.

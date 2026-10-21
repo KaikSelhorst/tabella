@@ -9,24 +9,13 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
     let busy = tab.busy();
     let can_export = !busy && tab.result.as_ref().is_some_and(|r| !r.columns.is_empty());
-    let mut export = None;
+    let tab_id = tab.id;
     let TabKind::Sql(ed) = &mut tab.kind else {
         return;
     };
-    let last_reads = ed.last_reads;
-    let mut repeat_value = ed.repeat;
-    let repeat = &mut repeat_value;
-    let has_file = ed.file.is_some();
-    let error_jump = std::mem::take(&mut ed.error_jump);
-    let (text, error_at) = (&mut ed.text, &mut ed.error_at);
-    let mut run: Option<String> = None;
-    let mut explain: Option<(String, bool)> = None;
-    let mut preview: Option<String> = None;
-    let mut go_to: Option<Request> = None;
-    let mut file_menu_action: Option<Request> = None;
+    let mut asked = Asked::default();
     let t = theme::tokens();
-    let f5 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
-    egui::Panel::top(egui::Id::new(("editor", tab.id)))
+    egui::Panel::top(egui::Id::new(("editor", tab_id)))
         .frame(
             egui::Frame::new()
                 .fill(t.background)
@@ -35,376 +24,554 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         .resizable(true)
         .default_size(200.0)
         .show(ui, |ui| {
-            let editor_id = egui::Id::new(("sql", tab.id));
-            // Selection survives losing focus (e.g. clicking Run), so read it from the stored state.
-            let cursor = TextEdit::load_state(ui.ctx(), editor_id).and_then(|st| st.cursor.char_range());
-            let selected_range = cursor
-                .map(|r| r.as_sorted_char_range())
-                .map(|r| (usize::from(r.start), usize::from(r.end)))
-                .filter(|(a, b)| a < b);
-            let chars = |(a, b): (usize, usize)| text.chars().skip(a).take(b - a).collect::<String>();
-            let selection = selected_range.map(chars);
-            // With several statements, Ctrl+Enter runs the one under the cursor and F5 runs all.
-            // Splitting a long script takes a while: done again only when the text changes.
-            let ranges = statement_ranges_cached(ui.ctx(), tab.id, text);
-            let several = ranges.len() > 1;
-            let current = if several && selection.is_none() {
-                cursor.and_then(|c| sql::statement_in(&ranges, usize::from(c.primary.index)))
-            } else {
-                None
-            };
-            let statement = current.map(chars);
-            // What Ctrl+Enter / the main button runs, and what F5 / "Run all" runs.
-            let one = selection
-                .clone()
-                .or_else(|| statement.clone())
-                .unwrap_or_else(|| text.clone());
-            let all = selection.clone().unwrap_or_else(|| text.clone());
-            let can_preview = previewable_cached(ui.ctx(), tab.id, &one);
-            let format_key =
-                ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT | egui::Modifiers::ALT, Key::F));
-            ui.horizontal(|ui| {
-                // Short of room (narrow window, big zoom): icons only. Decided from the width the
-                // full bar took when it last fitted, so it doesn't flip back and forth.
-                let start_x = ui.cursor().left();
-                let avail = ui.available_width();
-                let variant = egui::Id::new(("editor_toolbar", statement.is_some(), can_preview, repeat.is_some(), busy));
-                let full: Option<f32> = ui.data(|d| d.get_temp(variant));
-                let compact = full.is_some_and(|w| w + RIGHT_ROOM > avail);
-                let label = if selection.is_some() && !compact {
-                    "Run selection"
-                } else if statement.is_some() && !compact {
-                    "Run statement"
-                } else {
-                    "Run"
-                };
-                if ui
-                    .add_enabled(!busy, theme::primary_button(Some(icon::PLAY), label))
-                    .on_hover_text(if statement.is_some() {
-                        "Ctrl+Enter · the statement under the cursor"
-                    } else {
-                        "Ctrl+Enter or F5"
-                    })
-                    .clicked()
-                {
-                    run = Some(one.clone());
-                }
-                if statement.is_some()
-                    && ui
-                        .add_enabled(!busy, theme::outline_button(if compact { "All" } else { "Run all" }))
-                        .on_hover_text("F5 · every statement, one result per query")
-                        .clicked()
-                {
-                    run = Some(all.clone());
-                }
-                if can_preview
-                    && ui
-                        .add_enabled(
-                            !busy,
-                            egui::Button::new(theme::tool(icon::EYE, "Preview", compact, t.muted_foreground, t.foreground)),
-                        )
-                        .on_hover_text("Ctrl+Shift+Enter · how many and which rows this UPDATE/DELETE would change, without changing them")
-                        .clicked()
-                {
-                    preview = Some(one.clone());
-                }
-                if busy {
-                    busy_indicator(ui, s);
-                }
-                match history_menu(ui, cx.history, &s.cfg.name, compact) {
-                    Some(HistoryPick::Load(sql)) => *text = sql,
-                    Some(HistoryPick::All) => file_menu_action = Some(Request::History),
-                    None => {}
-                }
-                match favorites_menu(ui, cx.favorites, &s.cfg.id, !text.trim().is_empty(), compact) {
-                    Some(FavAction::Load(sql)) => *text = sql,
-                    Some(FavAction::Save) => {
-                        let sql = selection.clone().unwrap_or_else(|| text.clone());
-                        cx.request = Some(Request::SaveFavorite(sql));
-                    }
-                    Some(FavAction::Delete(id)) => cx.request = Some(Request::DeleteFavorite(id)),
-                    None => {}
-                }
-                export = export_menu(ui, false, can_export, compact);
-                if let Some(analyze) = explain_menu(ui, busy, compact) {
-                    explain = Some((one.clone(), analyze));
-                }
-                // "Repeat every": the last query again on a timer (reads only).
-                repeat_menu(ui, repeat, last_reads, compact);
-                if let Some(r) = file_menu(ui, s.cfg.read_only, has_file) {
-                    file_menu_action = Some(r);
-                }
-                let format = theme::tool(icon::TEXT_ALIGN_LEFT, "Format", compact, t.muted_foreground, t.foreground);
-                if ui
-                    .button(format)
-                    .on_hover_text("Format · Shift+Alt+F · formats the selection, if any")
-                    .clicked()
-                    || format_key
-                {
-                    format_in_place(text, selected_range, s.cfg.kind);
-                }
-                if !compact {
-                    let used = ui.cursor().left() - start_x;
-                    if full != Some(used) {
-                        ui.data_mut(|d| d.insert_temp(variant, used));
-                        if used + RIGHT_ROOM > avail {
-                            ui.ctx().request_repaint();
-                        }
-                    }
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    detail_toggle(ui, cx.show_detail);
-                    location_and_keys(ui, s, several);
-                });
-            });
-            ui.add_space(4.0);
-            // Ctrl+F / Ctrl+H: find bar above the editor (state kept in egui memory per tab).
-            let find_id = egui::Id::new(("find", tab.id));
-            let mut find: Option<find::FindState> = ui.data(|d| d.get_temp(find_id));
-            let editor_focused = ui.memory(|m| m.has_focus(editor_id));
-            if editor_focused || find.is_some() {
-                let (ctrl_f, ctrl_h) = ui.input_mut(|i| {
-                    (
-                        i.consume_key(egui::Modifiers::COMMAND, Key::F),
-                        i.consume_key(egui::Modifiers::COMMAND, Key::H),
-                    )
-                });
-                if ctrl_f || ctrl_h {
-                    let st = find.get_or_insert_with(Default::default);
-                    st.focus = true;
-                    st.show_replace |= ctrl_h;
-                    // Selected text (one line) becomes the search.
-                    if let Some(sel) = selection.as_ref().filter(|s| !s.contains('\n')) {
-                        st.query = sel.clone();
-                    }
-                }
-            }
-            let mut goto = false;
-            let mut close_find = false;
-            if let Some(st) = &mut find {
-                let ranges = find::find_all(text, &st.query, st.case_sensitive);
-                match find::find_bar(ui, st, ranges.len()) {
-                    Some(find::FindAction::Goto) => goto = true,
-                    Some(find::FindAction::ReplaceOne) => {
-                        if let Some(r) = ranges.get(st.current.min(ranges.len().saturating_sub(1))) {
-                            text.replace_range(r.clone(), &st.replace);
-                            goto = true;
-                        }
-                    }
-                    Some(find::FindAction::ReplaceAll) => {
-                        find::replace_all(text, &st.query, &st.replace, st.case_sensitive);
-                    }
-                    Some(find::FindAction::Close) => close_find = true,
-                    None => {}
-                }
-                ui.add_space(4.0);
-            }
-            if close_find {
-                find = None;
-                ui.memory_mut(|m| m.request_focus(editor_id));
-            }
-            let (query, case, current_match) = find
-                .as_ref()
-                .map(|f| (f.query.clone(), f.case_sensitive, f.current))
-                .unwrap_or_default();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let catalog = complete::Catalog {
-                        tables: &s.tables,
-                        columns: &s.columns,
-                        fks: &s.fks,
-                    };
-                    let popup = complete::before_editor(ui.ctx(), editor_id, text, catalog);
-                    let error_bytes = error_at.and_then(|(a, b)| {
-                        let byte = |c: usize| text.char_indices().nth(c).map_or(text.len(), |(i, _)| i);
-                        (b <= text.chars().count()).then(|| byte(a)..byte(b))
-                    });
-                    let galley_cache = egui::Id::new(("editor_galley", tab.id));
-                    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-                        // Highlighting and laying out a long script costs more than a frame:
-                        // the result is kept until anything it depends on changes.
-                        let key = egui::Id::new((
-                            buf.as_str(),
-                            wrap.to_bits(),
-                            &query,
-                            case,
-                            current_match,
-                            error_bytes.clone(),
-                            theme::is_light(),
-                            ui.ctx().pixels_per_point().to_bits(),
-                        ));
-                        if let Some((k, g)) =
-                            ui.data(|d| d.get_temp::<(egui::Id, std::sync::Arc<egui::Galley>)>(galley_cache))
-                            && k == key
-                        {
-                            return g;
-                        }
-                        let mut job = syntax::highlight(buf.as_str(), &egui::FontId::monospace(13.0));
-                        if let Some(r) = error_bytes.clone() {
-                            syntax::mark_error(&mut job, r);
-                        }
-                        if !query.is_empty() {
-                            let ranges = find::find_all(buf.as_str(), &query, case);
-                            find::mark(&mut job, &ranges, current_match);
-                        }
-                        job.wrap.max_width = wrap;
-                        let g = ui.fonts_mut(|f| f.layout_job(job));
-                        ui.data_mut(|d| d.insert_temp(galley_cache, (key, g.clone())));
-                        g
-                    };
-                    let mut out = TextEdit::multiline(text)
-                        .id(editor_id)
-                        .code_editor()
-                        .hint_text("SELECT * FROM …")
-                        .desired_width(f32::INFINITY)
-                        .min_size(ui.available_size())
-                        .lock_focus(true)
-                        .layouter(&mut layouter)
-                        .show(ui);
-                    // Selects the current match (ready for typing over when the editor gets focus
-                    // back) and scrolls to it.
-                    if goto {
-                        let ranges = find::find_all(text, &query, case);
-                        if let Some(r) = ranges.get(current_match.min(ranges.len().saturating_sub(1))) {
-                            let (a, b) = (text[..r.start].chars().count(), text[..r.end].chars().count());
-                            select_and_reveal(ui, &mut out, editor_id, a, b);
-                        }
-                    }
-                    // Editing makes the error mark stale.
-                    if out.response.changed() {
-                        *error_at = None;
-                    }
-                    // A new error: the cursor goes to it, scrolled into view.
-                    if error_jump && let Some((a, _)) = *error_at {
-                        select_and_reveal(ui, &mut out, editor_id, a, a);
-                        ui.memory_mut(|m| m.request_focus(editor_id));
-                    }
-                    // Lime bar in the gutter beside the statement Ctrl+Enter would run.
-                    if let Some((a, b)) = current {
-                        let top = out.galley.pos_from_cursor(egui::text::CCursor::new(a));
-                        let bottom = out.galley.pos_from_cursor(egui::text::CCursor::new(b));
-                        let x = out.galley_pos.x - 5.0;
-                        ui.painter().line_segment(
-                            [
-                                egui::pos2(x, out.galley_pos.y + top.min.y),
-                                egui::pos2(x, out.galley_pos.y + bottom.max.y),
-                            ],
-                            egui::Stroke::new(2.0, t.lime),
-                        );
-                    }
-                    // A name under the pointer: a table shows its columns on hover; Ctrl+click opens
-                    // the table's data, or the code of a view, function, trigger or sequence, or
-                    // the structure of the table a column belongs to. A name with several matches
-                    // (overloads, a column in two tables) lists them to pick from.
-                    let hovered = out.response.hover_pos().and_then(|p| {
-                        let at = usize::from(out.galley.cursor_from_pos(p - out.galley_pos).index);
-                        let (a, b) = sql::word_at(text, at)?;
-                        let word: String = text.chars().skip(a).take(b - a).collect();
-                        let statement: String = sql::statement_in(&ranges, at)
-                            .map(|(a, b)| text.chars().skip(a).take(b - a).collect())
-                            .unwrap_or_default();
-                        let catalog = definition::Catalog {
-                            tables: &s.tables,
-                            objects: &s.objects,
-                            columns: &s.schema_cols,
-                            current_schema: &s.current_schema,
-                        };
-                        let found = definition::resolve(&catalog, &word, &statement);
-                        (!found.is_empty()).then_some((p, found))
-                    });
-                    let picker_id = egui::Id::new(("definition_picker", tab.id));
-                    if let Some((pointer, found)) = hovered {
-                        let ctrl = ui.input(|i| i.modifiers.command);
-                        if ctrl {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        if ctrl && out.response.clicked() {
-                            match found.as_slice() {
-                                [one] => go_to = Some(definition_request(one)),
-                                _ => {
-                                    // Read before `data_mut`: the context can't be asked while its
-                                    // memory is locked.
-                                    let pass = ui.ctx().cumulative_pass_nr();
-                                    ui.data_mut(|d| d.insert_temp(picker_id, (pointer, found.clone(), pass)));
-                                }
-                            }
-                        }
-                        let tip = out.response.response.clone();
-                        match found.as_slice() {
-                            [definition::Target::Table { schema, name }] => {
-                                if let Some(t) = s.tables.iter().find(|t| &t.schema == schema && &t.name == name) {
-                                    tip.on_hover_ui_at_pointer(|ui| table_tooltip(ui, s, t));
-                                }
-                            }
-                            [one] => {
-                                let what = one.describe();
-                                tip.on_hover_ui_at_pointer(|ui| {
-                                    ui.label(egui::RichText::new(&what).color(t.foreground));
-                                    ui.label(
-                                        egui::RichText::new("Ctrl+click opens the definition")
-                                            .size(11.0)
-                                            .color(t.subtle),
-                                    );
-                                });
-                            }
-                            many => {
-                                let n = many.len();
-                                tip.on_hover_ui_at_pointer(|ui| {
-                                    for m in many.iter().take(TOOLTIP_COLUMNS) {
-                                        ui.label(egui::RichText::new(m.describe()).color(t.foreground));
-                                    }
-                                    ui.label(
-                                        egui::RichText::new(format!("{n} matches: Ctrl+click to choose"))
-                                            .size(11.0)
-                                            .color(t.subtle),
-                                    );
-                                });
-                            }
-                        }
-                    }
-                    if let Some(picked) = definition_picker(ui.ctx(), picker_id) {
-                        go_to = Some(definition_request(&picked));
-                    }
-                    if let (Some((sugg, selected)), Some(range)) = (popup, out.cursor_range) {
-                        let at = out.galley.pos_from_cursor(range.primary);
-                        let anchor = out.galley_pos + at.left_bottom().to_vec2() + egui::vec2(0.0, 2.0);
-                        complete::popup(ui.ctx(), editor_id, anchor, &sugg, selected);
-                    }
-                    let ctrl_enter = ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter));
-                    let ctrl_e = out.response.has_focus()
-                        && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::E));
-                    if ctrl_e {
-                        explain = Some((one.clone(), false));
-                    }
-                    let shift = ui.input(|i| i.modifiers.shift);
-                    if out.response.has_focus() && ctrl_enter && shift {
-                        if can_preview {
-                            preview = Some(one.clone());
-                        }
-                    } else if out.response.has_focus() && ctrl_enter {
-                        run = Some(one.clone());
-                    } else if f5 {
-                        run = Some(all.clone());
-                    }
-                });
-            ui.data_mut(|d| match find {
-                Some(f) => {
-                    d.insert_temp(find_id, f);
-                }
-                None => d.remove::<find::FindState>(find_id),
-            });
+            editor_panel(ui, tab_id, ed, cx, busy, can_export, &mut asked)
         });
-    if go_to.is_some() {
-        cx.request = go_to;
+    if asked.go_to.is_some() {
+        cx.request = asked.go_to.take();
     }
-    // "Repeat every": stops at the first error, so a broken query doesn't keep failing.
-    let repeat_value = repeat_value.filter(|_| tab.error.is_none());
-    let last_run = tab.editor_mut().and_then(|ed| {
-        ed.repeat = repeat_value;
-        ed.last_run
+    carry_out(ui, tab, s, &mut asked, busy);
+    save_keys(ui, tab, cx);
+    if asked.file_menu.is_some() {
+        cx.request = asked.file_menu;
+    }
+    // Ctrl+Z undoes a result edit (in the editor it undoes typing).
+    if !ui.ctx().egui_wants_keyboard_input()
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Z))
+        && let Some(ts) = app::editable_mut(&mut tab.kind)
+    {
+        ts.changes.pop();
+    }
+    changes_bar(ui, tab);
+    confirm_save(ui.ctx(), tab, s);
+    if tab.editor().is_some_and(|ed| ed.plan.is_some()) {
+        plan_area(ui, tab, cx);
+        return;
+    }
+    result_area(ui, tab, cx, false);
+}
+
+/// What the toolbar, the keys and the editor asked for this frame: carried out once the panel
+/// is drawn and the tab can be borrowed again.
+#[derive(Default)]
+struct Asked {
+    run: Option<String>,
+    explain: Option<(String, bool)>,
+    preview: Option<String>,
+    export: Option<ExportChoice>,
+    /// Ctrl+click on a name: open its definition.
+    go_to: Option<Request>,
+    /// File menu and "All history".
+    file_menu: Option<Request>,
+}
+
+/// What Run, Run all and Preview act on, from the text, the selection and the cursor.
+struct Targets {
+    /// The selection in chars, and its text.
+    selected_range: Option<(usize, usize)>,
+    selection: Option<String>,
+    /// Each statement's char range, and the one under the cursor when there are several.
+    ranges: Vec<(usize, usize)>,
+    current: Option<(usize, usize)>,
+    statement: Option<String>,
+    /// What Ctrl+Enter / the main button runs, and what F5 / "Run all" runs.
+    one: String,
+    all: String,
+    can_preview: bool,
+    /// F5 was pressed this frame: runs `all`.
+    f5: bool,
+}
+
+impl Targets {
+    fn read(ctx: &egui::Context, tab_id: u64, text: &str) -> Self {
+        // Selection survives losing focus (e.g. clicking Run), so read it from the stored state.
+        let cursor = TextEdit::load_state(ctx, editor_id(tab_id)).and_then(|st| st.cursor.char_range());
+        let selected_range = cursor
+            .map(|r| r.as_sorted_char_range())
+            .map(|r| (usize::from(r.start), usize::from(r.end)))
+            .filter(|(a, b)| a < b);
+        let chars = |(a, b): (usize, usize)| text.chars().skip(a).take(b - a).collect::<String>();
+        let selection = selected_range.map(chars);
+        // With several statements, Ctrl+Enter runs the one under the cursor and F5 runs all.
+        // Splitting a long script takes a while: done again only when the text changes.
+        let ranges = statement_ranges_cached(ctx, tab_id, text);
+        let current = if ranges.len() > 1 && selection.is_none() {
+            cursor.and_then(|c| sql::statement_in(&ranges, usize::from(c.primary.index)))
+        } else {
+            None
+        };
+        let statement = current.map(chars);
+        let one = selection
+            .clone()
+            .or_else(|| statement.clone())
+            .unwrap_or_else(|| text.to_string());
+        let all = selection.clone().unwrap_or_else(|| text.to_string());
+        let can_preview = previewable_cached(ctx, tab_id, &one);
+        Targets {
+            selected_range,
+            selection,
+            ranges,
+            current,
+            statement,
+            one,
+            all,
+            can_preview,
+            f5: false,
+        }
+    }
+
+    fn several(&self) -> bool {
+        self.ranges.len() > 1
+    }
+}
+
+fn editor_id(tab_id: u64) -> egui::Id {
+    egui::Id::new(("sql", tab_id))
+}
+
+/// The top panel: toolbar, find bar and the editor itself.
+fn editor_panel(
+    ui: &mut egui::Ui,
+    tab_id: u64,
+    ed: &mut app::Editor,
+    cx: &mut Cx,
+    busy: bool,
+    can_export: bool,
+    asked: &mut Asked,
+) {
+    let f5 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
+    let mut tg = Targets::read(ui.ctx(), tab_id, &ed.text);
+    tg.f5 = f5;
+    toolbar(ui, ed, cx, &tg, busy, can_export, asked);
+    ui.add_space(4.0);
+    let find_id = egui::Id::new(("find", tab_id));
+    let (find, goto) = find_section(ui, find_id, tab_id, &mut ed.text, tg.selection.as_ref());
+    let (query, case, current_match) = find
+        .as_ref()
+        .map(|f| (f.query.clone(), f.case_sensitive, f.current))
+        .unwrap_or_default();
+    let view = FindView {
+        query,
+        case,
+        current_match,
+        goto,
+    };
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| editor_body(ui, cx.s, tab_id, ed, &tg, &view, asked));
+    ui.data_mut(|d| match find {
+        Some(f) => {
+            d.insert_temp(find_id, f);
+        }
+        None => d.remove::<find::FindState>(find_id),
     });
-    if let Some(every) = repeat_value
+}
+
+/// Run, Preview, history, favorites, export, explain, repeat, file and format.
+fn toolbar(
+    ui: &mut egui::Ui,
+    ed: &mut app::Editor,
+    cx: &mut Cx,
+    tg: &Targets,
+    busy: bool,
+    can_export: bool,
+    asked: &mut Asked,
+) {
+    let s = cx.s;
+    let t = theme::tokens();
+    let format_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT | egui::Modifiers::ALT, Key::F));
+    let (last_reads, has_file) = (ed.last_reads, ed.file.is_some());
+    ui.horizontal(|ui| {
+        // Short of room (narrow window, big zoom): icons only. Decided from the width the
+        // full bar took when it last fitted, so it doesn't flip back and forth.
+        let start_x = ui.cursor().left();
+        let avail = ui.available_width();
+        let variant = egui::Id::new((
+            "editor_toolbar",
+            tg.statement.is_some(),
+            tg.can_preview,
+            ed.repeat.is_some(),
+            busy,
+        ));
+        let full: Option<f32> = ui.data(|d| d.get_temp(variant));
+        let compact = full.is_some_and(|w| w + RIGHT_ROOM > avail);
+        let label = if tg.selection.is_some() && !compact {
+            "Run selection"
+        } else if tg.statement.is_some() && !compact {
+            "Run statement"
+        } else {
+            "Run"
+        };
+        if ui
+            .add_enabled(!busy, theme::primary_button(Some(icon::PLAY), label))
+            .on_hover_text(if tg.statement.is_some() {
+                "Ctrl+Enter · the statement under the cursor"
+            } else {
+                "Ctrl+Enter or F5"
+            })
+            .clicked()
+        {
+            asked.run = Some(tg.one.clone());
+        }
+        if tg.statement.is_some()
+            && ui
+                .add_enabled(!busy, theme::outline_button(if compact { "All" } else { "Run all" }))
+                .on_hover_text("F5 · every statement, one result per query")
+                .clicked()
+        {
+            asked.run = Some(tg.all.clone());
+        }
+        if tg.can_preview
+            && ui
+                .add_enabled(
+                    !busy,
+                    egui::Button::new(theme::tool(icon::EYE, "Preview", compact, t.muted_foreground, t.foreground)),
+                )
+                .on_hover_text("Ctrl+Shift+Enter · how many and which rows this UPDATE/DELETE would change, without changing them")
+                .clicked()
+        {
+            asked.preview = Some(tg.one.clone());
+        }
+        if busy {
+            busy_indicator(ui, s);
+        }
+        match history_menu(ui, cx.history, &s.cfg.name, compact) {
+            Some(HistoryPick::Load(sql)) => ed.text = sql,
+            Some(HistoryPick::All) => asked.file_menu = Some(Request::History),
+            None => {}
+        }
+        match favorites_menu(ui, cx.favorites, &s.cfg.id, !ed.text.trim().is_empty(), compact) {
+            Some(FavAction::Load(sql)) => ed.text = sql,
+            Some(FavAction::Save) => {
+                let sql = tg.selection.clone().unwrap_or_else(|| ed.text.clone());
+                cx.request = Some(Request::SaveFavorite(sql));
+            }
+            Some(FavAction::Delete(id)) => cx.request = Some(Request::DeleteFavorite(id)),
+            None => {}
+        }
+        asked.export = export_menu(ui, false, can_export, compact);
+        if let Some(analyze) = explain_menu(ui, busy, compact) {
+            asked.explain = Some((tg.one.clone(), analyze));
+        }
+        // "Repeat every": the last query again on a timer (reads only).
+        repeat_menu(ui, &mut ed.repeat, last_reads, compact);
+        if let Some(r) = file_menu(ui, s.cfg.read_only, has_file) {
+            asked.file_menu = Some(r);
+        }
+        let format = theme::tool(icon::TEXT_ALIGN_LEFT, "Format", compact, t.muted_foreground, t.foreground);
+        if ui
+            .button(format)
+            .on_hover_text("Format · Shift+Alt+F · formats the selection, if any")
+            .clicked()
+            || format_key
+        {
+            format_in_place(&mut ed.text, tg.selected_range, s.cfg.kind);
+        }
+        if !compact {
+            let used = ui.cursor().left() - start_x;
+            if full != Some(used) {
+                ui.data_mut(|d| d.insert_temp(variant, used));
+                if used + RIGHT_ROOM > avail {
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            detail_toggle(ui, cx.show_detail);
+            location_and_keys(ui, s, tg.several());
+        });
+    });
+}
+
+/// Ctrl+F / Ctrl+H: the find bar above the editor (its state kept in egui memory per tab; the
+/// caller stores it back). Returns the state and whether to select the current match.
+fn find_section(
+    ui: &mut egui::Ui,
+    find_id: egui::Id,
+    tab_id: u64,
+    text: &mut String,
+    selection: Option<&String>,
+) -> (Option<find::FindState>, bool) {
+    let editor_id = editor_id(tab_id);
+    let mut find: Option<find::FindState> = ui.data(|d| d.get_temp(find_id));
+    let editor_focused = ui.memory(|m| m.has_focus(editor_id));
+    if editor_focused || find.is_some() {
+        let (ctrl_f, ctrl_h) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::COMMAND, Key::F),
+                i.consume_key(egui::Modifiers::COMMAND, Key::H),
+            )
+        });
+        if ctrl_f || ctrl_h {
+            let st = find.get_or_insert_with(Default::default);
+            st.focus = true;
+            st.show_replace |= ctrl_h;
+            // Selected text (one line) becomes the search.
+            if let Some(sel) = selection.filter(|s| !s.contains('\n')) {
+                st.query = sel.clone();
+            }
+        }
+    }
+    let mut goto = false;
+    let mut close_find = false;
+    if let Some(st) = &mut find {
+        let ranges = find::find_all(text, &st.query, st.case_sensitive);
+        match find::find_bar(ui, st, ranges.len()) {
+            Some(find::FindAction::Goto) => goto = true,
+            Some(find::FindAction::ReplaceOne) => {
+                if let Some(r) = ranges.get(st.current.min(ranges.len().saturating_sub(1))) {
+                    text.replace_range(r.clone(), &st.replace);
+                    goto = true;
+                }
+            }
+            Some(find::FindAction::ReplaceAll) => {
+                find::replace_all(text, &st.query, &st.replace, st.case_sensitive);
+            }
+            Some(find::FindAction::Close) => close_find = true,
+            None => {}
+        }
+        ui.add_space(4.0);
+    }
+    if close_find {
+        find = None;
+        ui.memory_mut(|m| m.request_focus(editor_id));
+    }
+    (find, goto)
+}
+
+/// The search the editor highlights, and whether to jump to its current match.
+struct FindView {
+    query: String,
+    case: bool,
+    current_match: usize,
+    goto: bool,
+}
+
+/// The text editor: highlighting, completion, the error mark, hovering names, and the keys
+/// that run.
+fn editor_body(
+    ui: &mut egui::Ui,
+    s: &Session,
+    tab_id: u64,
+    ed: &mut app::Editor,
+    tg: &Targets,
+    find: &FindView,
+    asked: &mut Asked,
+) {
+    let t = theme::tokens();
+    let editor_id = editor_id(tab_id);
+    let error_jump = std::mem::take(&mut ed.error_jump);
+    let (text, error_at) = (&mut ed.text, &mut ed.error_at);
+    let catalog = complete::Catalog {
+        tables: &s.tables,
+        columns: &s.columns,
+        fks: &s.fks,
+    };
+    let popup = complete::before_editor(ui.ctx(), editor_id, text, catalog);
+    let error_bytes = error_at.and_then(|(a, b)| {
+        let byte = |c: usize| text.char_indices().nth(c).map_or(text.len(), |(i, _)| i);
+        (b <= text.chars().count()).then(|| byte(a)..byte(b))
+    });
+    let FindView {
+        query,
+        case,
+        current_match,
+        goto,
+    } = find;
+    let (case, current_match) = (*case, *current_match);
+    let galley_cache = egui::Id::new(("editor_galley", tab_id));
+    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+        // Highlighting and laying out a long script costs more than a frame:
+        // the result is kept until anything it depends on changes.
+        let key = egui::Id::new((
+            buf.as_str(),
+            wrap.to_bits(),
+            query,
+            case,
+            current_match,
+            error_bytes.clone(),
+            theme::is_light(),
+            ui.ctx().pixels_per_point().to_bits(),
+        ));
+        if let Some((k, g)) =
+            ui.data(|d| d.get_temp::<(egui::Id, std::sync::Arc<egui::Galley>)>(galley_cache))
+            && k == key
+        {
+            return g;
+        }
+        let mut job = syntax::highlight(buf.as_str(), &egui::FontId::monospace(13.0));
+        if let Some(r) = error_bytes.clone() {
+            syntax::mark_error(&mut job, r);
+        }
+        if !query.is_empty() {
+            let ranges = find::find_all(buf.as_str(), query, case);
+            find::mark(&mut job, &ranges, current_match);
+        }
+        job.wrap.max_width = wrap;
+        let g = ui.fonts_mut(|f| f.layout_job(job));
+        ui.data_mut(|d| d.insert_temp(galley_cache, (key, g.clone())));
+        g
+    };
+    let mut out = TextEdit::multiline(text)
+        .id(editor_id)
+        .code_editor()
+        .hint_text("SELECT * FROM …")
+        .desired_width(f32::INFINITY)
+        .min_size(ui.available_size())
+        .lock_focus(true)
+        .layouter(&mut layouter)
+        .show(ui);
+    // Selects the current match (ready for typing over when the editor gets focus
+    // back) and scrolls to it.
+    if *goto {
+        let ranges = find::find_all(text, query, case);
+        if let Some(r) = ranges.get(current_match.min(ranges.len().saturating_sub(1))) {
+            let (a, b) = (text[..r.start].chars().count(), text[..r.end].chars().count());
+            select_and_reveal(ui, &mut out, editor_id, a, b);
+        }
+    }
+    // Editing makes the error mark stale.
+    if out.response.changed() {
+        *error_at = None;
+    }
+    // A new error: the cursor goes to it, scrolled into view.
+    if error_jump && let Some((a, _)) = *error_at {
+        select_and_reveal(ui, &mut out, editor_id, a, a);
+        ui.memory_mut(|m| m.request_focus(editor_id));
+    }
+    // Lime bar in the gutter beside the statement Ctrl+Enter would run.
+    if let Some((a, b)) = tg.current {
+        let top = out.galley.pos_from_cursor(egui::text::CCursor::new(a));
+        let bottom = out.galley.pos_from_cursor(egui::text::CCursor::new(b));
+        let x = out.galley_pos.x - 5.0;
+        ui.painter().line_segment(
+            [
+                egui::pos2(x, out.galley_pos.y + top.min.y),
+                egui::pos2(x, out.galley_pos.y + bottom.max.y),
+            ],
+            egui::Stroke::new(2.0, t.lime),
+        );
+    }
+    definition_hover(ui, s, tab_id, text, &tg.ranges, &out, asked);
+    if let (Some((sugg, selected)), Some(range)) = (popup, out.cursor_range) {
+        let at = out.galley.pos_from_cursor(range.primary);
+        let anchor = out.galley_pos + at.left_bottom().to_vec2() + egui::vec2(0.0, 2.0);
+        complete::popup(ui.ctx(), editor_id, anchor, &sugg, selected);
+    }
+    let ctrl_enter = ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter));
+    let ctrl_e =
+        out.response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::E));
+    if ctrl_e {
+        asked.explain = Some((tg.one.clone(), false));
+    }
+    let shift = ui.input(|i| i.modifiers.shift);
+    if out.response.has_focus() && ctrl_enter && shift {
+        if tg.can_preview {
+            asked.preview = Some(tg.one.clone());
+        }
+    } else if out.response.has_focus() && ctrl_enter {
+        asked.run = Some(tg.one.clone());
+    } else if tg.f5 {
+        asked.run = Some(tg.all.clone());
+    }
+}
+
+/// A name under the pointer: a table shows its columns on hover; Ctrl+click opens the table's
+/// data, or the code of a view, function, trigger or sequence, or the structure of the table a
+/// column belongs to. A name with several matches (overloads, a column in two tables) lists
+/// them to pick from.
+fn definition_hover(
+    ui: &mut egui::Ui,
+    s: &Session,
+    tab_id: u64,
+    text: &str,
+    ranges: &[(usize, usize)],
+    out: &egui::text_edit::TextEditOutput,
+    asked: &mut Asked,
+) {
+    let t = theme::tokens();
+    let hovered = out.response.hover_pos().and_then(|p| {
+        let at = usize::from(out.galley.cursor_from_pos(p - out.galley_pos).index);
+        let (a, b) = sql::word_at(text, at)?;
+        let word: String = text.chars().skip(a).take(b - a).collect();
+        let statement: String = sql::statement_in(ranges, at)
+            .map(|(a, b)| text.chars().skip(a).take(b - a).collect())
+            .unwrap_or_default();
+        let catalog = definition::Catalog {
+            tables: &s.tables,
+            objects: &s.objects,
+            columns: &s.schema_cols,
+            current_schema: &s.current_schema,
+        };
+        let found = definition::resolve(&catalog, &word, &statement);
+        (!found.is_empty()).then_some((p, found))
+    });
+    let picker_id = egui::Id::new(("definition_picker", tab_id));
+    if let Some((pointer, found)) = hovered {
+        let ctrl = ui.input(|i| i.modifiers.command);
+        if ctrl {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if ctrl && out.response.clicked() {
+            match found.as_slice() {
+                [one] => asked.go_to = Some(definition_request(one)),
+                _ => {
+                    // Read before `data_mut`: the context can't be asked while its
+                    // memory is locked.
+                    let pass = ui.ctx().cumulative_pass_nr();
+                    ui.data_mut(|d| d.insert_temp(picker_id, (pointer, found.clone(), pass)));
+                }
+            }
+        }
+        let tip = out.response.response.clone();
+        match found.as_slice() {
+            [definition::Target::Table { schema, name }] => {
+                if let Some(t) = s.tables.iter().find(|t| &t.schema == schema && &t.name == name) {
+                    tip.on_hover_ui_at_pointer(|ui| table_tooltip(ui, s, t));
+                }
+            }
+            [one] => {
+                let what = one.describe();
+                tip.on_hover_ui_at_pointer(|ui| {
+                    ui.label(egui::RichText::new(&what).color(t.foreground));
+                    ui.label(
+                        egui::RichText::new("Ctrl+click opens the definition")
+                            .size(11.0)
+                            .color(t.subtle),
+                    );
+                });
+            }
+            many => {
+                let n = many.len();
+                tip.on_hover_ui_at_pointer(|ui| {
+                    for m in many.iter().take(TOOLTIP_COLUMNS) {
+                        ui.label(egui::RichText::new(m.describe()).color(t.foreground));
+                    }
+                    ui.label(
+                        egui::RichText::new(format!("{n} matches: Ctrl+click to choose"))
+                            .size(11.0)
+                            .color(t.subtle),
+                    );
+                });
+            }
+        }
+    }
+    if let Some(picked) = definition_picker(ui.ctx(), picker_id) {
+        asked.go_to = Some(definition_request(&picked));
+    }
+}
+
+/// Starts what was asked for (run, explain, preview, export, the repeat timer) and shows the
+/// dialogs that come before or after running.
+fn carry_out(ui: &mut egui::Ui, tab: &mut Tab, s: &Session, asked: &mut Asked, busy: bool) {
+    // "Repeat every": stops at the first error, so a broken query doesn't keep failing.
+    let failed = tab.error.is_some();
+    let (repeat, last_run) = tab.editor_mut().map_or((None, None), |ed| {
+        if failed {
+            ed.repeat = None;
+        }
+        (ed.repeat, ed.last_run)
+    });
+    if let Some(every) = repeat
         && !tab.busy()
     {
         let wait = std::time::Duration::from_secs(every);
@@ -413,30 +580,33 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             _ => app::rerun(tab, s),
         }
     }
-    if let Some(sql) = run.filter(|q| !q.trim().is_empty())
+    if let Some(sql) = asked.run.take().filter(|q| !q.trim().is_empty())
         && !busy
     {
         request_run(tab, s, sql, RunMode::Run);
     }
-    if let Some((sql, analyze)) = explain.filter(|(q, _)| !q.trim().is_empty())
+    if let Some((sql, analyze)) = asked.explain.take().filter(|(q, _)| !q.trim().is_empty())
         && !busy
     {
         request_run(tab, s, sql, RunMode::Explain(analyze));
     }
-    if let Some(sql) = preview
+    if let Some(sql) = asked.preview.take()
         && !busy
     {
         request_run(tab, s, sql, RunMode::Preview);
     }
     params_prompt(ui.ctx(), tab, s);
     preview_dialog(ui.ctx(), tab, s);
-    if let Some(choice) = export {
+    if let Some(choice) = asked.export.take() {
         do_export(ui, tab, s, choice);
     }
     confirm_run(ui.ctx(), tab, s);
     export_banner(ui, tab);
-    // Ctrl+S saves the result's pending edits when there are any, the file otherwise;
-    // Ctrl+Shift+S always asks where to save the file (checked first: Ctrl+S would match it).
+}
+
+/// Ctrl+S saves the result's pending edits when there are any, the file otherwise;
+/// Ctrl+Shift+S always asks where to save the file (checked first: Ctrl+S would match it).
+fn save_keys(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let (save_as, save) = ui.input_mut(|i| {
         (
             i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::S),
@@ -451,46 +621,38 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     } else if save || save_as {
         cx.request = Some(Request::SaveFile(save_as));
     }
-    if file_menu_action.is_some() {
-        cx.request = file_menu_action;
-    }
-    // Ctrl+Z undoes a result edit (in the editor it undoes typing).
-    if !ui.ctx().egui_wants_keyboard_input()
-        && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Z))
-        && let Some(ts) = app::editable_mut(&mut tab.kind)
-    {
-        ts.changes.pop();
-    }
-    changes_bar(ui, tab);
-    confirm_save(ui.ctx(), tab, s);
-    if let Some(plan) = tab.editor().and_then(|ed| ed.plan.as_ref()) {
-        if let Some(e) = &tab.error {
-            error_banner(ui, e);
-        }
-        let hints = index_suggestions(s, plan);
-        let baseline = tab.editor().and_then(|ed| ed.pinned_plan.as_ref());
-        match plan_view::plan_view(ui, plan, baseline, &hints) {
-            Some(plan_view::PlanAction::Close) => {
-                if let Some(ed) = tab.editor_mut() {
-                    ed.plan = None;
-                }
-            }
-            Some(plan_view::PlanAction::OpenSql(sql)) => cx.request = Some(Request::Sql(sql)),
-            Some(plan_view::PlanAction::Pin) => {
-                if let Some(ed) = tab.editor_mut() {
-                    ed.pinned_plan = ed.plan.clone();
-                }
-            }
-            Some(plan_view::PlanAction::Unpin) => {
-                if let Some(ed) = tab.editor_mut() {
-                    ed.pinned_plan = None;
-                }
-            }
-            None => {}
-        }
+}
+
+/// The plan of an "Explain", in place of the result, with its index suggestions.
+fn plan_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
+    let s = cx.s;
+    let Some(plan) = tab.editor().and_then(|ed| ed.plan.as_ref()) else {
         return;
+    };
+    if let Some(e) = &tab.error {
+        error_banner(ui, e);
     }
-    result_area(ui, tab, cx, false);
+    let hints = index_suggestions(s, plan);
+    let baseline = tab.editor().and_then(|ed| ed.pinned_plan.as_ref());
+    match plan_view::plan_view(ui, plan, baseline, &hints) {
+        Some(plan_view::PlanAction::Close) => {
+            if let Some(ed) = tab.editor_mut() {
+                ed.plan = None;
+            }
+        }
+        Some(plan_view::PlanAction::OpenSql(sql)) => cx.request = Some(Request::Sql(sql)),
+        Some(plan_view::PlanAction::Pin) => {
+            if let Some(ed) = tab.editor_mut() {
+                ed.pinned_plan = ed.plan.clone();
+            }
+        }
+        Some(plan_view::PlanAction::Unpin) => {
+            if let Some(ed) = tab.editor_mut() {
+                ed.pinned_plan = None;
+            }
+        }
+        None => {}
+    }
 }
 
 /// "Explain": `Some(analyze)` when a plan was asked for.

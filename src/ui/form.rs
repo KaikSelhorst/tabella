@@ -50,169 +50,15 @@ impl App {
                     .show(ui, |ui| {
                         let is_new = form.editing.is_none();
                         let c = &mut form.cfg;
-                        // Paste a URL from a provider or .env file to fill the fields below.
-                        let url_id = egui::Id::new("conn_form_url");
-                        let (mut url, url_error) = ui
-                            .data(|d| d.get_temp::<(String, Option<String>)>(url_id))
-                            .unwrap_or_default();
-                        ui.label("URL");
-                        ui.horizontal(|ui| {
-                            let r = ui.add(
-                                TextEdit::singleline(&mut url)
-                                    .hint_text("postgres://user:password@host:5432/database")
-                                    .desired_width(FIELD_WIDTH - 80.0),
-                            );
-                            let fill = ui
-                                .add_enabled(!url.trim().is_empty(), egui::Button::new("Fill in"))
-                                .clicked()
-                                || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                            let error = if fill {
-                                match crate::url::apply(c, &url) {
-                                    Ok(()) => {
-                                        url.clear();
-                                        None
-                                    }
-                                    Err(e) => Some(e),
-                                }
-                            } else {
-                                url_error
-                            };
-                            ui.data_mut(|d| d.insert_temp(url_id, (url, error)));
-                        });
-                        ui.end_row();
-                        if let Some(e) = ui
-                            .data(|d| d.get_temp::<(String, Option<String>)>(url_id))
-                            .and_then(|(_, e)| e)
-                        {
-                            ui.label("");
-                            ui.label(egui::RichText::new(e).size(11.0).color(t.destructive));
-                            ui.end_row();
-                        }
-                        ui.label("Name");
-                        ui.add(
-                            TextEdit::singleline(&mut c.name)
-                                .hint_text("e.g. production")
-                                .desired_width(FIELD_WIDTH),
-                        );
-                        ui.end_row();
-                        if duplicate {
-                            ui.label("");
-                            ui.label(
-                                egui::RichText::new("A connection with this name already exists")
-                                    .size(11.0)
-                                    .color(t.destructive),
-                            );
-                            ui.end_row();
-                        }
-                        ui.label("Type");
-                        ui.horizontal(|ui| {
-                            for k in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
-                                if ui.radio(c.kind == k, k.label()).clicked() && c.kind != k {
-                                    if k == Kind::Sqlite {
-                                        // A file: nothing to tunnel or encrypt.
-                                        c.ssh = None;
-                                        c.ssl = false;
-                                        c.timeout_secs = 0;
-                                    }
-                                    if c.port == c.kind.default_port() {
-                                        c.port = k.default_port();
-                                    }
-                                    if c.user == ConnConfig::new(c.kind).user {
-                                        c.user = ConnConfig::new(k).user;
-                                    }
-                                    c.kind = k;
-                                }
-                            }
-                        });
-                        ui.end_row();
+                        url_rows(ui, c);
+                        name_rows(ui, c, duplicate);
+                        kind_row(ui, c);
                         if c.kind == Kind::Sqlite {
                             sqlite_file_rows(ui, c);
                         } else {
-                            ui.label("Host");
-                            let was_local = c.is_local();
-                            let host = ui.add(TextEdit::singleline(&mut c.host).desired_width(FIELD_WIDTH));
-                            // A new connection to another machine starts encrypted (and verified),
-                            // unless the user already chose otherwise for the previous host. Through
-                            // SSH the tunnel already encrypts.
-                            if host.changed() && is_new && c.ssh.is_none() && c.ssl != was_local {
-                                c.ssl = !c.is_local();
-                            }
-                            ui.end_row();
-                            ui.label("Port");
-                            ui.add(egui::DragValue::new(&mut c.port).range(1..=65535));
-                            ui.end_row();
-                            ui.label("User");
-                            ui.add(TextEdit::singleline(&mut c.user).desired_width(FIELD_WIDTH));
-                            ui.end_row();
-                            ui.label("Password");
-                            ui.add(
-                                TextEdit::singleline(&mut *c.password)
-                                    .password(true)
-                                    .desired_width(FIELD_WIDTH),
-                            );
-                            ui.end_row();
-                            ui.label("Database");
-                            ui.add(
-                                TextEdit::singleline(&mut c.database)
-                                    .hint_text("optional")
-                                    .desired_width(FIELD_WIDTH),
-                            );
-                            ui.end_row();
-                            ui.label("SSL/TLS");
-                            ui.checkbox(&mut c.ssl, "Encrypted connection");
-                            ui.end_row();
-                            if c.ssl {
-                                ui.label("");
-                                ui.checkbox(&mut c.ssl_insecure, "Accept invalid certificate");
-                                ui.end_row();
-                            }
-                            // Through SSH the tunnel encrypts the way out.
-                            if !c.ssl && !c.is_local() && c.ssh.is_none() {
-                                ui.label("");
-                                let msg = match c.kind {
-                                    Kind::Postgres => "No TLS: the password can be intercepted on the network",
-                                    Kind::MySql => "No encryption: password and data travel in plain text",
-                                    Kind::Sqlite => "",
-                                };
-                                ui.label(egui::RichText::new(msg).size(11.0).color(theme::tokens().warning));
-                                ui.end_row();
-                            }
+                            server_rows(ui, c, is_new);
                         }
-                        ui.label("Protection");
-                        ui.checkbox(&mut c.read_only, "Read-only (production)")
-                            .on_hover_text(
-                                "Blocks edits in the grid and makes the session read-only in the database itself",
-                            );
-                        ui.end_row();
-                        ui.label("");
-                        ui.add_enabled(
-                            !c.read_only,
-                            egui::Checkbox::new(&mut c.manual_commit, "Manual commit"),
-                        )
-                        .on_hover_text(
-                            "Changes (SQL, grid, import) stay in a transaction until you click \
-                                 Commit or Roll back",
-                        );
-                        ui.end_row();
-                        ui.label("");
-                        ui.add_enabled(
-                            !c.read_only,
-                            egui::Checkbox::new(&mut c.preview_writes, "Preview before UPDATE/DELETE"),
-                        )
-                        .on_hover_text(
-                            "In the editor, shows how many and which rows would change before running",
-                        );
-                        ui.end_row();
-                        ui.label("");
-                        ui.add_enabled(
-                            !c.read_only,
-                            egui::Checkbox::new(&mut c.confirm_writes, "Confirm before any change"),
-                        )
-                        .on_hover_text(
-                            "In the editor, every statement that changes data asks first (not only DROP, \
-                             TRUNCATE or DELETE without WHERE)",
-                        );
-                        ui.end_row();
+                        protection_rows(ui, c);
                         ui.label("Color");
                         color_picker(ui, &mut c.color);
                         ui.end_row();
@@ -225,122 +71,17 @@ impl App {
                         .on_hover_text("Connections with the same group are listed together");
                         ui.end_row();
                         if c.kind != Kind::Sqlite {
-                            ui.label("Timeout");
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::DragValue::new(&mut c.timeout_secs)
-                                        .range(0..=86_400)
-                                        .suffix(" s"),
-                                );
-                                let hint = if c.timeout_secs == 0 {
-                                    "no limit"
-                                } else {
-                                    "per query, on the server"
-                                };
-                                ui.label(egui::RichText::new(hint).size(11.0).color(t.subtle));
-                            });
-                            ui.end_row();
-                            ui.label("SSH");
-                            let mut tunnel = c.ssh.is_some();
-                            if ui.checkbox(&mut tunnel, "Connect through an SSH tunnel").changed() {
-                                c.ssh = tunnel.then(SshConfig::default);
-                            }
-                            ui.end_row();
-                            if let Some(ssh) = &mut c.ssh {
-                                ui.label("");
-                                ui.horizontal(|ui| {
-                                    ui.add(
-                                        TextEdit::singleline(&mut ssh.user)
-                                            .hint_text("user")
-                                            .desired_width(80.0),
-                                    );
-                                    ui.label("@");
-                                    ui.add(
-                                        TextEdit::singleline(&mut ssh.host)
-                                            .hint_text("ssh server")
-                                            .desired_width(124.0),
-                                    );
-                                    ui.add(egui::DragValue::new(&mut ssh.port).range(1..=65535));
-                                });
-                                ui.end_row();
-                                ui.label("");
-                                ui.add(
-                                    TextEdit::singleline(&mut ssh.key_path)
-                                        .hint_text("private key (empty = agent / default keys)")
-                                        .desired_width(FIELD_WIDTH),
-                                );
-                                ui.end_row();
-                                ui.label("");
-                                ui.label(
-                                    egui::RichText::new(
-                                        "Host and port above are seen from the SSH server",
-                                    )
-                                    .size(11.0)
-                                    .color(t.subtle),
-                                );
-                                ui.end_row();
-                            }
+                            timeout_and_ssh_rows(ui, c);
                         }
                     });
-                // The test's outcome, while the settings are the ones it ran with (above the
-                // buttons, wrapped to the form's width).
-                if let Some(test) = &test {
-                    let (glyph, text, color) = match &test.result {
-                        None => (icon::HOURGLASS, "Connecting…".to_string(), t.muted_foreground),
-                        Some(Ok(msg)) => (icon::CHECK_CIRCLE, msg.clone(), t.lime),
-                        Some(Err(e)) => (icon::WARNING_CIRCLE, e.clone(), t.destructive),
-                    };
-                    ui.add_space(8.0);
-                    ui.add(
-                        egui::Label::new(theme::icon_text(glyph, &format!(" {text}"), color, color)).wrap(),
-                    );
+                // Above the buttons, wrapped to the form's width.
+                if let Some(test) = test {
+                    test_outcome(ui, test);
                 }
                 ui.add_space(16.0);
-                // One row tall: a right-to-left layout would otherwise take every bit of height left,
-                // and the modal would keep the height of a longer form (e.g. after switching to SQLite).
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), 28.0),
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        let ssh_ok = form
-                            .cfg
-                            .ssh
-                            .as_ref()
-                            .is_none_or(|s| !s.host.trim().is_empty() && !s.user.trim().is_empty());
-                        // Say what is missing instead of just greying the button out.
-                        let missing = if form.cfg.name.trim().is_empty() {
-                            Some("Give the connection a name")
-                        } else if form.cfg.kind == Kind::Sqlite && form.cfg.database.trim().is_empty() {
-                            Some("Choose the database file")
-                        } else if duplicate {
-                            // Already said next to the name.
-                            Some("")
-                        } else if !ssh_ok {
-                            Some("Fill in the SSH user and server")
-                        } else {
-                            None
-                        };
-                        save = ui
-                            .add_enabled(missing.is_none(), theme::primary_button(None, "Save"))
-                            .on_disabled_hover_text(match missing {
-                                Some("") => "A connection with this name already exists",
-                                m => m.unwrap_or_default(),
-                            })
-                            .clicked();
-                        cancel = ui.add(theme::outline_button("Cancel")).clicked();
-                        let testing = test.as_ref().is_some_and(|t| t.result.is_none());
-                        if ui
-                            .add_enabled(!testing && ssh_ok, theme::outline_button("Test connection"))
-                            .on_hover_text("Connects without saving, to check host, port, user and password")
-                            .clicked()
-                        {
-                            start_test = true;
-                        }
-                        if let Some(m) = missing.filter(|m| !m.is_empty()) {
-                            ui.label(egui::RichText::new(m).size(11.0).color(t.warning));
-                        }
-                    },
-                );
+                let testing = test.is_some_and(|t| t.result.is_none());
+                let clicks = form_buttons(ui, &form.cfg, duplicate, testing);
+                (save, cancel, start_test) = (clicks.save, clicks.cancel, clicks.test);
             });
         cancel |= modal.should_close();
         if start_test && let Some(form) = &self.form {
@@ -505,6 +246,312 @@ impl App {
             }
         }
     }
+}
+
+/// A URL from a provider or .env file, to fill the fields below.
+fn url_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
+    let t = theme::tokens();
+    let url_id = egui::Id::new("conn_form_url");
+    let (mut url, url_error) = ui
+        .data(|d| d.get_temp::<(String, Option<String>)>(url_id))
+        .unwrap_or_default();
+    ui.label("URL");
+    ui.horizontal(|ui| {
+        let r = ui.add(
+            TextEdit::singleline(&mut url)
+                .hint_text("postgres://user:password@host:5432/database")
+                .desired_width(FIELD_WIDTH - 80.0),
+        );
+        let fill = ui
+            .add_enabled(!url.trim().is_empty(), egui::Button::new("Fill in"))
+            .clicked()
+            || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+        let error = if fill {
+            match crate::url::apply(c, &url) {
+                Ok(()) => {
+                    url.clear();
+                    None
+                }
+                Err(e) => Some(e),
+            }
+        } else {
+            url_error
+        };
+        ui.data_mut(|d| d.insert_temp(url_id, (url, error)));
+    });
+    ui.end_row();
+    if let Some(e) = ui
+        .data(|d| d.get_temp::<(String, Option<String>)>(url_id))
+        .and_then(|(_, e)| e)
+    {
+        ui.label("");
+        ui.label(egui::RichText::new(e).size(11.0).color(t.destructive));
+        ui.end_row();
+    }
+}
+
+fn name_rows(ui: &mut egui::Ui, c: &mut ConnConfig, duplicate: bool) {
+    let t = theme::tokens();
+    ui.label("Name");
+    ui.add(
+        TextEdit::singleline(&mut c.name)
+            .hint_text("e.g. production")
+            .desired_width(FIELD_WIDTH),
+    );
+    ui.end_row();
+    if duplicate {
+        ui.label("");
+        ui.label(
+            egui::RichText::new("A connection with this name already exists")
+                .size(11.0)
+                .color(t.destructive),
+        );
+        ui.end_row();
+    }
+}
+
+/// PostgreSQL, MySQL or SQLite; the port and user follow when they were the defaults.
+fn kind_row(ui: &mut egui::Ui, c: &mut ConnConfig) {
+    ui.label("Type");
+    ui.horizontal(|ui| {
+        for k in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
+            if ui.radio(c.kind == k, k.label()).clicked() && c.kind != k {
+                if k == Kind::Sqlite {
+                    // A file: nothing to tunnel or encrypt.
+                    c.ssh = None;
+                    c.ssl = false;
+                    c.timeout_secs = 0;
+                }
+                if c.port == c.kind.default_port() {
+                    c.port = k.default_port();
+                }
+                if c.user == ConnConfig::new(c.kind).user {
+                    c.user = ConnConfig::new(k).user;
+                }
+                c.kind = k;
+            }
+        }
+    });
+    ui.end_row();
+}
+
+/// Host, port, user, password, database and encryption.
+fn server_rows(ui: &mut egui::Ui, c: &mut ConnConfig, is_new: bool) {
+    ui.label("Host");
+    let was_local = c.is_local();
+    let host = ui.add(TextEdit::singleline(&mut c.host).desired_width(FIELD_WIDTH));
+    // A new connection to another machine starts encrypted (and verified),
+    // unless the user already chose otherwise for the previous host. Through
+    // SSH the tunnel already encrypts.
+    if host.changed() && is_new && c.ssh.is_none() && c.ssl != was_local {
+        c.ssl = !c.is_local();
+    }
+    ui.end_row();
+    ui.label("Port");
+    ui.add(egui::DragValue::new(&mut c.port).range(1..=65535));
+    ui.end_row();
+    ui.label("User");
+    ui.add(TextEdit::singleline(&mut c.user).desired_width(FIELD_WIDTH));
+    ui.end_row();
+    ui.label("Password");
+    ui.add(
+        TextEdit::singleline(&mut *c.password)
+            .password(true)
+            .desired_width(FIELD_WIDTH),
+    );
+    ui.end_row();
+    ui.label("Database");
+    ui.add(
+        TextEdit::singleline(&mut c.database)
+            .hint_text("optional")
+            .desired_width(FIELD_WIDTH),
+    );
+    ui.end_row();
+    ui.label("SSL/TLS");
+    ui.checkbox(&mut c.ssl, "Encrypted connection");
+    ui.end_row();
+    if c.ssl {
+        ui.label("");
+        ui.checkbox(&mut c.ssl_insecure, "Accept invalid certificate");
+        ui.end_row();
+    }
+    // Through SSH the tunnel encrypts the way out.
+    if !c.ssl && !c.is_local() && c.ssh.is_none() {
+        ui.label("");
+        let msg = match c.kind {
+            Kind::Postgres => "No TLS: the password can be intercepted on the network",
+            Kind::MySql => "No encryption: password and data travel in plain text",
+            Kind::Sqlite => "",
+        };
+        ui.label(egui::RichText::new(msg).size(11.0).color(theme::tokens().warning));
+        ui.end_row();
+    }
+}
+
+/// Read-only, manual commit, previews and confirmations.
+fn protection_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
+    ui.label("Protection");
+    ui.checkbox(&mut c.read_only, "Read-only (production)")
+        .on_hover_text("Blocks edits in the grid and makes the session read-only in the database itself");
+    ui.end_row();
+    ui.label("");
+    ui.add_enabled(
+        !c.read_only,
+        egui::Checkbox::new(&mut c.manual_commit, "Manual commit"),
+    )
+    .on_hover_text(
+        "Changes (SQL, grid, import) stay in a transaction until you click \
+             Commit or Roll back",
+    );
+    ui.end_row();
+    ui.label("");
+    ui.add_enabled(
+        !c.read_only,
+        egui::Checkbox::new(&mut c.preview_writes, "Preview before UPDATE/DELETE"),
+    )
+    .on_hover_text("In the editor, shows how many and which rows would change before running");
+    ui.end_row();
+    ui.label("");
+    ui.add_enabled(
+        !c.read_only,
+        egui::Checkbox::new(&mut c.confirm_writes, "Confirm before any change"),
+    )
+    .on_hover_text(
+        "In the editor, every statement that changes data asks first (not only DROP, \
+         TRUNCATE or DELETE without WHERE)",
+    );
+    ui.end_row();
+}
+
+/// The statement timeout and the SSH tunnel.
+fn timeout_and_ssh_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
+    let t = theme::tokens();
+    ui.label("Timeout");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut c.timeout_secs)
+                .range(0..=86_400)
+                .suffix(" s"),
+        );
+        let hint = if c.timeout_secs == 0 {
+            "no limit"
+        } else {
+            "per query, on the server"
+        };
+        ui.label(egui::RichText::new(hint).size(11.0).color(t.subtle));
+    });
+    ui.end_row();
+    ui.label("SSH");
+    let mut tunnel = c.ssh.is_some();
+    if ui
+        .checkbox(&mut tunnel, "Connect through an SSH tunnel")
+        .changed()
+    {
+        c.ssh = tunnel.then(SshConfig::default);
+    }
+    ui.end_row();
+    if let Some(ssh) = &mut c.ssh {
+        ui.label("");
+        ui.horizontal(|ui| {
+            ui.add(
+                TextEdit::singleline(&mut ssh.user)
+                    .hint_text("user")
+                    .desired_width(80.0),
+            );
+            ui.label("@");
+            ui.add(
+                TextEdit::singleline(&mut ssh.host)
+                    .hint_text("ssh server")
+                    .desired_width(124.0),
+            );
+            ui.add(egui::DragValue::new(&mut ssh.port).range(1..=65535));
+        });
+        ui.end_row();
+        ui.label("");
+        ui.add(
+            TextEdit::singleline(&mut ssh.key_path)
+                .hint_text("private key (empty = agent / default keys)")
+                .desired_width(FIELD_WIDTH),
+        );
+        ui.end_row();
+        ui.label("");
+        ui.label(
+            egui::RichText::new("Host and port above are seen from the SSH server")
+                .size(11.0)
+                .color(t.subtle),
+        );
+        ui.end_row();
+    }
+}
+
+/// The connection test's outcome, while the settings are the ones it ran with.
+fn test_outcome(ui: &mut egui::Ui, test: &crate::app::ConnTest) {
+    let t = theme::tokens();
+    let (glyph, text, color) = match &test.result {
+        None => (icon::HOURGLASS, "Connecting…".to_string(), t.muted_foreground),
+        Some(Ok(msg)) => (icon::CHECK_CIRCLE, msg.clone(), t.lime),
+        Some(Err(e)) => (icon::WARNING_CIRCLE, e.clone(), t.destructive),
+    };
+    ui.add_space(8.0);
+    ui.add(egui::Label::new(theme::icon_text(glyph, &format!(" {text}"), color, color)).wrap());
+}
+
+/// What the form's buttons were clicked for.
+#[derive(Default)]
+struct FormClicks {
+    save: bool,
+    cancel: bool,
+    test: bool,
+}
+
+/// Save (or what is missing to save), Cancel and Test connection.
+fn form_buttons(ui: &mut egui::Ui, cfg: &ConnConfig, duplicate: bool, testing: bool) -> FormClicks {
+    let t = theme::tokens();
+    let mut clicks = FormClicks::default();
+    // One row tall: a right-to-left layout would otherwise take every bit of height left,
+    // and the modal would keep the height of a longer form (e.g. after switching to SQLite).
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 28.0),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            let ssh_ok = cfg
+                .ssh
+                .as_ref()
+                .is_none_or(|s| !s.host.trim().is_empty() && !s.user.trim().is_empty());
+            // Say what is missing instead of just greying the button out.
+            let missing = if cfg.name.trim().is_empty() {
+                Some("Give the connection a name")
+            } else if cfg.kind == Kind::Sqlite && cfg.database.trim().is_empty() {
+                Some("Choose the database file")
+            } else if duplicate {
+                // Already said next to the name.
+                Some("")
+            } else if !ssh_ok {
+                Some("Fill in the SSH user and server")
+            } else {
+                None
+            };
+            clicks.save = ui
+                .add_enabled(missing.is_none(), theme::primary_button(None, "Save"))
+                .on_disabled_hover_text(match missing {
+                    Some("") => "A connection with this name already exists",
+                    m => m.unwrap_or_default(),
+                })
+                .clicked();
+            clicks.cancel = ui.add(theme::outline_button("Cancel")).clicked();
+            if ui
+                .add_enabled(!testing && ssh_ok, theme::outline_button("Test connection"))
+                .on_hover_text("Connects without saving, to check host, port, user and password")
+                .clicked()
+            {
+                clicks.test = true;
+            }
+            if let Some(m) = missing.filter(|m| !m.is_empty()) {
+                ui.label(egui::RichText::new(m).size(11.0).color(t.warning));
+            }
+        },
+    );
+    clicks
 }
 
 /// "None" plus one swatch per tag; the selected one gets a ring.
