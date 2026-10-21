@@ -1,0 +1,4 @@
+[alias]
+# The tests against the docker databases (`docker compose --profile test up -d --wait`). Every
+# module with tests marked "needs the test databases" must be listed here: CI runs this alias.
+itest = "test --locked -- --ignored db:: worker:: tunnel:: dump:: compare::"

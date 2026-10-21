@@ -85,3 +85,41 @@ fn main() -> eframe::Result {
         }),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    /// `cargo itest` (what CI runs) filters by module: a module that gains tests against the
+    /// docker databases has to be added to the alias, or those tests never run anywhere.
+    #[test]
+    fn itest_alias_covers_every_database_test() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let config = std::fs::read_to_string(root.join(".cargo/config.toml")).unwrap();
+        let alias = config.lines().find(|l| l.starts_with("itest")).unwrap();
+        let mut missing = Vec::new();
+        let mut dirs = vec![root.join("src")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                if !text.contains("ignore = \"needs the test databases") {
+                    continue;
+                }
+                let rel = path.strip_prefix(root.join("src")).unwrap();
+                let top = rel.iter().next().unwrap().to_string_lossy().replace(".rs", "");
+                if !alias.contains(&format!(" {top}::")) {
+                    missing.push(rel.display().to_string());
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "add to the itest alias in .cargo/config.toml: {missing:?}"
+        );
+    }
+}
