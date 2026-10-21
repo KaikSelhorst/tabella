@@ -445,6 +445,129 @@ fn editor_survives_random_keys() {
     assert!(typed, "the keys reached the editor");
 }
 
+/// The result grid under random keys, clicks, double clicks (cell editing) and scrolling, with
+/// an empty result, awkward values and an editable one: nothing panics.
+#[test]
+fn grid_survives_random_input() {
+    use egui::{Event, Key, Modifiers, PointerButton};
+    const KEYS: &[(Key, Modifiers)] = &[
+        (Key::ArrowLeft, Modifiers::NONE),
+        (Key::ArrowRight, Modifiers::SHIFT),
+        (Key::ArrowUp, Modifiers::SHIFT),
+        (Key::ArrowDown, Modifiers::NONE),
+        (Key::PageUp, Modifiers::NONE),
+        (Key::PageDown, Modifiers::SHIFT),
+        (Key::Home, Modifiers::COMMAND),
+        (Key::End, Modifiers::COMMAND),
+        (Key::A, Modifiers::COMMAND),
+        (Key::C, Modifiers::COMMAND),
+        (Key::D, Modifiers::COMMAND),
+        (Key::Z, Modifiers::COMMAND),
+        (Key::F, Modifiers::COMMAND),
+        (Key::Delete, Modifiers::NONE),
+        (Key::Enter, Modifiers::NONE),
+        (Key::F2, Modifiers::NONE),
+        (Key::Escape, Modifiers::NONE),
+        (Key::Tab, Modifiers::NONE),
+    ];
+    let awkward = [
+        None,
+        Some(String::new()),
+        Some("x".repeat(30_000)),
+        Some("line 1\nline 2\r\n\tend".into()),
+        Some("nul \0 inside".into()),
+        Some("مرحبا بالعالم".into()),
+        Some("e\u{301}😀ﬃİ".into()),
+        Some("{\"json\": [1, 2, {\"deep\": null}]}".into()),
+        Some("-1.5e308".into()),
+    ];
+    let (mut big, info) = big_result(40, 6);
+    for r in 0..big.rows.len() {
+        for c in 0..6 {
+            big.rows
+                .set(r, c, awkward[(r * 7 + c) % awkward.len()].as_deref());
+        }
+    }
+    let mut empty = big.clone();
+    empty.rows.truncate(0);
+    let mut g = crate::testgen::Gen::new(17);
+    for (res, editable) in [(empty, false), (big.clone(), false), (big, true)] {
+        let mut h = Driver::new();
+        {
+            let app = h.state_mut();
+            let tab = &mut app.tabs[1];
+            tab.result = Some(res.clone());
+            if editable {
+                let mut src = TableState::new("public", "large", None);
+                src.cols = info.clone();
+                tab.editor_mut().unwrap().source = Some(Box::new(src));
+            }
+            app.active = 1;
+        }
+        let mut selected = false;
+        for frame in 0..150 {
+            let pos = egui::pos2(260.0 + g.below(930) as f32, 330.0 + g.below(460) as f32);
+            let mut events = vec![Event::PointerMoved(pos)];
+            match g.below(6) {
+                0 | 1 => {
+                    let (key, modifiers) = KEYS[g.below(KEYS.len())];
+                    for pressed in [true, false] {
+                        events.push(Event::Key {
+                            key,
+                            physical_key: None,
+                            pressed,
+                            repeat: false,
+                            modifiers,
+                        });
+                    }
+                }
+                2 => events.push(Event::Text(crate::testgen::Gen::new(frame).text_of(2))),
+                3 => events.push(Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(g.below(7) as f32 - 3.0, g.below(41) as f32 - 20.0),
+                    modifiers: Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                }),
+                _ => {
+                    // A click, or two quick ones (edits a cell).
+                    for _ in 0..1 + g.below(2) {
+                        for pressed in [true, false] {
+                            events.push(Event::PointerButton {
+                                pos,
+                                button: PointerButton::Primary,
+                                pressed,
+                                modifiers: [Modifiers::NONE, Modifiers::SHIFT, Modifiers::COMMAND]
+                                    [g.below(3)],
+                            });
+                        }
+                    }
+                }
+            }
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 800.0),
+                )),
+                events: events.clone(),
+                ..Default::default()
+            };
+            let app = &mut h.app;
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut out = h.ctx.run_ui(input, |ui| app.draw(ui));
+                out.textures_delta.clear();
+                std::hint::black_box(h.ctx.tessellate(out.shapes, out.pixels_per_point));
+            }));
+            assert!(
+                run.is_ok(),
+                "{} rows, editable {editable}, frame {frame}: {events:?}",
+                res.rows.len()
+            );
+            selected |= h.app.tabs[1].selected.is_some();
+        }
+        assert!(selected || res.rows.is_empty(), "the clicks reached the grid");
+    }
+}
+
 /// A closed tab leaves nothing behind in egui's memory: its laid-out text (hundreds of MB for a
 /// big script) and other caches go with it, whichever way it was closed.
 #[test]

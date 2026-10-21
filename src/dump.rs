@@ -918,4 +918,12 @@ mod tests {
         let _ = std::fs::remove_file(&cfg.database);
         let _ = std::fs::remove_file(&target.database);
     }
+
+    #[test]
+    fn definers_take_any_text() {
+        crate::testgen::each_text(26, 3000, |s, _| {
+            let _ = strip_definer(s);
+            let _ = strip_definer(&format!("CREATE DEFINER={s} FUNCTION f() RETURNS int RETURN 1"));
+        });
+    }
 }

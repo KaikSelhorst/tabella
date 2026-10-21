@@ -465,4 +465,99 @@ pub(crate) mod tests {
             let _ = normalize_number(s);
         });
     }
+
+    /// Whatever the cells hold (quotes, delimiters, line breaks inside a field, any letters),
+    /// a CSV written properly comes into the table cell for cell; short rows fill with "".
+    #[test]
+    fn any_csv_imports_cell_for_cell() {
+        let mut g = crate::testgen::Gen::new(19);
+        let cfg = crate::sqlite::tests::sample_db("import-any");
+        let mut c = Conn::connect(&cfg, None).unwrap();
+        c.query("CREATE TABLE dst (a TEXT, b TEXT, c TEXT)").unwrap();
+        let path = std::env::temp_dir().join(format!("tabella-import-any-{}.csv", std::process::id()));
+        for round in 0..60 {
+            let delimiter = [b',', b';', b'\t'][round % 3];
+            let rows: Vec<Vec<String>> = (0..g.below(30))
+                .map(|_| (0..1 + g.below(3)).map(|_| g.text_of(3)).collect())
+                .collect();
+            let mut w = csv::WriterBuilder::new()
+                .delimiter(delimiter)
+                .flexible(true)
+                .from_path(&path)
+                .unwrap();
+            w.write_record(["a", "b", "c"]).unwrap();
+            for r in &rows {
+                w.write_record(r).unwrap();
+            }
+            w.flush().unwrap();
+            drop(w);
+            c.query("DELETE FROM dst").unwrap();
+            let spec = ImportSpec {
+                path: path.clone(),
+                kind: Kind::Sqlite,
+                schema: "main".into(),
+                table: "dst".into(),
+                delimiter,
+                has_header: true,
+                mapping: vec![Some("a".into()), Some("b".into()), Some("c".into())],
+                bool_cols: Vec::new(),
+                number_cols: Vec::new(),
+                empty_is_null: false,
+            };
+            assert_eq!(
+                run(&mut c, &spec, false).unwrap(),
+                rows.len() as u64,
+                "round {round}"
+            );
+            let got = c.query("SELECT a, b, c FROM dst ORDER BY rowid").unwrap();
+            for (i, want) in rows.iter().enumerate() {
+                for col in 0..3 {
+                    let want = want.get(col).map_or("", String::as_str);
+                    assert_eq!(
+                        got.rows.cell(i, col),
+                        Some(want),
+                        "round {round}, row {i}, column {col}"
+                    );
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cfg.database);
+    }
+
+    /// A damaged file (cut short, bytes changed, or not what its name says) is an error to
+    /// show, not a crash.
+    #[test]
+    fn damaged_files_are_errors() {
+        let good = std::fs::read(xlsx("damaged-src")).unwrap();
+        let mut g = crate::testgen::Gen::new(20);
+        let mut bodies: Vec<Vec<u8>> = vec![Vec::new(), b"PK\x03\x04".to_vec(), g.text().into_bytes()];
+        for _ in 0..80 {
+            let mut b = good.clone();
+            if g.below(2) == 0 {
+                b.truncate(g.below(b.len()));
+            } else {
+                for _ in 0..1 + g.below(8) {
+                    let at = g.below(b.len());
+                    b[at] = g.next() as u8;
+                }
+            }
+            bodies.push(b);
+        }
+        // Not UTF-8, unbalanced quotes, a NUL: as CSV.
+        bodies.push(b"a,b\n\xff\xfe\"open,\0\n\"\"\"\n".to_vec());
+        for (i, body) in bodies.iter().enumerate() {
+            for ext in ["xlsx", "csv"] {
+                let p = file(&format!("damaged-{i}.{ext}"), body);
+                let run = std::panic::catch_unwind(|| {
+                    let _ = preview(&p, true);
+                    if ext == "xlsx" {
+                        let _ = sheet_rows(&p);
+                    }
+                });
+                let _ = std::fs::remove_file(&p);
+                assert!(run.is_ok(), "{ext} #{i}");
+            }
+        }
+    }
 }

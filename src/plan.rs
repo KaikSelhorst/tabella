@@ -692,4 +692,43 @@ mod tests {
             let _ = from_pg_json(s);
         }
     }
+
+    /// MySQL's tree plans of any shape (indents up and down, odd numbers, missing parts).
+    #[test]
+    fn any_mysql_tree_is_an_answer() {
+        let mut g = crate::testgen::Gen::new(30);
+        let numbers = [
+            "0",
+            "1.5",
+            "-3",
+            "1e400",
+            "NaN",
+            "",
+            "99999999999999999999",
+            "0.1..",
+            "..2",
+        ];
+        for _ in 0..1500 {
+            let text: String = (0..g.below(12))
+                .map(|_| {
+                    let n = |g: &mut crate::testgen::Gen| numbers[g.below(numbers.len())];
+                    format!(
+                        "{}-> {}{} (cost={} rows={}) (actual time={}..{} rows={} loops={})\n",
+                        " ".repeat(g.below(12)),
+                        g.text_of(3),
+                        ["", " on t", " using idx"][g.below(3)],
+                        n(&mut g),
+                        n(&mut g),
+                        n(&mut g),
+                        n(&mut g),
+                        n(&mut g),
+                        n(&mut g),
+                    )
+                })
+                .collect();
+            if let Ok(plan) = from_mysql_tree(&text) {
+                let _ = plan.root.label.len();
+            }
+        }
+    }
 }

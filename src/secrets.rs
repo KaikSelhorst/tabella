@@ -477,4 +477,29 @@ mod tests {
         assert_eq!(v.get("dev"), None);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
+
+    /// A vault file damaged by hand or by a half-written save: unlocking says so, and nothing
+    /// panics on the way (an empty or short salt, bad base64, a nonce of the wrong size).
+    #[test]
+    fn damaged_vault_files_are_errors() {
+        let (_, path) = temp_vault();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let sealed = r#"{"nonce": "AAAAAAAAAAAAAAAA", "data": "AAAA"}"#;
+        for (salt, check) in [
+            ("", sealed),
+            ("AA==", sealed),
+            ("not base64 !", sealed),
+            ("AAAAAAAAAAAAAAAAAAAAAA==", r#"{"nonce": "AA==", "data": "AAAA"}"#),
+            ("AAAAAAAAAAAAAAAAAAAAAA==", r#"{"nonce": "", "data": ""}"#),
+            ("AAAAAAAAAAAAAAAAAAAAAA==", sealed),
+        ] {
+            let body = format!(r#"{{"salt": "{salt}", "check": {check}, "entries": {{"dev": {sealed}}}}}"#);
+            std::fs::write(&path, body).unwrap();
+            let mut v = Vault::load(Some(path.clone()));
+            assert!(v.exists(), "{salt}");
+            assert!(v.unlock("good-master-password").is_err(), "{salt}");
+            assert_eq!(v.get("dev"), None);
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
 }

@@ -796,4 +796,20 @@ mod tests {
         let _ = std::fs::remove_file(&a_cfg.database);
         let _ = std::fs::remove_file(&b_cfg.database);
     }
+
+    /// Definitions and schema names of any shape: renaming schemas in them never panics, and
+    /// changes nothing when there is nothing to rename.
+    #[test]
+    fn schema_renames_take_any_text() {
+        crate::testgen::each_text(25, 2000, |sql, g| {
+            let schema = g.text_of(2);
+            for kind in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
+                let _ = (retarget(kind, sql, &schema, "dst"), plain(kind, sql, &schema));
+                if !schema.is_empty() && !sql.contains(&format!("{schema}.")) {
+                    assert_eq!(plain(kind, sql, &schema), sql);
+                }
+            }
+            let _ = split_name(sql);
+        });
+    }
 }

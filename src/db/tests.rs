@@ -959,3 +959,122 @@ fn postgres_reads_through_a_cursor() {
     // Still usable after the error.
     assert_eq!(c.count("SELECT count(*) FROM generate_series(1, 7)").unwrap(), 7);
 }
+
+/// The grid's writes (insert, cell update, delete by key) and the export's INSERTs, with random
+/// values into a table whose names need quoting, end up exactly where a plain model says:
+/// quoting and escaping never change a value or reach past the row.
+fn edits_match_a_model(c: &mut Conn, kind: Kind, schema: &str) {
+    let table = "dbl edit \"q\" `b` 'a';--é";
+    let cols = ["a \"q\"", "b `bt`", "c 'é;--"];
+    let t = kind.qualified(schema, table);
+    let _ = c.query(&format!("DROP TABLE IF EXISTS {t}"));
+    let defs: Vec<String> = cols
+        .iter()
+        .map(|n| format!("{} TEXT", kind.quote_ident(n)))
+        .collect();
+    c.query(&format!(
+        "CREATE TABLE {t} (id INT PRIMARY KEY, {})",
+        defs.join(", ")
+    ))
+    .unwrap();
+    let names: Vec<String> = std::iter::once("id".to_string())
+        .chain(cols.iter().map(|s| s.to_string()))
+        .collect();
+    let key = |id: i64| crate::sql::pk_where(kind, &["id".into()], &names, &[Some(id.to_string())]);
+    let mut g = crate::testgen::Gen::new(23);
+    let mut model: std::collections::BTreeMap<i64, Vec<Option<String>>> = Default::default();
+    let value = |g: &mut crate::testgen::Gen| (g.below(5) != 0).then(|| g.text_of(3));
+    for step in 0..150 {
+        match (g.below(4), model.keys().nth(g.below(model.len().max(1))).copied()) {
+            (0, Some(id)) => {
+                let col = g.below(cols.len());
+                let v = value(&mut g);
+                let stmt = crate::sql::update_cell(kind, schema, table, cols[col], v.as_deref(), key(id));
+                assert_eq!(c.execute(&stmt).unwrap().affected, Some(1), "step {step}");
+                model.get_mut(&id).unwrap()[col] = v;
+            }
+            (1, Some(id)) => {
+                let stmt = crate::sql::delete_row(kind, schema, table, key(id));
+                assert_eq!(c.execute(&stmt).unwrap().affected, Some(1), "step {step}");
+                model.remove(&id);
+            }
+            _ => {
+                let id = step as i64;
+                let row: Vec<Option<String>> = cols.iter().map(|_| value(&mut g)).collect();
+                let values: Vec<(String, Option<String>)> =
+                    std::iter::once(("id".to_string(), Some(id.to_string())))
+                        .chain(cols.iter().map(|n| n.to_string()).zip(row.iter().cloned()))
+                        .collect();
+                let stmt = crate::sql::insert_values(kind, schema, table, &values);
+                assert_eq!(c.execute(&stmt).unwrap().affected, Some(1), "step {step}");
+                model.insert(id, row);
+            }
+        }
+    }
+    let quoted: Vec<String> = cols.iter().map(|n| kind.quote_ident(n)).collect();
+    let read = |c: &mut Conn| {
+        c.query(&format!("SELECT {} FROM {t} ORDER BY id", quoted.join(", ")))
+            .unwrap()
+            .rows
+    };
+    let want: Rows =
+        model
+            .values()
+            .map(|r| r.iter().map(|v| v.as_deref()))
+            .fold(Rows::default(), |mut rows, r| {
+                rows.push(r);
+                rows
+            });
+    assert_eq!(read(c), want, "{kind:?}: grid writes");
+
+    // The same rows as an export's INSERTs (literals, not parameters), into an empty table.
+    c.query(&format!("DELETE FROM {t}")).unwrap();
+    for (id, row) in &model {
+        let id = id.to_string();
+        let sql = crate::sql::insert_row(
+            kind,
+            &t,
+            &names,
+            std::iter::once(Some(id.as_str())).chain(row.iter().map(|v| v.as_deref())),
+        );
+        c.query(&sql).unwrap_or_else(|e| panic!("{kind:?}: {e}\n{sql}"));
+    }
+    assert_eq!(read(c), want, "{kind:?}: exported INSERTs");
+    c.query(&format!("DROP TABLE {t}")).unwrap();
+}
+
+#[test]
+fn sqlite_edits_match_a_model() {
+    let cfg = crate::sqlite::tests::sample_db("edits-model");
+    let mut c = Conn::connect(&cfg, None).unwrap();
+    edits_match_a_model(&mut c, Kind::Sqlite, "main");
+    let _ = std::fs::remove_file(&cfg.database);
+}
+
+#[test]
+#[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
+fn postgres_edits_match_a_model() {
+    let cfg = ConnConfig {
+        password: "pw".into(),
+        database: "postgres".into(),
+        host: "127.0.0.1".into(),
+        port: 55432,
+        user: "postgres".into(),
+        ..ConnConfig::new(Kind::Postgres)
+    };
+    edits_match_a_model(&mut Conn::connect(&cfg, None).unwrap(), Kind::Postgres, "public");
+}
+
+#[test]
+#[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
+fn mysql_edits_match_a_model() {
+    let cfg = ConnConfig {
+        password: "pw".into(),
+        database: "test".into(),
+        host: "127.0.0.1".into(),
+        port: 53306,
+        user: "root".into(),
+        ..ConnConfig::new(Kind::MySql)
+    };
+    edits_match_a_model(&mut Conn::connect(&cfg, None).unwrap(), Kind::MySql, "test");
+}

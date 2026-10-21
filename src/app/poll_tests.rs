@@ -679,6 +679,63 @@ fn errors_are_found_in_the_editor_text() {
     );
 }
 
+/// A session file can be old, hand-edited or from a run that crashed half-way: whatever its
+/// indices and lists say, the tabs come back consistent (the active one and the split's panes
+/// are open tabs).
+#[test]
+fn any_saved_session_restores_consistently() {
+    use crate::session::{Saved, SavedSplit, SavedTab};
+    let mut g = crate::testgen::Gen::new(18);
+    for _ in 0..100 {
+        let tabs: Vec<SavedTab> = (0..g.below(5))
+            .map(|_| match g.below(3) {
+                0 => SavedTab::Sql {
+                    text: g.text(),
+                    title: (g.below(2) == 0).then(|| g.text_of(2)),
+                    file: None,
+                },
+                1 => SavedTab::Table {
+                    schema: g.text_of(1),
+                    table: g.text_of(2),
+                    filter: g.text_of(3),
+                    order: (g.below(2) == 0).then(|| (g.text_of(1), true)),
+                    then_by: vec![(g.text_of(1), false)],
+                    hidden: vec![g.text_of(1)],
+                    pinned: vec![g.text_of(1)],
+                },
+                _ => SavedTab::Structure {
+                    schema: g.text_of(1),
+                    table: g.text_of(1),
+                },
+            })
+            .collect();
+        let odd = |g: &mut crate::testgen::Gen| [0, 1, 2, 7, usize::MAX][g.below(5)];
+        let saved = Saved {
+            conn: Some("t".into()),
+            database: None,
+            schema: None,
+            active: odd(&mut g),
+            window: None,
+            pinned: (0..odd(&mut g).min(6)).map(|i| i % 2 == 0).collect(),
+            split: (g.below(2) == 0).then(|| SavedSplit {
+                right: (0..odd(&mut g).min(6)).map(|i| i % 2 == 1).collect(),
+                shown: [odd(&mut g), odd(&mut g)],
+            }),
+            tabs,
+        };
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let mut app = app_with(s);
+        app.restore_tabs(saved);
+        let open = |id: u64| app.tabs.iter().any(|t| t.id == id);
+        assert!(app.tabs.is_empty() || app.active < app.tabs.len());
+        if let Some(sp) = &app.split {
+            assert!(sp.shown.iter().all(|&id| open(id)), "split panes show open tabs");
+        }
+        let snap = app.snapshot();
+        assert!(snap.tabs.is_empty() || snap.active < snap.tabs.len());
+    }
+}
+
 /// Whatever the server says about whatever ran, the mark lands inside the editor text (the
 /// editor slices there: a position between bytes of a char would abort the app).
 #[test]

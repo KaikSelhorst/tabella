@@ -265,4 +265,39 @@ mod tests {
             "unlisted columns attach to the header"
         );
     }
+
+    /// Any foreign-key graph (cycles, a table pointing at itself, names repeated or missing,
+    /// many tables) is laid out, every table at a finite place.
+    #[test]
+    fn any_graph_is_laid_out() {
+        let mut g = crate::testgen::Gen::new(29);
+        for _ in 0..200 {
+            let n = g.below(40);
+            let tables: Vec<DiagramTable> = (0..n)
+                .map(|i| DiagramTable {
+                    // Some names repeat.
+                    name: format!("t{}", i % (1 + g.below(n.max(1)))),
+                    columns: (0..g.below(30))
+                        .map(|c| (format!("c{c}"), "int".into()))
+                        .collect(),
+                })
+                .collect();
+            let name = |g: &mut crate::testgen::Gen| format!("t{}", g.below(n + 3));
+            let edges: Vec<FkEdge> = (0..g.below(3 * n + 1))
+                .map(|_| FkEdge {
+                    schema: "s".into(),
+                    table: name(&mut g),
+                    column: "c".into(),
+                    ref_schema: "s".into(),
+                    ref_table: name(&mut g),
+                    ref_column: "c".into(),
+                })
+                .collect();
+            let at = layout(&tables, &edges);
+            for t in &tables {
+                let (x, y) = at[&t.name];
+                assert!(x.is_finite() && y.is_finite(), "{}: {x}, {y}", t.name);
+            }
+        }
+    }
 }

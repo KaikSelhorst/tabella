@@ -197,4 +197,17 @@ mod tests {
         );
         assert!(condition(Kind::MySql, &cols, "x", false).contains("LIKE '%x%'"));
     }
+
+    /// The "search all tables" term is whatever was typed; column names whatever the server has.
+    #[test]
+    fn conditions_take_any_term() {
+        crate::testgen::each_text(27, 2000, |term, g| {
+            let columns = vec![g.text_of(2), "id".into()];
+            for kind in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
+                for exact in [true, false] {
+                    let _ = condition(kind, &columns, term, exact);
+                }
+            }
+        });
+    }
 }

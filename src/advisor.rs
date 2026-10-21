@@ -852,4 +852,12 @@ mod tests {
             "CREATE INDEX `idx_orders_customer_id` ON `shop`.`orders` (`customer_id`);"
         );
     }
+
+    /// "Suggest an index" reads the user's SQL and the server's index definitions: any text.
+    #[test]
+    fn any_text_is_an_answer() {
+        crate::testgen::each_text(24, 3000, |s, _| {
+            let _ = (parse(s), index_columns(s));
+        });
+    }
 }
