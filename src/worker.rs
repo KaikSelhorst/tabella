@@ -1785,7 +1785,8 @@ fn export(conn: &mut Conn, spec: ExportSpec) -> DbResult<(PathBuf, u64)> {
                 } else {
                     select_range(kind, &q, EXPORT_CHUNK, offset)
                 };
-                let chunk = conn.query(&sql)?;
+                // Its own cap: the row limit preference is for what the grid shows.
+                let chunk = conn.query_up_to(&sql, EXPORT_CHUNK)?;
                 if by_key && let Some(last) = chunk.rows.last() {
                     let at = |p: &String| chunk.columns.iter().position(|c| c == p);
                     after = Some(
@@ -1920,6 +1921,42 @@ mod tests {
         let r = c.query("SELECT v FROM dbl_export WHERE id = 20000").unwrap();
         assert_eq!(r.rows.cell(0, 0), Some("it's"));
         c.query("DROP TABLE dbl_export").unwrap();
+    }
+
+    /// A low row limit (a preference for the grid) doesn't cut the file short.
+    #[test]
+    fn export_past_the_row_limit() {
+        let cfg = crate::sqlite::tests::sample_db("export-limit");
+        let mut c = Conn::connect(&cfg, None).unwrap();
+        c.query(
+            "CREATE TABLE big (id INTEGER PRIMARY KEY, v TEXT);
+             WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 12000)
+             INSERT INTO big SELECT n, 'v' || n FROM s",
+        )
+        .unwrap();
+        let path = std::env::temp_dir().join(format!("tabella-export-limit-{}.csv", std::process::id()));
+        for (order, pk) in [
+            (Vec::new(), vec!["id".to_string()]),
+            (vec![("v".to_string(), true)], Vec::new()),
+        ] {
+            let spec = ExportSpec {
+                format: Format::Csv,
+                path: path.clone(),
+                table_name: "big".into(),
+                cols: c.columns("main", "big").unwrap(),
+                source: ExportSource::Table {
+                    schema: "main".into(),
+                    table: "big".into(),
+                    filter: String::new(),
+                    order,
+                    pk,
+                },
+            };
+            let (_, rows) = crate::db::with_max_rows(1000, || export(&mut c, spec)).unwrap();
+            assert_eq!(rows, 12_000);
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cfg.database);
     }
 
     /// Manual commit through the worker: writes stay invisible to other sessions until

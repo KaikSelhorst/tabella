@@ -25,11 +25,29 @@ pub use rows::{Row, Rows};
 pub const DEFAULT_MAX_ROWS: usize = 5000;
 
 /// A preference read by every connection's worker thread, so process-wide (an atomic, not
-/// threaded through each job); tests leave it at the default.
+/// threaded through each job); tests leave it at the default, or use `with_max_rows`.
 static MAX_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_ROWS);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_MAX_ROWS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `f` with another row limit on this thread only (tests run side by side).
+#[cfg(test)]
+pub fn with_max_rows<T>(n: usize, f: impl FnOnce() -> T) -> T {
+    TEST_MAX_ROWS.set(Some(n));
+    let out = f();
+    TEST_MAX_ROWS.set(None);
+    out
+}
 
 /// Most rows kept from one query (a preference, see `set_max_rows`).
 pub fn max_rows() -> usize {
+    #[cfg(test)]
+    if let Some(n) = TEST_MAX_ROWS.get() {
+        return n;
+    }
     MAX_ROWS.load(std::sync::atomic::Ordering::Relaxed)
 }
 

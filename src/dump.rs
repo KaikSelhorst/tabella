@@ -385,7 +385,11 @@ fn table_rows(
             (None, true) => format!("ORDER BY {order} LIMIT {CHUNK}"),
             (_, false) => format!("ORDER BY {order} LIMIT {CHUNK} OFFSET {offset}"),
         };
-        let chunk = conn.query(&format!("SELECT {} FROM {source} {page}", select.join(", ")))?;
+        // Its own cap: the row limit preference is for what the grid shows.
+        let chunk = conn.query_up_to(
+            &format!("SELECT {} FROM {source} {page}", select.join(", ")),
+            CHUNK,
+        )?;
         if keyset && let Some(last) = chunk.rows.last() {
             let key: Vec<String> = pk_at
                 .iter()
@@ -807,6 +811,33 @@ mod tests {
 
     /// SQLite, no server needed: dump the sample file, load it into a new one with
     /// "Run file", and find the same rows, blob, view, trigger and numbering.
+    /// A low row limit (a preference for the grid) doesn't cut the data short.
+    #[test]
+    fn whole_table_past_the_row_limit() {
+        let cfg = crate::sqlite::tests::sample_db("dump-limit");
+        let mut c = Conn::connect(&cfg, None).unwrap();
+        c.query(
+            "CREATE TABLE big (id INTEGER PRIMARY KEY, v TEXT);
+             WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 12000)
+             INSERT INTO big SELECT n, 'v' || n FROM s",
+        )
+        .unwrap();
+        let path = std::env::temp_dir().join(format!("tabella-dump-limit-{}.sql", std::process::id()));
+        let spec = DumpSpec {
+            path: path.clone(),
+            tables: vec![("main".into(), "big".into())],
+            objects_of: Vec::new(),
+            structure: false,
+            data: true,
+            drop: false,
+        };
+        let p =
+            crate::db::with_max_rows(1000, || dump(&mut c, &spec, &AtomicBool::new(false), |_| {})).unwrap();
+        assert_eq!(p.rows, 12_000);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cfg.database);
+    }
+
     #[test]
     fn round_trip_sqlite() {
         let cfg = crate::sqlite::tests::sample_db("dump-src");
