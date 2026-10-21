@@ -91,11 +91,10 @@ fn collect(
     let width = out.columns.len();
     let mut rows = stmt.query(rusqlite::params_from_iter(values))?;
     while let Some(row) = rows.next()? {
-        if out.rows.len() >= limit {
+        if out.rows.len() >= limit || !out.rows.try_push((0..width).map(|i| text(row.get_ref(i).ok()?))) {
             out.truncated = true;
             break;
         }
-        out.rows.push((0..width).map(|i| text(row.get_ref(i).ok()?)));
     }
     Ok(())
 }

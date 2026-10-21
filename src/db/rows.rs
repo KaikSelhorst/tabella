@@ -99,9 +99,23 @@ impl Rows {
             .map(move |s| self.range(s..(s + n).min(self.len)))
     }
 
-    /// Appends a row. The first one sets how many columns every row has.
+    /// Appends a row. The first one sets how many columns every row has. Panics when the text
+    /// would pass 4 GiB: for rows built from values already held; a database's go through
+    /// `try_push`.
     pub fn push<S: AsRef<str>>(&mut self, row: impl IntoIterator<Item = Option<S>>) {
-        let before = self.ends.len();
+        assert!(self.try_push(row), "a result's text fits in 4 GiB");
+    }
+
+    /// Appends a row, or leaves the rows as they were and returns false when its text would take
+    /// them past 4 GiB (cell ends are `u32`): the caller stops there, as at the row limit.
+    #[must_use]
+    pub fn try_push<S: AsRef<str>>(&mut self, row: impl IntoIterator<Item = Option<S>>) -> bool {
+        self.push_within(row, u32::MAX)
+    }
+
+    /// `try_push` with the text capped at `limit` bytes (the tests use a small one).
+    fn push_within<S: AsRef<str>>(&mut self, row: impl IntoIterator<Item = Option<S>>, limit: u32) -> bool {
+        let (before, text, nulls) = (self.ends.len(), self.text.len(), self.nulls.len());
         for v in row {
             let i = self.ends.len();
             if i / 64 >= self.nulls.len() {
@@ -111,7 +125,16 @@ impl Rows {
                 Some(s) => self.text.push_str(s.as_ref()),
                 None => self.nulls[i / 64] |= 1 << (i % 64),
             }
-            let end = u32::try_from(self.text.len()).expect("a result's text fits in 4 GiB");
+            let Some(end) = u32::try_from(self.text.len()).ok().filter(|&e| e <= limit) else {
+                self.text.truncate(text);
+                self.ends.truncate(before);
+                self.nulls.truncate(nulls);
+                // A NULL bit this row set in a word it shares with the previous row.
+                if !before.is_multiple_of(64) {
+                    self.nulls[before / 64] &= (1 << (before % 64)) - 1;
+                }
+                return false;
+            };
             self.ends.push(end);
         }
         let width = self.ends.len() - before;
@@ -120,6 +143,7 @@ impl Rows {
         }
         assert_eq!(width, self.cols, "every row has the same columns");
         self.len += 1;
+        true
     }
 
     /// Appends every row of `other` (same columns).
@@ -164,6 +188,7 @@ impl Rows {
     }
 
     /// Replaces one value (moves the text after it: for the odd edit, not for loops; see `map`).
+    #[cfg(test)]
     pub fn set(&mut self, r: usize, c: usize, v: Option<&str>) {
         let old = self.cell(r, c).map(str::len).unwrap_or(0);
         let i = r * self.cols + c;
@@ -427,6 +452,19 @@ mod tests {
             packed * 2 < one_string_per_cell,
             "{packed} bytes packed, {one_string_per_cell} one string per cell"
         );
+    }
+
+    #[test]
+    fn a_row_past_the_text_limit_is_left_out_whole() {
+        let mut r = Rows::default();
+        for i in 0..70 {
+            assert!(r.push_within([Some("ab"), None], 200), "row {i}");
+        }
+        // Its NULL lands in the word the last row shares, and its text goes past the limit.
+        assert!(!r.push_within([None, Some("x".repeat(100).as_str())], 200));
+        assert_eq!((r.len(), r.cell(69, 0), r.cell(69, 1)), (70, Some("ab"), None));
+        assert!(r.push_within([Some("cd"), Some("e")], 200));
+        assert_eq!((r.cell(70, 0), r.cell(70, 1)), (Some("cd"), Some("e")));
     }
 
     #[test]

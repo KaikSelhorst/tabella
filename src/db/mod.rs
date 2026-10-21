@@ -849,9 +849,7 @@ fn pg_query(c: &mut postgres::Client, sql: &str, limit: usize) -> DbResult<Query
                 if out.columns.is_empty() {
                     out.columns = row.columns().iter().map(|c| c.name().to_string()).collect();
                 }
-                if out.rows.len() < limit {
-                    out.rows.push((0..row.len()).map(|i| row.get(i)));
-                } else {
+                if out.rows.len() >= limit || !out.rows.try_push((0..row.len()).map(|i| row.get(i))) {
                     out.truncated = true;
                 }
             }
@@ -898,9 +896,7 @@ fn my_collect<P: mysql::prelude::Protocol>(
         out.truncated = false;
         for row in set {
             let row = row?;
-            if out.rows.len() < limit {
-                out.rows.push(row.unwrap().into_iter().map(my_value));
-            } else {
+            if out.rows.len() >= limit || !out.rows.try_push(row.unwrap().into_iter().map(my_value)) {
                 out.truncated = true;
             }
         }
