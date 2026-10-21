@@ -98,7 +98,7 @@ pub fn plan_view(
                              compared",
                         ),
                     };
-                    let color = if baseline.is_some() { t.lime } else { t.muted_foreground };
+                    let color = if baseline.is_some() { t.accent_text } else { t.muted_foreground };
                     if ui
                         .add(egui::Button::new(theme::icon_text(glyph, label, color, t.foreground)).frame(false))
                         .on_hover_text(tip)
@@ -132,7 +132,7 @@ pub fn plan_view(
         ui.label(
             RichText::new("  Pinned. Change something, run the explain again and the two are compared here.")
                 .size(12.0)
-                .color(t.lime),
+                .color(t.accent_text),
         );
     }
 
@@ -230,7 +230,7 @@ fn comparison_panel(ui: &mut egui::Ui, c: &crate::plan::Comparison) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::GIT_DIFF).color(t.lime));
+                ui.label(theme::icon(icon::GIT_DIFF).color(t.accent_text));
                 ui.label(RichText::new("VS PINNED PLAN").size(11.0).color(t.subtle));
                 // The headline: time when both ran, else planner cost.
                 let headline = c
@@ -249,7 +249,7 @@ fn comparison_panel(ui: &mut egui::Ui, c: &crate::plan::Comparison) {
                     let (text, color) = if pct.abs() < 5.0 {
                         (format!("about the same {what}"), t.muted_foreground)
                     } else if pct < 0.0 {
-                        (format!("{:.0}% lower {what}", drop_pct(pct)), t.lime)
+                        (format!("{:.0}% lower {what}", drop_pct(pct)), t.accent_text)
                     } else if pct.is_finite() {
                         (format!("{pct:.0}% higher {what}"), t.destructive)
                     } else {
@@ -279,7 +279,7 @@ fn comparison_panel(ui: &mut egui::Ui, c: &crate::plan::Comparison) {
                             None => ("–".to_string(), t.subtle),
                             Some(p) if p.abs() < 1.0 => ("same".to_string(), t.subtle),
                             Some(p) if !p.is_finite() => ("new".to_string(), t.destructive),
-                            Some(p) if p < 0.0 => (format!("-{:.0}%", drop_pct(p)), t.lime),
+                            Some(p) if p < 0.0 => (format!("-{:.0}%", drop_pct(p)), t.accent_text),
                             Some(p) => (format!("+{p:.0}%"), t.destructive),
                         };
                         ui.label(RichText::new(text).monospace().size(12.0).color(color));

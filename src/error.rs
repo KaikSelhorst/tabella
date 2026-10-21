@@ -66,6 +66,70 @@ impl DbError {
         }
     }
 
+    /// The usual reasons a connection fails, in plain words, to put before the server's own
+    /// message (which stays: it has the details). `None` for anything else.
+    pub fn plain_reason(&self) -> Option<&'static str> {
+        use postgres::error::SqlState;
+        const WRONG_LOGIN: &str = "Wrong user or password.";
+        const NO_DATABASE: &str = "That database doesn't exist on the server.";
+        const NOT_ALLOWED: &str = "This user may not use that database.";
+        let io = match self {
+            DbError::Postgres(e, _) => {
+                if let Some(code) = e.code() {
+                    return match code {
+                        c if *c == SqlState::INVALID_PASSWORD
+                            || *c == SqlState::INVALID_AUTHORIZATION_SPECIFICATION =>
+                        {
+                            Some(WRONG_LOGIN)
+                        }
+                        c if *c == SqlState::INVALID_CATALOG_NAME => Some(NO_DATABASE),
+                        c if *c == SqlState::INSUFFICIENT_PRIVILEGE => Some(NOT_ALLOWED),
+                        _ => None,
+                    };
+                }
+                let mut cause = std::error::Error::source(e);
+                std::iter::from_fn(|| {
+                    let c = cause?;
+                    cause = c.source();
+                    Some(c)
+                })
+                .find_map(|c| c.downcast_ref::<std::io::Error>())
+            }
+            DbError::MySql(mysql::Error::MySqlError(e)) => {
+                return match e.code {
+                    1045 => Some(WRONG_LOGIN),
+                    1049 => Some(NO_DATABASE),
+                    1044 => Some(NOT_ALLOWED),
+                    _ => None,
+                };
+            }
+            DbError::MySql(mysql::Error::IoError(e)) => Some(e),
+            _ => None,
+        }?;
+        let text = io.to_string().to_lowercase();
+        Some(match io.kind() {
+            std::io::ErrorKind::ConnectionRefused => {
+                "Nothing answered there: is the server running, and is the port right?"
+            }
+            std::io::ErrorKind::TimedOut => {
+                "The server didn't answer in time: check the host, the port and any firewall in between."
+            }
+            // Linux "failed to lookup address", Windows "No such host is known".
+            _ if text.contains("lookup") || text.contains("no such host") || text.contains("not known") => {
+                "The host name couldn't be found: check its spelling."
+            }
+            _ => return None,
+        })
+    }
+
+    /// The message with its plain reason in front, when there is one.
+    pub fn explained(&self) -> String {
+        match self.plain_reason() {
+            Some(why) => format!("{why} ({self})"),
+            None => self.to_string(),
+        }
+    }
+
     /// Where in `sql` (byte offset) the server says the problem is: Postgres reports the
     /// position; MySQL names the text after it (`near '…' at line N`) or the unknown column or
     /// table, looked up in the statement.
@@ -206,5 +270,43 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn connection_failures_in_plain_words() {
+        let my = |code| {
+            DbError::MySql(mysql::Error::MySqlError(mysql::MySqlError {
+                state: "28000".into(),
+                message: "Access denied".into(),
+                code,
+            }))
+        };
+        assert_eq!(my(1045).plain_reason(), Some("Wrong user or password."));
+        assert_eq!(
+            my(1049).plain_reason(),
+            Some("That database doesn't exist on the server.")
+        );
+        assert_eq!(my(1064).plain_reason(), None, "a syntax error says enough itself");
+        let io = |kind, msg: &str| {
+            DbError::MySql(mysql::Error::IoError(std::io::Error::new(kind, msg.to_string())))
+        };
+        assert!(
+            io(std::io::ErrorKind::ConnectionRefused, "refused")
+                .plain_reason()
+                .unwrap()
+                .contains("port")
+        );
+        assert!(
+            io(std::io::ErrorKind::TimedOut, "late")
+                .plain_reason()
+                .unwrap()
+                .contains("in time")
+        );
+        let dns = io(
+            std::io::ErrorKind::Other,
+            "failed to lookup address information: Name or service not known",
+        );
+        assert!(dns.plain_reason().unwrap().contains("host name"));
+        assert_eq!(DbError::Other("x".into()).plain_reason(), None);
     }
 }

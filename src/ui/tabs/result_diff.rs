@@ -31,7 +31,7 @@ pub(super) fn diff_view(
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::GIT_DIFF).color(t.lime));
+                ui.label(theme::icon(icon::GIT_DIFF).color(t.accent_text));
                 let when = crate::history::ago(pinned.at, crate::history::now());
                 ui.label(
                     egui::RichText::new(format!("Comparing with the result pinned {when}"))
@@ -78,7 +78,7 @@ pub(super) fn diff_view(
                     ui.label(egui::RichText::new(format!("{n} {text}")).size(12.0).color(c));
                 };
                 chip(ui, d.removed, "only in pinned", t.destructive);
-                chip(ui, d.added, "only in current", t.lime);
+                chip(ui, d.added, "only in current", t.accent_text);
                 chip(ui, d.changed, "changed", t.warning);
                 chip(ui, d.same, "equal", t.muted_foreground);
             });
@@ -206,7 +206,7 @@ fn row_ui(ui: &mut egui::Ui, d: &ResultDiff, a: &QueryResult, b: &QueryResult, r
     let t = theme::tokens();
     let (status, color) = match r {
         RowDiff::Removed(_) => ("removed", t.destructive),
-        RowDiff::Added(_) => ("new", t.lime),
+        RowDiff::Added(_) => ("new", t.accent_text),
         RowDiff::Changed(..) => ("changed", t.warning),
         RowDiff::Same(..) => ("same", t.subtle),
     };
@@ -237,10 +237,10 @@ fn row_ui(ui: &mut egui::Ui, d: &ResultDiff, a: &QueryResult, b: &QueryResult, r
             RowDiff::Changed(_, _, cols) if cols.contains(&c) => {
                 piece(&mut job, old, t.destructive, true);
                 job.append(" → ", 0.0, egui::TextFormat::simple(font.clone(), t.subtle));
-                piece(&mut job, new, t.lime, false);
+                piece(&mut job, new, t.accent_text, false);
             }
             RowDiff::Removed(_) => piece(&mut job, old, t.destructive, false),
-            RowDiff::Added(_) => piece(&mut job, new, t.lime, false),
+            RowDiff::Added(_) => piece(&mut job, new, t.accent_text, false),
             _ => piece(&mut job, new.or(old), t.muted_foreground, false),
         }
         let full = job.text.clone();

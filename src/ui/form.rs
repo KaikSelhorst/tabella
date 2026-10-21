@@ -7,8 +7,10 @@ use crate::config;
 use crate::db::{ConnConfig, Kind, SshConfig, Tag};
 
 const FIELD_WIDTH: f32 = 280.0;
-/// Height of the connection form around its fields: margins, title, test outcome and buttons.
-const FORM_CHROME: f32 = 140.0;
+/// Height of the connection form around its fields: margins, title and buttons.
+const FORM_CHROME: f32 = 170.0;
+/// And the outcome of "Test connection", when it is shown (a server error takes a few lines).
+const TEST_OUTCOME: f32 = 56.0;
 
 impl App {
     pub fn connection_form(&mut self, ctx: &egui::Context) {
@@ -42,8 +44,9 @@ impl App {
                 ui.add_space(12.0);
                 // The fields scroll when the window is too short for all of them; the title and
                 // the buttons stay in view.
-                let room = ui.ctx().content_rect().height() - FORM_CHROME;
-                egui::ScrollArea::vertical()
+                let chrome = FORM_CHROME + if test.is_some() { TEST_OUTCOME } else { 0.0 };
+                let room = ui.ctx().content_rect().height() - chrome;
+                let fields = egui::ScrollArea::vertical()
                     .max_height(room.max(160.0))
                     .min_scrolled_height(room.max(160.0))
                     .show(ui, |ui| {
@@ -80,6 +83,16 @@ impl App {
                                 }
                             });
                     });
+                // The scroll bar only shows on hover: say there is more, until the end is in view.
+                let hidden = fields.content_size.y - fields.state.offset.y - fields.inner_rect.height();
+                if hidden > 1.0 {
+                    ui.label(theme::icon_text(
+                        icon::ARROW_DOWN,
+                        "More below: scroll",
+                        t.subtle,
+                        t.subtle,
+                    ));
+                }
                 // Above the buttons, wrapped to the form's width.
                 if let Some(test) = test {
                     test_outcome(ui, test);
@@ -115,7 +128,7 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("master_password")).frame(theme::modal_frame(16)).show(ctx, |ui| {
             ui.set_width(400.0);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::LOCK_KEY).size(16.0).color(t.lime));
+                ui.label(theme::icon(icon::LOCK_KEY).size(16.0).color(t.accent_text));
                 let title = if create { "Protect saved passwords" } else { "Unlock passwords" };
                 ui.label(egui::RichText::new(title).size(15.0).color(t.foreground));
             });
@@ -443,7 +456,7 @@ fn test_outcome(ui: &mut egui::Ui, test: &crate::app::ConnTest) {
     let t = theme::tokens();
     let (glyph, text, color) = match &test.result {
         None => (icon::HOURGLASS, "Connecting…".to_string(), t.muted_foreground),
-        Some(Ok(msg)) => (icon::CHECK_CIRCLE, msg.clone(), t.lime),
+        Some(Ok(msg)) => (icon::CHECK_CIRCLE, msg.clone(), t.accent_text),
         Some(Err(e)) => (icon::WARNING_CIRCLE, e.clone(), t.destructive),
     };
     ui.add_space(8.0);
@@ -662,7 +675,7 @@ fn sqlite_file_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
     }
     if let Some((error, text)) = ui.data(|d| d.get_temp::<(bool, String)>(msg_id)) {
         ui.label("");
-        let color = if error { t.destructive } else { t.lime };
+        let color = if error { t.destructive } else { t.accent_text };
         ui.label(egui::RichText::new(text).size(11.0).color(color));
         ui.end_row();
     }

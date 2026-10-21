@@ -54,7 +54,12 @@ pub(super) fn result_sets_strip(ui: &mut egui::Ui, tab: &Tab) -> Option<usize> {
                             let color = if shown { t.foreground } else { t.muted_foreground };
                             let b = egui::Button::new(egui::RichText::new(label).size(12.0).color(color))
                                 .selected(shown);
-                            let tip = format!("{} column(s): {}", set.columns.len(), set.columns.join(", "));
+                            let tip = format!(
+                                "{} {}: {}",
+                                set.columns.len(),
+                                crate::values::noun(set.columns.len() as u64, "column"),
+                                set.columns.join(", ")
+                            );
                             if ui.add(b).on_hover_text(tip).clicked() {
                                 pick = Some(i);
                             }
@@ -70,14 +75,14 @@ fn timings_menu(ui: &mut egui::Ui, timings: &[crate::db::StatementTime]) {
     let t = theme::tokens();
     let slowest = timings.iter().map(|s| s.elapsed).max().unwrap_or_default();
     let label = format!("{} statements ▾", timings.len());
-    ui.menu_button(egui::RichText::new(label).small().color(t.lime), |ui| {
+    ui.menu_button(egui::RichText::new(label).small().color(t.accent_text), |ui| {
         egui::Grid::new("statement_times")
             .num_columns(4)
             .spacing([12.0, 4.0])
             .show(ui, |ui| {
                 for (i, st) in timings.iter().enumerate() {
                     let hot = st.elapsed == slowest;
-                    let color = if hot { t.lime } else { t.muted_foreground };
+                    let color = if hot { t.accent_text } else { t.muted_foreground };
                     ui.label(egui::RichText::new(format!("#{}", i + 1)).small().color(t.subtle));
                     ui.label(
                         egui::RichText::new(format!("line {}", st.line))
@@ -89,7 +94,11 @@ fn timings_menu(ui: &mut egui::Ui, timings: &[crate::db::StatementTime]) {
                             .small()
                             .color(color),
                     );
-                    let unit = if st.returned_rows { "row(s)" } else { "affected" };
+                    let unit = if st.returned_rows {
+                        crate::values::noun(st.rows, "row")
+                    } else {
+                        "affected".into()
+                    };
                     ui.label(
                         egui::RichText::new(format!("{} {unit}", st.rows))
                             .small()
@@ -105,15 +114,17 @@ fn timings_menu(ui: &mut egui::Ui, timings: &[crate::db::StatementTime]) {
 pub(super) fn summary(res: &QueryResult) -> String {
     if res.columns.is_empty() {
         format!(
-            "{} row(s) affected · {} ms",
+            "{} {} affected · {} ms",
             res.affected.unwrap_or(0),
+            crate::values::noun(res.affected.unwrap_or(0), "row"),
             res.elapsed.as_millis()
         )
     } else {
         let truncated = if res.truncated { " · result truncated" } else { "" };
         format!(
-            "{} row(s) · {} ms{truncated}",
+            "{} {} · {} ms{truncated}",
             res.rows.len(),
+            crate::values::noun(res.rows.len() as u64, "row"),
             res.elapsed.as_millis()
         )
     }
@@ -444,7 +455,7 @@ fn summary_bar(
                             crate::ui::palette::format_count(crate::db::max_rows() as i64)
                         ))
                         .small()
-                        .color(t.lime),
+                        .color(t.accent_text),
                     )
                     .frame(false);
                     if ui
@@ -466,7 +477,7 @@ fn summary_bar(
                     }
                     if chartable {
                         let on = chart_spec.is_some();
-                        let color = if on { t.lime } else { t.muted_foreground };
+                        let color = if on { t.accent_text } else { t.muted_foreground };
                         let b = egui::Button::new(theme::icon_text(
                             icon::CHART_BAR,
                             "Chart",
@@ -798,7 +809,7 @@ pub(super) fn bulk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Op
         .show(ctx, |ui| {
             ui.set_width(480.0);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::LIGHTNING).size(16.0).color(t.lime));
+                ui.label(theme::icon(icon::LIGHTNING).size(16.0).color(t.accent_text));
                 ui.label(
                     egui::RichText::new("Set a column with an expression")
                         .size(15.0)
@@ -834,7 +845,7 @@ pub(super) fn bulk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Op
                         ui.radio_value(
                             &mut prompt.selected_only,
                             true,
-                            format!("The {selected_rows} selected row(s)"),
+                            format!("The {selected_rows} selected {}", crate::values::noun(selected_rows as u64, "row")),
                         );
                     });
                     let all = match (total, filtered) {
@@ -915,9 +926,12 @@ pub(super) fn fill_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEven
         .show(ctx, |ui| {
             ui.set_width(380.0);
             ui.label(
-                egui::RichText::new(format!("Value for {cells} cell(s)"))
-                    .size(15.0)
-                    .color(t.foreground),
+                egui::RichText::new(format!(
+                    "Value for {cells} {}",
+                    crate::values::noun(cells as u64, "cell")
+                ))
+                .size(15.0)
+                .color(t.foreground),
             );
             ui.label(
                 egui::RichText::new("Stays pending until saved (Ctrl+S), like the other edits.")
@@ -966,7 +980,7 @@ pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
         .show(ctx, |ui| {
             ui.set_width(460.0);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::CHART_BAR).size(16.0).color(t.lime));
+                ui.label(theme::icon(icon::CHART_BAR).size(16.0).color(t.accent_text));
                 ui.label(egui::RichText::new(&view.column).size(15.0).color(t.foreground));
                 ui.label(egui::RichText::new(&view.scope).size(11.0).color(t.subtle));
             });
@@ -1217,7 +1231,7 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
         .show(ctx, |ui| {
             ui.set_width(420.0);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::FUNNEL).size(16.0).color(t.lime));
+                ui.label(theme::icon(icon::FUNNEL).size(16.0).color(t.accent_text));
                 ui.label(egui::RichText::new(&vf.column).size(15.0).color(t.foreground));
                 ui.label(
                     egui::RichText::new(format!("in {table}"))
@@ -1369,7 +1383,11 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
         .show(ctx, |ui| {
             ui.set_width((screen.width() * 0.7).clamp(480.0, 1100.0));
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::ARROWS_OUT_SIMPLE).size(16.0).color(t.lime));
+                ui.label(
+                    theme::icon(icon::ARROWS_OUT_SIMPLE)
+                        .size(16.0)
+                        .color(t.accent_text),
+                );
                 ui.label(egui::RichText::new(&ve.column).size(15.0).color(t.foreground));
                 ui.label(egui::RichText::new(&ve.data_type).size(11.0).color(t.subtle));
                 ui.label(
@@ -1449,11 +1467,19 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let lines = ve.text.lines().count().max(1);
-                let size = format!("{} characters · {lines} line(s)", ve.text.chars().count());
+                let size = format!(
+                    "{} characters · {lines} {}",
+                    ve.text.chars().count(),
+                    crate::values::noun(lines as u64, "line")
+                );
                 ui.label(egui::RichText::new(size).size(11.0).color(t.subtle));
                 match &check {
                     Some(Ok(())) => {
-                        ui.label(egui::RichText::new("· valid JSON").size(11.0).color(t.lime));
+                        ui.label(
+                            egui::RichText::new("· valid JSON")
+                                .size(11.0)
+                                .color(t.accent_text),
+                        );
                     }
                     Some(Err((line, col, _))) => {
                         let msg = format!("· invalid JSON: line {line}, column {col}");
@@ -1532,7 +1558,11 @@ fn pin_buttons(ui: &mut egui::Ui, pinned_at: Option<u64>, comparing: bool) -> Op
             {
                 action = Some(PinAction::Pin);
             }
-            let color = if comparing { t.lime } else { t.muted_foreground };
+            let color = if comparing {
+                t.accent_text
+            } else {
+                t.muted_foreground
+            };
             let when = crate::history::ago(at, crate::history::now());
             if ui
                 .add(button(icon::GIT_DIFF, "Compare with the pinned one", color))
@@ -1557,7 +1587,11 @@ pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Opti
         .show(ctx, |ui| {
             ui.set_width(520.0);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::MAGNIFYING_GLASS).size(16.0).color(t.lime));
+                ui.label(
+                    theme::icon(icon::MAGNIFYING_GLASS)
+                        .size(16.0)
+                        .color(t.accent_text),
+                );
                 ui.label(egui::RichText::new(&p.column).size(15.0).color(t.foreground));
                 ui.label(
                     egui::RichText::new(format!("→ {}.{}", p.fk.table, p.fk.column))

@@ -24,7 +24,7 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     });
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(&st.what).monospace().color(t.foreground));
-                    let mut detail = format!("{} table(s)", st.tables.len());
+                    let mut detail = format!("{} {}", st.tables.len(), crate::values::noun(st.tables.len() as u64, "table"));
                     if !st.objects_of.is_empty() {
                         detail.push_str(" · views, functions, procedures and triggers");
                     }
@@ -82,7 +82,7 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     ui.horizontal(|ui| {
                         let fill = match &st.outcome {
                             Some(Err(_)) => t.destructive,
-                            _ => t.lime,
+                            _ => t.accent_text,
                         };
                         ui.add(egui::ProgressBar::new(frac).desired_width(320.0).desired_height(6.0).fill(fill));
                         let took = st.took.or_else(|| st.started.map(|at| at.elapsed())).unwrap_or_default();
@@ -104,7 +104,7 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     match &st.outcome {
                         Some(Ok(path)) => {
                             ui.horizontal(|ui| {
-                                ui.label(theme::icon(icon::CHECK).size(16.0).color(t.lime));
+                                ui.label(theme::icon(icon::CHECK).size(16.0).color(t.accent_text));
                                 ui.label(egui::RichText::new(path.display().to_string()).monospace().color(t.foreground));
                             });
                             ui.add_space(4.0);

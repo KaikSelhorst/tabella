@@ -26,7 +26,7 @@ impl App {
         let (glyph, accent) = if n.error {
             (icon::WARNING_CIRCLE, t.destructive)
         } else {
-            (icon::CHECK_CIRCLE, t.lime)
+            (icon::CHECK_CIRCLE, t.accent_text)
         };
         let mut close = false;
         egui::Area::new(egui::Id::new("notice_toast"))

@@ -333,7 +333,7 @@ fn index_advice(
         .show(ctx, |ui| {
             ui.set_width(520.0);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::LIGHTBULB).size(16.0).color(t.lime));
+                ui.label(theme::icon(icon::LIGHTBULB).size(16.0).color(t.accent_text));
                 ui.label(
                     egui::RichText::new("Suggest index")
                         .size(15.0)

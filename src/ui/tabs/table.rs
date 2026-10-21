@@ -239,10 +239,13 @@ pub(super) fn changes_bar(ui: &mut egui::Ui, tab: &mut Tab) {
                 ui.label(theme::icon(icon::PENCIL_SIMPLE).color(t.warning));
                 let mut parts = Vec::new();
                 if edits > 0 {
-                    parts.push(format!("{edits} edit(s)"));
+                    parts.push(format!("{edits} {}", crate::values::noun(edits as u64, "edit")));
                 }
                 if deletes > 0 {
-                    parts.push(format!("{deletes} deletion(s)"));
+                    parts.push(format!(
+                        "{deletes} {}",
+                        crate::values::noun(deletes as u64, "deletion")
+                    ));
                 }
                 ui.label(
                     egui::RichText::new(format!("{} pending, not saved yet", parts.join(" and ")))
@@ -293,40 +296,67 @@ pub(super) fn confirm_save(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     let (edits, deletes) = ts.change_counts();
     let stmts = ts.change_statements(k);
     let (mut go, mut cancel) = (false, false);
-    let modal = egui::Modal::new(egui::Id::new(("confirm_save", tab.id))).frame(theme::modal_frame(16)).show(ctx, |ui| {
-        ui.set_width(520.0);
-        ui.horizontal(|ui| {
-            ui.label(theme::icon(icon::FLOPPY_DISK).size(16.0).color(if deletes > 0 { t.destructive } else { t.lime }));
-            ui.label(egui::RichText::new(format!("Save {} change(s)?", stmts.len())).size(15.0).color(t.foreground));
-        });
-        ui.add_space(4.0);
-        ui.label(
+    let modal = egui::Modal::new(egui::Id::new(("confirm_save", tab.id)))
+        .frame(theme::modal_frame(16))
+        .show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(icon::FLOPPY_DISK).size(16.0).color(if deletes > 0 {
+                    t.destructive
+                } else {
+                    t.accent_text
+                }));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Save {} {}?",
+                        stmts.len(),
+                        crate::values::noun(stmts.len() as u64, "change")
+                    ))
+                    .size(15.0)
+                    .color(t.foreground),
+                );
+            });
+            ui.add_space(4.0);
+            ui.label(
             egui::RichText::new(format!(
-                "In {}.{}: {edits} edit(s), {deletes} deletion(s). All in one transaction: if one fails, nothing is saved.",
-                ts.schema, ts.table
+                "In {}.{}: {edits} {}, {deletes} {}. All in one transaction: if one fails, nothing is saved.",
+                ts.schema,
+                ts.table,
+                crate::values::noun(edits as u64, "edit"),
+                crate::values::noun(deletes as u64, "deletion")
             ))
             .color(t.muted_foreground),
         );
-        ui.add_space(8.0);
-        egui::Frame::new().fill(t.sidebar).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
-                for st in &stmts {
-                    let job = syntax::highlight(&format!("{};", st.render(k)), &egui::FontId::monospace(12.0));
-                    ui.add(egui::Label::new(job).wrap());
-                }
+            ui.add_space(8.0);
+            egui::Frame::new()
+                .fill(t.sidebar)
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .max_height(220.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for st in &stmts {
+                                let job = syntax::highlight(
+                                    &format!("{};", st.render(k)),
+                                    &egui::FontId::monospace(12.0),
+                                );
+                                ui.add(egui::Label::new(job).wrap());
+                            }
+                        });
+                });
+            ui.add_space(16.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                go = if deletes > 0 {
+                    ui.add(danger_button("Save and delete")).clicked()
+                } else {
+                    ui.add(theme::primary_button(Some(icon::FLOPPY_DISK), "Save"))
+                        .clicked()
+                };
+                cancel = ui.add(theme::outline_button("Back")).clicked();
             });
         });
-        ui.add_space(16.0);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            go = if deletes > 0 {
-                ui.add(danger_button("Save and delete")).clicked()
-            } else {
-                ui.add(theme::primary_button(Some(icon::FLOPPY_DISK), "Save")).clicked()
-            };
-            cancel = ui.add(theme::outline_button("Back")).clicked();
-        });
-    });
     if go {
         app::save_changes(tab, s);
     } else if cancel || modal.should_close() {
@@ -353,7 +383,7 @@ pub(super) fn filters_menu(
     let color = if mine.is_empty() {
         t.muted_foreground
     } else {
-        t.lime
+        t.accent_text
     };
     let mut action = None;
     let name_id = egui::Id::new(("filter_name", tab_id));

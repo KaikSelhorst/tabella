@@ -24,8 +24,9 @@ pub fn reload(tab: &mut Tab, s: &Session) {
     if !ts.changes.is_empty() {
         // A reload (page, sort, filter) would show rows the pending changes don't refer to.
         tab.error = Some(format!(
-            "Save (Ctrl+S) or discard the {} pending change(s) before reloading.",
-            ts.changes.len()
+            "Save (Ctrl+S) or discard the {} pending {} before reloading.",
+            ts.changes.len(),
+            crate::values::noun(ts.changes.len() as u64, "change")
         ));
         return;
     }
@@ -88,7 +89,8 @@ pub fn run_sql(tab: &mut Tab, s: &Session, sql: String) {
         {
             let n = src.changes.len();
             tab.error = Some(format!(
-                "Save (Ctrl+S) or discard the {n} pending change(s) in the result before running another query."
+                "Save (Ctrl+S) or discard the {n} pending {} in the result before running another query.",
+                crate::values::noun(n as u64, "change")
             ));
             return;
         }

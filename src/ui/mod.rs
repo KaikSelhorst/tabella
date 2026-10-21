@@ -209,8 +209,9 @@ impl App {
                         "Open transaction: nothing was written yet".to_string()
                     } else {
                         format!(
-                            "Open transaction · {} write statement(s) not committed yet",
-                            txn.writes
+                            "Open transaction · {} {} not committed yet",
+                            txn.writes,
+                            crate::values::noun(txn.writes, "write statement")
                         )
                     };
                     ui.label(egui::RichText::new(text).color(t.foreground));
@@ -223,8 +224,11 @@ impl App {
                         ));
                         ui.label(swatch);
                         ui.label(
-                            egui::RichText::new(format!("{cells} edited cell(s) marked in the grids"))
-                                .color(t.muted_foreground),
+                            egui::RichText::new(format!(
+                                "{cells} edited {} marked in the grids",
+                                crate::values::noun(cells as u64, "cell")
+                            ))
+                            .color(t.muted_foreground),
                         );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -289,7 +293,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_width(460.0);
                 ui.horizontal(|ui| {
-                    let (glyph, color) = if destructive { (icon::WARNING, t.destructive) } else { (icon::TABLE, t.lime) };
+                    let (glyph, color) = if destructive { (icon::WARNING, t.destructive) } else { (icon::TABLE, t.accent_text) };
                     ui.label(theme::icon(glyph).size(16.0).color(color));
                     ui.label(egui::RichText::new(title).size(15.0).color(t.foreground));
                     ui.label(egui::RichText::new(format!("{}.{}", p.schema, p.table)).monospace().color(t.muted_foreground));

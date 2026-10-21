@@ -591,10 +591,14 @@ fn result_row(painter: &egui::Painter, rect: egui::Rect, it: &Item, selected: bo
     let t = theme::tokens();
     if selected {
         painter.rect_filled(rect, 0.0, t.selection);
-        painter.vline(rect.left() + 1.0, rect.y_range(), egui::Stroke::new(2.0, t.lime));
+        painter.vline(
+            rect.left() + 1.0,
+            rect.y_range(),
+            egui::Stroke::new(2.0, t.accent_text),
+        );
     }
     let mid = rect.center().y;
-    let ic = if selected { t.lime } else { t.subtle };
+    let ic = if selected { t.accent_text } else { t.subtle };
     painter.text(
         egui::pos2(rect.left() + 12.0, mid),
         egui::Align2::LEFT_CENTER,

@@ -1974,8 +1974,9 @@ fn screenshots() {
     }
 
     // Notices: an error stays (with copy and close), information fades.
-    harness.state_mut().notice =
-        crate::app::Notice::error("Couldn't do it: relation \"old_customers\" already exists");
+    harness.state_mut().notice = crate::app::Notice::error(
+        "Couldn't rename customers to old_customers: relation \"old_customers\" already exists",
+    );
     harness.run();
     harness
         .render()
@@ -2345,7 +2346,7 @@ fn screenshots() {
             key: form.cfg.test_key(),
             rx,
             result: Some(Err(
-                "ERROR 1045 (28000): Access denied for user 'root'@'10.0.3.7' (using password: YES)".into(),
+                "Wrong user or password. (ERROR 1045 (28000): Access denied for user 'root'@'10.0.3.7' (using password: YES))".into(),
             )),
         });
     }

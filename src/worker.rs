@@ -105,6 +105,8 @@ pub enum Job {
         sql: String,
         /// What to say when it's done, e.g. "customers renamed to clients".
         done: String,
+        /// And when it fails, before the server's reason: "Couldn't rename customers".
+        failed: String,
     },
     /// The code of a function, trigger, view…
     Source {
@@ -468,6 +470,7 @@ pub enum Reply {
     Location(DbResult<(Vec<String>, String, String)>),
     Admin {
         done: String,
+        failed: String,
         res: DbResult<()>,
     },
     IndexAdvice {
@@ -844,7 +847,7 @@ pub fn test_connection(cfg: ConnConfig, wake: Waker) -> Receiver<Result<String, 
                 None => None,
             };
             let mut conn =
-                Conn::connect(&cfg, tunnel.as_ref().map(|t| t.local_port)).map_err(|e| e.to_string())?;
+                Conn::connect(&cfg, tunnel.as_ref().map(|t| t.local_port)).map_err(|e| e.explained())?;
             let ms = started.elapsed().as_millis();
             let version = conn
                 .query(if cfg.kind == crate::db::Kind::Sqlite {
@@ -1530,14 +1533,14 @@ impl<S: Fn(Reply)> Worker<'_, S> {
                     slowest,
                 }
             }
-            Job::Admin { sql, done } => {
+            Job::Admin { sql, done, failed } => {
                 let res = run_user_sql(conn, &mut self.tx, self.pg, &sql).map(|_| ());
                 // The sidebar shows the change (a new, renamed or dropped table).
                 if res.is_ok() {
                     send(Reply::Tables(conn.tables()));
                     send(Reply::AllColumns(conn.all_columns()));
                 }
-                Reply::Admin { done, res }
+                Reply::Admin { done, failed, res }
             }
             Job::UseSchema(name) => {
                 let res = conn.use_schema(&name).and_then(|()| conn.location());

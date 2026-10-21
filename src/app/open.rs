@@ -302,13 +302,25 @@ impl App {
     pub fn run_table_action(&mut self, p: &TableActionPrompt) {
         let Some(s) = &self.session else { return };
         let sql = sql::table_action(s.cfg.kind, &p.schema, &p.table, p.action, &p.input);
-        let done = match p.action {
-            sql::TableAction::Rename => format!("{} renamed to {}", p.table, p.input.trim()),
-            sql::TableAction::Duplicate(_) => format!("{} duplicated as {}", p.table, p.input.trim()),
-            sql::TableAction::Truncate => format!("{} truncated", p.table),
-            sql::TableAction::Drop => format!("{} dropped", p.table),
+        let (done, failed) = match p.action {
+            sql::TableAction::Rename => (
+                format!("{} renamed to {}", p.table, p.input.trim()),
+                format!("Couldn't rename {} to {}", p.table, p.input.trim()),
+            ),
+            sql::TableAction::Duplicate(_) => (
+                format!("{} duplicated as {}", p.table, p.input.trim()),
+                format!("Couldn't duplicate {} as {}", p.table, p.input.trim()),
+            ),
+            sql::TableAction::Truncate => (
+                format!("{} truncated", p.table),
+                format!("Couldn't empty {}", p.table),
+            ),
+            sql::TableAction::Drop => (
+                format!("{} dropped", p.table),
+                format!("Couldn't drop {}", p.table),
+            ),
         };
-        s.send(Job::Admin { sql, done });
+        s.send(Job::Admin { sql, done, failed });
         let same = |t: &Tab| match &t.kind {
             TabKind::Table(ts) => ts.schema == p.schema && ts.table == p.table,
             TabKind::Structure(st) => st.schema == p.schema && st.table == p.table,

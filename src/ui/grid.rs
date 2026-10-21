@@ -197,7 +197,7 @@ fn option_picker(
                                 egui::Align2::LEFT_CENTER,
                                 icon::CHECK,
                                 FontId::new(12.0, theme::icon_family()),
-                                t.lime,
+                                t.accent_text,
                             );
                         }
                         p.text(
@@ -486,6 +486,7 @@ fn header_cell<'a>(
 ) {
     let (t, opts) = (g.t, g.opts);
     let name = &g.res.columns[ci];
+    let numeric = opts.kinds.get(ci) == Some(&ValueKind::Number);
     cell_chrome(ui, g.table_rect, t);
     if vi != g.last {
         drawn.push((name.as_str(), ui.max_rect().width()));
@@ -498,46 +499,91 @@ fn header_cell<'a>(
             font: egui::TextStyle::Body.resolve(ui.style()),
             color: t.foreground,
             bg: t.card,
-            right_align: false,
+            right_align: numeric,
             row: None,
             col: Some(ci),
         });
     }
     let c = g.info[ci];
-    if c.is_some_and(|c| c.pk) {
-        ui.label(theme::icon(icon::KEY).color(t.warning).size(12.0));
-    }
-    let r = ui.add(
-        egui::Label::new(RichText::new(name).color(t.foreground))
-            .truncate()
-            .sense(Sense::click()),
-    );
-    let order = opts.order;
-    if let Some(pos) = order.iter().position(|(c, _)| c == name) {
+    // Key, name, sort arrow and values filter, in that order from the left; numbers are aligned
+    // right, and their header with them: the same pieces from the right, the type on the left.
+    let key = |ui: &mut egui::Ui| {
+        if c.is_some_and(|c| c.pk) {
+            ui.label(theme::icon(icon::KEY).color(t.warning).size(12.0));
+        }
+    };
+    let label = |ui: &mut egui::Ui| {
+        ui.add(
+            egui::Label::new(RichText::new(name).color(t.foreground))
+                .truncate()
+                .sense(Sense::click()),
+        )
+    };
+    let sort = |ui: &mut egui::Ui| {
+        let order = opts.order;
+        let Some(pos) = order.iter().position(|(c, _)| c == name) else {
+            return;
+        };
         let a = if order[pos].1 {
             icon::ARROW_UP
         } else {
             icon::ARROW_DOWN
         };
-        ui.label(theme::icon(a).color(t.lime).size(12.0));
+        let arrow = |ui: &mut egui::Ui| ui.label(theme::icon(a).color(t.accent_text).size(12.0));
         // Which of several sort columns this is.
-        if order.len() > 1 {
-            ui.label(RichText::new((pos + 1).to_string()).color(t.lime).size(10.0));
+        let place = |ui: &mut egui::Ui| {
+            if order.len() > 1 {
+                ui.label(
+                    RichText::new((pos + 1).to_string())
+                        .color(t.accent_text)
+                        .size(10.0),
+                );
+            }
+        };
+        if numeric {
+            place(ui);
+            arrow(ui);
+        } else {
+            arrow(ui);
+            place(ui);
         }
-    }
-    if opts.filtered.contains(name)
-        && ui
-            .add(egui::Label::new(theme::icon(icon::FUNNEL).color(t.lime).size(12.0)).sense(Sense::click()))
-            .on_hover_text("Filtered by values: click to change")
-            .clicked()
-    {
-        *event = Some(GridEvent::FilterValues(ci));
-    }
-    // Type sits on the right, dimmed; it is the first thing to go when the column is narrow.
-    if let Some(c) = c {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+    };
+    let filter = |ui: &mut egui::Ui| {
+        opts.filtered.contains(name)
+            && ui
+                .add(
+                    egui::Label::new(theme::icon(icon::FUNNEL).color(t.accent_text).size(12.0))
+                        .sense(Sense::click()),
+                )
+                .on_hover_text("Filtered by values: click to change")
+                .clicked()
+    };
+    // The type is dimmed: the first thing to go when the column is narrow.
+    let data_type = |ui: &mut egui::Ui| {
+        if let Some(c) = c {
             ui.add(egui::Label::new(RichText::new(&c.data_type).size(11.0).color(t.subtle)).truncate());
-        });
+        }
+    };
+    let (r, filter_clicked) = if numeric {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let clicked = filter(ui);
+            sort(ui);
+            let r = label(ui);
+            key(ui);
+            ui.with_layout(Layout::left_to_right(Align::Center), data_type);
+            (r, clicked)
+        })
+        .inner
+    } else {
+        key(ui);
+        let r = label(ui);
+        sort(ui);
+        let clicked = filter(ui);
+        ui.with_layout(Layout::right_to_left(Align::Center), data_type);
+        (r, clicked)
+    };
+    if filter_clicked {
+        *event = Some(GridEvent::FilterValues(ci));
     }
     let r = r.on_hover_text(match c {
         Some(c) => format!(
@@ -1054,7 +1100,13 @@ fn cell_menu(
         }
         let rows = sel.r1 - sel.r0 + 1;
         if ui
-            .add(egui::Button::new(format!("Delete {rows} row(s)")).shortcut_text("Delete"))
+            .add(
+                egui::Button::new(format!(
+                    "Delete {rows} {}",
+                    crate::values::noun(rows as u64, "row")
+                ))
+                .shortcut_text("Delete"),
+            )
             .clicked()
         {
             event = Some(GridEvent::DeleteRows);

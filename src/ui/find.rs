@@ -158,7 +158,7 @@ pub fn find_bar(ui: &mut egui::Ui, st: &mut FindState, matches: usize) -> Option
                     action = Some(FindAction::Goto);
                 }
                 let case_color = if st.case_sensitive {
-                    t.lime
+                    t.accent_text
                 } else {
                     t.muted_foreground
                 };

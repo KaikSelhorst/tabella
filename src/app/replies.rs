@@ -142,7 +142,7 @@ impl App {
                 self.notice = Notice::error(format!("Connection to {} was lost: {e}", s.cfg.name));
             }
             Reply::Connected(Err(e)) => {
-                self.notice = Notice::error(format!("Failed to connect: {e}"));
+                self.notice = Notice::error(format!("Failed to connect: {}", e.explained()));
                 self.session = None;
                 return false;
             }
@@ -156,9 +156,9 @@ impl App {
             Reply::AllColumns(Err(_)) => {}
             Reply::AllFks(Ok(f)) => s.fks = f,
             Reply::Objects(Ok(o)) => s.objects = o,
-            Reply::Admin { done, res } => match res {
+            Reply::Admin { done, failed, res } => match res {
                 Ok(()) => self.notice = Notice::info(done),
-                Err(e) => self.notice = Notice::error(format!("Couldn't do it: {e}")),
+                Err(e) => self.notice = Notice::error(format!("{failed}: {e}")),
             },
             Reply::Location(Ok((dbs, db, schema))) => {
                 // A switch (not the first report at connect) focuses the new one.
@@ -351,7 +351,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
         Reply::Imported { res, .. } => {
             match res {
                 Ok(n) => {
-                    *cx.notice = Notice::info(format!("{n} row(s) imported"));
+                    *cx.notice = Notice::info(format!("{n} {} imported", crate::values::noun(n, "row")));
                     if let TabKind::Table(ts) = &mut t.kind {
                         ts.import = None;
                     }

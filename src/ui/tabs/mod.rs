@@ -331,7 +331,7 @@ impl App {
         ui.painter().rect_stroke(
             half,
             0.0,
-            egui::Stroke::new(2.0, t.lime),
+            egui::Stroke::new(2.0, t.accent_text),
             egui::StrokeKind::Inside,
         );
         if ctx.input(|i| i.pointer.any_released()) {
@@ -441,7 +441,7 @@ impl App {
                                         (icon::X, "Close")
                                     };
                                     let x = theme::icon(glyph).size(11.0).color(if tab.pinned {
-                                        t.lime
+                                        t.accent_text
                                     } else {
                                         t.subtle
                                     });
@@ -494,12 +494,16 @@ impl App {
                     ui.painter().vline(
                         at,
                         r.shrink2(egui::vec2(0.0, 6.0)).y_range(),
-                        egui::Stroke::new(2.0, t.lime),
+                        egui::Stroke::new(2.0, t.accent_text),
                     );
                 }
             } else {
-                ui.painter()
-                    .rect_stroke(r, 0.0, egui::Stroke::new(2.0, t.lime), egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(
+                    r,
+                    0.0,
+                    egui::Stroke::new(2.0, t.accent_text),
+                    egui::StrokeKind::Inside,
+                );
             }
         }
         if let Some(id) = strip.response.dnd_release_payload::<u64>() {
@@ -843,11 +847,12 @@ pub(super) fn export_banner(ui: &mut egui::Ui, tab: &mut Tab) {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(theme::icon(icon::CHECK).color(t.lime));
+                    ui.label(theme::icon(icon::CHECK).color(t.accent_text));
                     ui.label(
                         egui::RichText::new(format!(
-                            "{} row(s) copied as {format}",
-                            palette::format_count(rows as i64)
+                            "{} {} copied as {format}",
+                            palette::format_count(rows as i64),
+                            crate::values::noun(rows, "row")
                         ))
                         .color(t.foreground),
                     );
@@ -875,14 +880,15 @@ pub(super) fn export_banner(ui: &mut egui::Ui, tab: &mut Tab) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::CHECK).color(t.lime));
+                ui.label(theme::icon(icon::CHECK).color(t.accent_text));
                 let name = path
                     .file_name()
                     .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().to_string());
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} row(s) exported to {name}",
-                        palette::format_count(*rows as i64)
+                        "{} {} exported to {name}",
+                        palette::format_count(*rows as i64),
+                        crate::values::noun(*rows, "row")
                     ))
                     .color(t.foreground),
                 )
@@ -931,7 +937,7 @@ pub(super) fn danger_button(label: &str) -> egui::Button<'static> {
 /// Icon toggle for the row detail panel.
 pub(super) fn detail_toggle(ui: &mut egui::Ui, show: &mut bool) {
     let t = theme::tokens();
-    let color = if *show { t.lime } else { t.muted_foreground };
+    let color = if *show { t.accent_text } else { t.muted_foreground };
     let tip = if *show {
         "Hide row details"
     } else {

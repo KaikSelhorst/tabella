@@ -234,7 +234,7 @@ pub fn chart(
         i.clamp(0, n as isize - 1) as usize
     });
 
-    let color = t.lime;
+    let color = t.accent_text;
     match spec.kind {
         ChartKind::Bars => {
             // Thin bars with a 2px gap; square ends.

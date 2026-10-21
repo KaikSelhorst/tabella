@@ -35,7 +35,7 @@ impl App {
 
         ui.vertical_centered(|ui| {
             ui.add_space((ui.available_height() * 0.16).max(24.0));
-            ui.label(theme::icon(icon::DATABASE).size(36.0).color(t.lime));
+            ui.label(theme::icon(icon::DATABASE).size(36.0).color(t.accent_text));
             ui.add_space(4.0);
             ui.label(RichText::new("tabella").size(22.0).color(t.foreground));
             ui.label(
@@ -189,7 +189,7 @@ fn connection_card(ui: &mut egui::Ui, c: &ConnConfig) -> egui::Response {
         Align2::RIGHT_CENTER,
         icon::ARROW_RIGHT,
         FontId::new(14.0, theme::icon_family()),
-        if hovered { t.lime } else { t.subtle },
+        if hovered { t.accent_text } else { t.subtle },
     );
     r.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

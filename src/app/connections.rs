@@ -21,14 +21,20 @@ impl App {
         match config::save(&self.connections.saved, &mut self.connections.secrets) {
             Ok(r) if r.not_stored > 0 => {
                 self.notice = Notice::info(format!(
-                    "{} password(s) weren't saved to disk (this session only)",
-                    r.not_stored
+                    "{} {} saved to disk (this session only)",
+                    r.not_stored,
+                    if r.not_stored == 1 {
+                        "password wasn't"
+                    } else {
+                        "passwords weren't"
+                    }
                 ))
             }
             Ok(r) if r.not_removed > 0 => {
                 self.notice = Notice::error(format!(
-                    "{} old password(s) couldn't be deleted from: {}",
+                    "{} old {} couldn't be deleted from: {}",
                     r.not_removed,
+                    crate::values::noun(r.not_removed as u64, "password"),
                     self.connections.secrets.describe()
                 ))
             }
@@ -361,7 +367,8 @@ impl App {
     pub fn export_connections(&mut self, path: &std::path::Path) {
         self.notice = match config::export_to(path, &self.connections.saved) {
             Ok(n) => Notice::info(format!(
-                "{n} connection(s) exported to {} (without passwords)",
+                "{n} {} exported to {} (without passwords)",
+                crate::values::noun(n as u64, "connection"),
                 path.display()
             )),
             Err(e) => Notice::error(e),
@@ -376,7 +383,8 @@ impl App {
                 self.connections.saved.extend(list);
                 self.write_connections();
                 self.notice = Notice::info(format!(
-                    "{n} connection(s) imported: open each to enter its password"
+                    "{n} {} imported: open each to enter its password",
+                    crate::values::noun(n as u64, "connection")
                 ));
             }
             Err(e) => self.notice = Notice::error(e),

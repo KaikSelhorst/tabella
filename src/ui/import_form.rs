@@ -29,7 +29,7 @@ pub fn import_form(
         .show(ctx, |ui| {
             ui.set_width(720.0);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::UPLOAD_SIMPLE).size(16.0).color(t.lime));
+                ui.label(theme::icon(icon::UPLOAD_SIMPLE).size(16.0).color(t.accent_text));
                 ui.label(RichText::new(format!("Import CSV or Excel into {table}")).size(15.0).color(t.foreground));
             });
             ui.label(
@@ -67,8 +67,9 @@ pub fn import_form(
                     };
                     ui.label(
                         RichText::new(format!(
-                            "{} column(s) · {source} · preview of the first {PREVIEW_ROWS} rows",
-                            pv.headers.len()
+                            "{} {} · {source} · preview of the first {PREVIEW_ROWS} rows",
+                            pv.headers.len(),
+                            crate::values::noun(pv.headers.len() as u64, "column")
                         ))
                         .size(11.0)
                         .color(t.subtle),
@@ -91,7 +92,7 @@ pub fn import_form(
                                     // Where each file column goes.
                                     for (i, target) in form.mapping.iter_mut().enumerate() {
                                         let shown = target.as_deref().unwrap_or("(ignore)");
-                                        let color = if target.is_some() { t.lime } else { t.subtle };
+                                        let color = if target.is_some() { t.accent_text } else { t.subtle };
                                         egui::ComboBox::from_id_salt(("import_map", tab_id, i))
                                             .width(COL_WIDTH)
                                             .selected_text(RichText::new(shown).color(color))

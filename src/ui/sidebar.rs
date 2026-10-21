@@ -204,7 +204,7 @@ impl App {
                                 theme::icon_text(
                                     icon::PLUS,
                                     "Add connection…",
-                                    theme::tokens().lime,
+                                    theme::tokens().accent_text,
                                     theme::tokens().foreground,
                                 ),
                             )

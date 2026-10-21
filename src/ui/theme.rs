@@ -75,7 +75,11 @@ pub struct Tokens {
     pub muted_foreground: Color32,
     /// Row numbers, placeholders, NULL.
     pub subtle: Color32,
+    /// Brand accent for fills: primary buttons, tints, the active tab's line.
     pub lime: Color32,
+    /// The accent for text, icons and thin marks (caret, chart lines): the lime itself on dark,
+    /// a darker green on light, where lime text can't be read.
+    pub accent_text: Color32,
     pub ring: Color32,
     pub selection: Color32,
     pub destructive: Color32,
@@ -130,12 +134,13 @@ fn build_light_tokens() -> Tokens {
         border: brand(0.885),
         foreground: brand(0.22),
         muted_foreground: brand(0.45),
-        subtle: brand(0.58),
+        subtle: brand(0.53),
         lime,
+        accent_text: oklch(0.50, 0.15, 128.0),
         ring: mix(oklch(0.58, 0.16, 125.0), 0.8, background),
         selection: mix(lime, 0.22, background),
         destructive: oklch(0.55, 0.2, 25.0),
-        warning: oklch(0.62, 0.15, 65.0),
+        warning: oklch(0.55, 0.14, 65.0),
         info: oklch(0.50, 0.16, 264.0),
         number: oklch(0.48, 0.13, 240.0),
         boolean: oklch(0.50, 0.17, 300.0),
@@ -156,8 +161,9 @@ fn build_tokens() -> Tokens {
         border: brand(0.235),
         foreground: brand(0.92),
         muted_foreground: brand(0.64),
-        subtle: brand(0.50),
+        subtle: brand(0.60),
         lime,
+        accent_text: lime,
         ring: mix(lime, 0.65, background),
         selection: mix(lime, 0.12, background),
         destructive: oklch(0.62, 0.19, 25.0),
@@ -207,7 +213,7 @@ pub fn apply(ctx: &egui::Context) {
     v.error_fg_color = t.destructive;
     v.selection.bg_fill = t.selection;
     v.selection.stroke = Stroke::new(1.0, t.ring);
-    v.text_cursor.stroke = Stroke::new(2.0, t.lime);
+    v.text_cursor.stroke = Stroke::new(2.0, t.accent_text);
     v.striped = false;
 
     // Controls are quiet outlined boxes; only the primary action uses lime.
@@ -432,12 +438,12 @@ pub fn tab_drag_ghost(ui: &egui::Ui, label: &egui::Response, glyph: &str, text: 
         });
 }
 
-/// The line under the selected tab, across all of it: from its icon to its close button. Lime in
-/// the pane with focus, grey in the other one of a split view.
+/// The line under the selected tab, across all of it: from its icon to its close button. The
+/// accent in the pane with focus, grey in the other one of a split view.
 pub fn tab_underline(ui: &egui::Ui, tab: egui::Rect, focused: bool) {
     let y = ui.max_rect().bottom() - 1.0;
     let t = tokens();
-    let color = if focused { t.lime } else { t.subtle };
+    let color = if focused { t.accent_text } else { t.subtle };
     ui.painter()
         .hline(tab.x_range().expand(4.0), y, Stroke::new(2.0, color));
 }
@@ -470,5 +476,56 @@ mod tests {
     fn background_is_not_pure_black() {
         let t = tokens();
         assert!(t.background.r() > 10 && t.background.r() < 30);
+    }
+
+    /// WCAG contrast ratio of two colors (1 to 21).
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let lum = |c: Color32| {
+            let f = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+        };
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Every text color reads on every surface, in both themes: WCAG AA for small text (4.5:1),
+    /// which most of the app's text is.
+    #[test]
+    fn text_colors_are_readable() {
+        for t in [build_tokens(), build_light_tokens()] {
+            let text = [
+                ("foreground", t.foreground),
+                ("muted_foreground", t.muted_foreground),
+                ("subtle", t.subtle),
+                ("accent_text", t.accent_text),
+                ("number", t.number),
+                ("boolean", t.boolean),
+                ("date", t.date),
+                ("info", t.info),
+                ("warning", t.warning),
+                ("destructive", t.destructive),
+            ];
+            for (name, c) in text {
+                for (surface, bg) in [
+                    ("background", t.background),
+                    ("sidebar", t.sidebar),
+                    ("card", t.card),
+                ] {
+                    let r = contrast(c, bg);
+                    assert!(r >= 4.5, "{name} on {surface}: {r:.2}");
+                }
+            }
+            // The hierarchy stays: subtle is still the faintest.
+            assert!(contrast(t.subtle, t.background) < contrast(t.muted_foreground, t.background));
+            // Text on the accent (primary buttons).
+            assert!(contrast(t.on_accent, t.lime) >= 4.5);
+        }
     }
 }

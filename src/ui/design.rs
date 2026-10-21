@@ -69,7 +69,7 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
                     columns(ui, tab_id, d);
                     ui.add_space(4.0);
                     if ui
-                        .button(theme::icon_text(icon::PLUS, "Column", t.lime, t.foreground))
+                        .button(theme::icon_text(icon::PLUS, "Column", t.accent_text, t.foreground))
                         .clicked()
                     {
                         d.columns.push(ColDef::new());
@@ -79,7 +79,7 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
                     indexes(ui, tab_id, d);
                     ui.add_space(4.0);
                     if ui
-                        .button(theme::icon_text(icon::PLUS, "Index", t.lime, t.foreground))
+                        .button(theme::icon_text(icon::PLUS, "Index", t.accent_text, t.foreground))
                         .clicked()
                     {
                         d.indexes.push(IndexDef {
@@ -226,7 +226,11 @@ fn columns(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
                 } else {
                     (icon::TRASH, "Delete the column")
                 };
-                let color = if c.dropped { t.lime } else { t.muted_foreground };
+                let color = if c.dropped {
+                    t.accent_text
+                } else {
+                    t.muted_foreground
+                };
                 if ui
                     .add(egui::Button::new(theme::icon(glyph).color(color)).frame(false))
                     .on_hover_text(tip)

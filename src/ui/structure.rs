@@ -129,12 +129,15 @@ pub fn structure_tab(
                                     ui.label(theme::icon(icon::KEY).size(12.0).color(t.warning))
                                         .on_hover_text("Primary key")
                                 } else if focused {
-                                    ui.label(theme::icon(icon::ARROW_RIGHT).size(12.0).color(t.lime))
+                                    ui.label(theme::icon(icon::ARROW_RIGHT).size(12.0).color(t.accent_text))
                                 } else {
                                     ui.label("")
                                 };
-                                let name =
-                                    RichText::new(&c.name).color(if focused { t.lime } else { t.foreground });
+                                let name = RichText::new(&c.name).color(if focused {
+                                    t.accent_text
+                                } else {
+                                    t.foreground
+                                });
                                 ui.label(if focused { name.strong() } else { name });
                                 ui.label(RichText::new(&c.data_type).monospace().size(12.0).color(t.number));
                                 ui.label(
@@ -244,7 +247,7 @@ pub fn insert_form(
         .show(ctx, |ui| {
             ui.set_width(520.0);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::PLUS).size(16.0).color(t.lime));
+                ui.label(theme::icon(icon::PLUS).size(16.0).color(t.accent_text));
                 ui.label(
                     RichText::new(format!("New row in {table}"))
                         .size(15.0)

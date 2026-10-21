@@ -389,6 +389,15 @@ pub fn display_bool_or(kind: ValueKind, v: &str) -> String {
     }
 }
 
+/// `word` for `n` of them: "1 row", "3 rows" (every word the app counts takes an `s`).
+pub fn noun(n: u64, word: &str) -> String {
+    if n == 1 {
+        word.to_string()
+    } else {
+        format!("{word}s")
+    }
+}
+
 /// A number for the status line: whole numbers without decimals, others with up to 4.
 pub fn format_number(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
@@ -887,5 +896,12 @@ mod tests {
                 assert_eq!(v(&compact), v(s));
             }
         });
+    }
+
+    #[test]
+    fn nouns_agree_with_their_count() {
+        assert_eq!(noun(0, "row"), "rows");
+        assert_eq!(noun(1, "row"), "row");
+        assert_eq!(noun(2, "write statement"), "write statements");
     }
 }

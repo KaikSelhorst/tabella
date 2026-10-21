@@ -141,7 +141,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_width(640.0);
                 ui.horizontal(|ui| {
-                    ui.label(theme::icon(icon::KEYBOARD).size(16.0).color(t.lime));
+                    ui.label(theme::icon(icon::KEYBOARD).size(16.0).color(t.accent_text));
                     ui.label(RichText::new("Shortcuts").size(15.0).color(t.foreground));
                 });
                 ui.add_space(8.0);

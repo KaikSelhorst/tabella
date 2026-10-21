@@ -137,7 +137,7 @@ pub(super) fn compare_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     if diffs.is_empty() {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            ui.label(theme::icon(icon::CHECK).size(16.0).color(t.lime));
+                            ui.label(theme::icon(icon::CHECK).size(16.0).color(t.accent_text));
                             ui.label(egui::RichText::new("Same structure on both sides").color(t.foreground));
                         });
                         return;
@@ -184,7 +184,7 @@ pub(super) fn compare_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     }
                     if let Some(path) = &st.saved {
                         ui.horizontal(|ui| {
-                            ui.label(theme::icon(icon::CHECK).color(t.lime));
+                            ui.label(theme::icon(icon::CHECK).color(t.accent_text));
                             ui.label(egui::RichText::new(path.display().to_string()).monospace().size(12.0));
                             if ui.small_button("Show in folder").clicked() {
                                 export::reveal(path);
@@ -195,7 +195,7 @@ pub(super) fn compare_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     for d in diffs {
                         let (badge, color) = match d.status {
                             Status::Changed => ("changed", t.info),
-                            Status::New => ("new", t.lime),
+                            Status::New => ("new", t.accent_text),
                             Status::Extra => ("only in target", t.warning),
                         };
                         let header = egui::RichText::new(format!("{}  ·  {badge}", d.table)).color(color);

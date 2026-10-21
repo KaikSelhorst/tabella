@@ -283,7 +283,7 @@ fn paint_links(painter: &egui::Painter, d: &DiagramState, v: &View, hovered_name
         };
         let lit = hovered_name.is_some_and(|h| h == src.name || h == dst.name);
         let stroke = if lit {
-            Stroke::new(2.0, t.lime)
+            Stroke::new(2.0, t.accent_text)
         } else {
             Stroke::new(1.5, t.muted_foreground.gamma_multiply(0.55))
         };
@@ -323,7 +323,7 @@ fn paint_boxes(painter: &egui::Painter, d: &DiagramState, v: &View, hovered: Opt
         painter.rect_stroke(
             r,
             0.0,
-            Stroke::new(1.0, if lit { t.lime } else { t.border }),
+            Stroke::new(1.0, if lit { t.accent_text } else { t.border }),
             egui::StrokeKind::Inside,
         );
         let clip = painter.with_clip_rect(r.intersect(v.rect));

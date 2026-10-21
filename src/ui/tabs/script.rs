@@ -85,7 +85,7 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     ui.horizontal(|ui| {
                         let fill = match &st.outcome {
                             Some(Some(_)) => t.destructive,
-                            _ => t.lime,
+                            _ => t.accent_text,
                         };
                         ui.add(egui::ProgressBar::new(frac).desired_width(320.0).desired_height(6.0).fill(fill));
                         let took = st.took.or_else(|| st.started.map(|at| at.elapsed())).unwrap_or_default();
@@ -115,7 +115,7 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     match &st.outcome {
                         Some(None) => {
                             ui.horizontal(|ui| {
-                                ui.label(theme::icon(icon::CHECK).size(16.0).color(t.lime));
+                                ui.label(theme::icon(icon::CHECK).size(16.0).color(t.accent_text));
                                 let done = if st.transaction { "File run and committed" } else { "File run" };
                                 ui.label(egui::RichText::new(done).color(t.foreground));
                             });
@@ -190,7 +190,7 @@ fn slowest_statements(ui: &mut egui::Ui, slowest: &[crate::db::StatementTime]) {
         .spacing([14.0, 4.0])
         .show(ui, |ui| {
             for (i, st) in slowest.iter().enumerate() {
-                let color = if i == 0 { t.lime } else { t.muted_foreground };
+                let color = if i == 0 { t.accent_text } else { t.muted_foreground };
                 ui.label(
                     egui::RichText::new(format!("line {}", st.line))
                         .size(12.0)

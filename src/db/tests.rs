@@ -1078,3 +1078,34 @@ fn mysql_edits_match_a_model() {
     };
     edits_match_a_model(&mut Conn::connect(&cfg, None).unwrap(), Kind::MySql, "test");
 }
+
+/// The usual ways a connection fails get their plain reason, from a real server.
+#[test]
+#[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
+fn connection_failures_explained() {
+    let cfg = |port: u16, password: &str, database: &str| ConnConfig {
+        password: password.into(),
+        database: database.into(),
+        host: "127.0.0.1".into(),
+        port,
+        user: "postgres".into(),
+        ..ConnConfig::new(Kind::Postgres)
+    };
+    let why = |c: ConnConfig| Conn::connect(&c, None).err().and_then(|e| e.plain_reason());
+    assert_eq!(
+        why(cfg(55432, "wrong", "postgres")),
+        Some("Wrong user or password.")
+    );
+    assert_eq!(
+        why(cfg(55432, "pw", "no_such_db")),
+        Some("That database doesn't exist on the server.")
+    );
+    assert!(
+        why(cfg(1, "pw", "postgres")).is_some_and(|w| w.contains("port")),
+        "nothing listens on port 1"
+    );
+    let mut my = cfg(53306, "wrong", "test");
+    my.kind = Kind::MySql;
+    my.user = "root".into();
+    assert_eq!(why(my), Some("Wrong user or password."));
+}

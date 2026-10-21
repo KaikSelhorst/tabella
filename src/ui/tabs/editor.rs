@@ -451,7 +451,7 @@ fn editor_body(
                 egui::pos2(x, out.galley_pos.y + top.min.y),
                 egui::pos2(x, out.galley_pos.y + bottom.max.y),
             ],
-            egui::Stroke::new(2.0, t.lime),
+            egui::Stroke::new(2.0, t.accent_text),
         );
     }
     definition_hover(ui, s, tab_id, text, &tg.ranges, &out, asked);
@@ -695,7 +695,13 @@ fn explain_menu(ui: &mut egui::Ui, busy: bool, compact: bool) -> Option<bool> {
 fn repeat_menu(ui: &mut egui::Ui, repeat: &mut Option<u64>, enabled: bool, compact: bool) {
     let t = theme::tokens();
     let label: egui::WidgetText = match *repeat {
-        Some(n) => theme::icon_text(icon::ARROWS_CLOCKWISE, &format!("every {n} s"), t.lime, t.lime).into(),
+        Some(n) => theme::icon_text(
+            icon::ARROWS_CLOCKWISE,
+            &format!("every {n} s"),
+            t.accent_text,
+            t.accent_text,
+        )
+        .into(),
         None if compact => theme::icon(icon::ARROWS_CLOCKWISE)
             .color(t.muted_foreground)
             .into(),
@@ -1032,7 +1038,7 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
         .show(ctx, |ui| {
             ui.set_width(420.0);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::BRACKETS_CURLY).size(16.0).color(t.lime));
+                ui.label(theme::icon(icon::BRACKETS_CURLY).size(16.0).color(t.accent_text));
                 ui.label(egui::RichText::new("Parameters").size(15.0).color(t.foreground));
             });
             ui.label(
@@ -1106,7 +1112,7 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
         .show(ctx, |ui| {
             ui.set_width(720.0);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(icon::EYE).size(16.0).color(t.lime));
+                ui.label(theme::icon(icon::EYE).size(16.0).color(t.accent_text));
                 ui.label(egui::RichText::new("Preview").size(15.0).color(t.foreground));
                 ui.label(
                     egui::RichText::new("nothing was changed")
@@ -1145,8 +1151,9 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                     };
                     ui.label(
                         egui::RichText::new(format!(
-                            "{} row(s) would be {verb}",
-                            palette::format_count(d.count as i64)
+                            "{} {} would be {verb}",
+                            palette::format_count(d.count as i64),
+                            crate::values::noun(d.count, "row")
                         ))
                         .size(18.0)
                         .color(color),
@@ -1279,9 +1286,10 @@ pub(super) fn confirm_run(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             }
             ui.add_space(4.0);
             let note = if risk.dangers.is_empty() {
+                let n = sql::statement_ranges(&sql, false).len();
                 format!(
-                    "This connection asks before changing data: {} statement(s) will run.",
-                    sql::statement_ranges(&sql, false).len()
+                    "This connection asks before changing data: {n} {} will run.",
+                    crate::values::noun(n as u64, "statement")
                 )
             } else {
                 "This may delete or change a lot of data and can't be undone.".to_string()
@@ -1325,7 +1333,7 @@ pub(super) fn favorites_menu(
     let label = theme::tool(icon::STAR, "Favorites", compact, t.warning, t.foreground);
     ui.menu_button(label, |ui| {
         ui.set_width(380.0);
-        let save = theme::icon_text(icon::PLUS, "Save current query…", t.lime, t.foreground);
+        let save = theme::icon_text(icon::PLUS, "Save current query…", t.accent_text, t.foreground);
         if ui
             .add_enabled(can_save, egui::Button::new(save).frame_when_inactive(false))
             .clicked()
@@ -1397,7 +1405,7 @@ pub(super) fn history_menu(
         let all = theme::icon_text(
             icon::LIST_MAGNIFYING_GLASS,
             "View full history…",
-            t.lime,
+            t.accent_text,
             t.foreground,
         );
         if ui

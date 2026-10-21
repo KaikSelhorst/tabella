@@ -260,7 +260,11 @@ fn start_column_stats(tab: &mut Tab, s: &Session, col: usize) {
             let data = values::local_column_stats(res, col, kind);
             tab.col_stats = Some(StatsView {
                 column: name,
-                scope: format!("{} loaded row(s)", res.rows.len()),
+                scope: format!(
+                    "{} loaded {}",
+                    res.rows.len(),
+                    crate::values::noun(res.rows.len() as u64, "row")
+                ),
                 data: Some(Ok(data)),
             });
         }
@@ -365,8 +369,10 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
                     }
                     tab.error = (p.skipped > 0).then(|| {
                         format!(
-                            "{} pasted cell(s) fell outside the page and were ignored.",
-                            p.skipped
+                            "{} pasted {} outside the page and {} ignored.",
+                            p.skipped,
+                            if p.skipped == 1 { "cell fell" } else { "cells fell" },
+                            if p.skipped == 1 { "was" } else { "were" }
                         )
                     });
                 }

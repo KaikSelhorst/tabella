@@ -460,7 +460,7 @@ pub fn popup(
                             ItemKind::Table => (icon::TABLE, t.info),
                             ItemKind::Column => (icon::COLUMNS, t.number),
                             ItemKind::Keyword => (icon::TEXT_AA, t.subtle),
-                            ItemKind::Snippet => (icon::LIGHTNING, t.lime),
+                            ItemKind::Snippet => (icon::LIGHTNING, t.accent_text),
                             ItemKind::Join => (icon::LINK, t.info),
                         };
                         p.text(

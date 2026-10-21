@@ -67,7 +67,7 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let frac = if st.total == 0 { 0.0 } else { st.done as f32 / st.total as f32 };
-                    ui.add(egui::ProgressBar::new(frac).desired_width(240.0).desired_height(6.0).fill(t.lime));
+                    ui.add(egui::ProgressBar::new(frac).desired_width(240.0).desired_height(6.0).fill(t.accent_text));
                     let mut text = format!(
                         "{} of {} tables · found in {}",
                         st.done,
