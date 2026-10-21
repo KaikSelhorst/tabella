@@ -357,3 +357,42 @@ fn crop_shot() {
     let big = imageops::resize(&piece, n[2] * scale, n[3] * scale, imageops::FilterType::Nearest);
     big.save(output).unwrap();
 }
+
+/// A closed tab leaves nothing behind in egui's memory: its laid-out text (hundreds of MB for a
+/// big script) and other caches go with it, whichever way it was closed.
+#[test]
+fn closed_tabs_free_their_caches() {
+    let mut h = Driver::new();
+    h.frame();
+    let id = {
+        let app = h.state_mut();
+        app.open_sql("SELECT 1;\nSELECT 2;".into());
+        app.active = app.tabs.len() - 1;
+        app.tabs[app.active].id
+    };
+    h.frame();
+    h.frame();
+    let held = |h: &Driver| {
+        h.ctx.data(|d| {
+            (
+                d.get_temp::<(egui::Id, std::sync::Arc<egui::Galley>)>(egui::Id::new(("editor_galley", id)))
+                    .is_some(),
+                d.get_temp::<(egui::Id, Vec<(usize, usize)>)>(egui::Id::new(("statement_ranges", id)))
+                    .is_some(),
+            )
+        })
+    };
+    assert_eq!(
+        held(&h),
+        (true, true),
+        "an open editor keeps its layout and statements"
+    );
+    {
+        let app = h.state_mut();
+        let i = app.active;
+        app.tabs.remove(i);
+        app.active = 0;
+    }
+    h.frame();
+    assert_eq!(held(&h), (false, false), "gone with the tab");
+}

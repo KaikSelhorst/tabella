@@ -1282,6 +1282,8 @@ pub struct App {
     pub quit_prompt: bool,
     /// Recently closed tabs, newest last.
     pub closed: Vec<SavedTab>,
+    /// Ids of the tabs open last frame: a tab gone since gets its UI caches dropped.
+    pub(crate) open_tab_ids: Vec<u64>,
     pub settings: crate::settings::Settings,
     /// The window title announces a finished job (cleared when the window is focused).
     title_changed: bool,
@@ -1358,6 +1360,7 @@ impl App {
             sort_by_size: false,
             quit_prompt: false,
             closed: Vec::new(),
+            open_tab_ids: Vec::new(),
             split: None,
             settings: settings.value,
             title_changed: false,

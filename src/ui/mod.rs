@@ -81,6 +81,7 @@ impl App {
     /// One frame of the whole window.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         self.tick_fps();
+        self.forget_closed_tabs(ui.ctx());
         self.clear_finished_notice();
         self.window = ui
             .ctx()
@@ -132,6 +133,27 @@ impl App {
 }
 
 impl App {
+    /// Drops the UI caches (laid-out text, search hits, comparisons) of tabs closed since the
+    /// last frame, whichever way they were closed: they live in egui's memory, keyed by the tab,
+    /// and would otherwise stay until the app quits (a big script's layout is hundreds of MB).
+    fn forget_closed_tabs(&mut self, ctx: &egui::Context) {
+        if self.tabs.len() == self.open_tab_ids.len()
+            && self
+                .tabs
+                .iter()
+                .zip(&self.open_tab_ids)
+                .all(|(t, id)| t.id == *id)
+        {
+            return;
+        }
+        for &id in &self.open_tab_ids {
+            if !self.tabs.iter().any(|t| t.id == id) {
+                tabs::forget_tab_caches(ctx, id);
+            }
+        }
+        self.open_tab_ids = self.tabs.iter().map(|t| t.id).collect();
+    }
+
     /// "Open transaction" across the window while a manual transaction has uncommitted work.
     fn tx_band(&mut self, ui: &mut egui::Ui) {
         let Some(txn) = self.session.as_ref().map(|s| s.txn).filter(|t| t.open) else {

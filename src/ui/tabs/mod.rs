@@ -686,6 +686,20 @@ fn tab_body(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     }
 }
 
+/// Removes what the tab views keep in egui's memory for tab `id`; each entry is replaced by
+/// the next value while the tab lives, so only a closed tab's are ever left behind.
+pub(crate) fn forget_tab_caches(ctx: &egui::Context, id: u64) {
+    use std::sync::Arc;
+    ctx.data_mut(|d| {
+        d.remove::<(egui::Id, Arc<egui::Galley>)>(egui::Id::new(("editor_galley", id)));
+        d.remove::<(egui::Id, Arc<egui::Galley>)>(egui::Id::new(("value_editor_galley", id)));
+        d.remove::<(egui::Id, Vec<(usize, usize)>)>(egui::Id::new(("statement_ranges", id)));
+        d.remove::<(egui::Id, bool)>(egui::Id::new(("previewable", id)));
+        d.remove::<(egui::Id, Vec<(usize, usize)>)>(egui::Id::new(("result_find_cache", id)));
+        d.remove::<(egui::Id, Arc<crate::values::ResultDiff>)>(egui::Id::new(("result_diff", id)));
+    });
+}
+
 pub(super) fn error_banner(ui: &mut egui::Ui, e: &str) {
     let t = theme::tokens();
     egui::Frame::new()
