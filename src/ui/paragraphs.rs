@@ -1,7 +1,7 @@
 //! A long text laid out a paragraph at a time, each paragraph's layout kept from frame to frame.
 //! egui caches paragraphs too, but drops whatever wasn't laid out in the last frame: an editor
 //! that keeps its whole galley while the text stays the same lost them all, and its first
-//! keystroke after a pause laid the whole text out again (1.7 s for a 700 KB paste).
+//! keystroke after a pause laid the whole text out again.
 
 use std::collections::HashMap;
 use std::sync::Arc;

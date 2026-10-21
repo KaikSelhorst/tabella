@@ -158,7 +158,7 @@ pub fn query_tables(text: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Short alias for a table, not among `used`: initials of its words (`pedido_itens` → `pi`),
+/// Short alias for a table, not among `used`: initials of its words (`order_items` → `oi`),
 /// then a number.
 fn new_alias(table: &str, used: &[String]) -> String {
     let base: String = table
