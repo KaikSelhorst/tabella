@@ -1774,6 +1774,16 @@ fn screenshots() {
         .unwrap()
         .save(format!("{dir}/pending.png"))
         .unwrap();
+    // Closing the window with those edits not saved.
+    harness.state_mut().window_state.quit_prompt = true;
+    harness.run();
+    harness
+        .render()
+        .unwrap()
+        .save(format!("{dir}/quit-edits.png"))
+        .unwrap();
+    harness.state_mut().window_state.quit_prompt = false;
+    harness.run();
     if let TabKind::Table(ts) = &mut harness.state_mut().tabs[0].kind {
         ts.confirm_save = true;
     }

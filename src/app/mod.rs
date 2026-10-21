@@ -374,10 +374,12 @@ pub struct WindowState {
     pub size: Option<[f32; 2]>,
     /// The title announces a finished job (cleared when the window is focused).
     title_changed: bool,
-    /// Asked to close with a transaction open: ask what to do with it.
+    /// Asked to close with unsaved edits or a transaction open: ask what to do with them.
     pub quit_prompt: bool,
     /// Close once the transaction has been ended.
     pub quit_after_tx: bool,
+    /// The user chose to quit without the unsaved edits (a transaction may still be asked about).
+    pub quit_drops_edits: bool,
 }
 
 impl App {

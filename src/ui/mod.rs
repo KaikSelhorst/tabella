@@ -448,14 +448,29 @@ impl App {
         }
     }
 
-    /// Closing the window would silently roll back an open transaction: ask first.
+    /// Closing the window would silently drop unsaved grid edits (the session doesn't keep them)
+    /// or roll back an open transaction: ask first, about the edits and then the transaction.
     fn quit_guard(&mut self, ctx: &egui::Context) {
-        let open = self.session.as_ref().is_some_and(|s| s.txn.open);
-        if open && !self.window_state.quit_after_tx && ctx.input(|i| i.viewport().close_requested()) {
+        let edited: Vec<&str> = if self.window_state.quit_drops_edits {
+            Vec::new()
+        } else {
+            self.tabs
+                .iter()
+                .filter(|t| crate::app::has_unsaved(t))
+                .map(|t| t.title.as_str())
+                .collect()
+        };
+        let open = self.session.as_ref().is_some_and(|s| s.txn.open) && !self.window_state.quit_after_tx;
+        if (open || !edited.is_empty()) && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.window_state.quit_prompt = true;
         }
         if !self.window_state.quit_prompt {
+            return;
+        }
+        if !edited.is_empty() {
+            let edited = edited.join(", ");
+            self.unsaved_edits_prompt(ctx, &edited);
             return;
         }
         let t = theme::tokens();
@@ -505,6 +520,50 @@ impl App {
                 self.end_tx(commit);
             }
             Some(None) => self.window_state.quit_prompt = false,
+            None => {}
+        }
+    }
+
+    /// "Unsaved changes" before quitting: back to save them, or quit without them.
+    fn unsaved_edits_prompt(&mut self, ctx: &egui::Context, tabs: &str) {
+        let t = theme::tokens();
+        let mut choice = None;
+        let modal = egui::Modal::new(egui::Id::new("quit_edits"))
+            .frame(theme::modal_frame(16))
+            .show(ctx, |ui| {
+                ui.set_width(420.0);
+                ui.horizontal(|ui| {
+                    ui.label(theme::icon(icon::WARNING).size(16.0).color(t.warning));
+                    ui.label(egui::RichText::new("Unsaved changes").size(15.0).color(t.foreground));
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Edits in {tabs} aren't saved yet. Closing now discards them; go back and press Ctrl+S to keep them."
+                    ))
+                    .color(t.muted_foreground),
+                );
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(tabs::danger_button("Discard and quit")).clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.add(theme::outline_button("Back")).clicked() {
+                        choice = Some(false);
+                    }
+                });
+            });
+        if modal.should_close() && choice.is_none() {
+            choice = Some(false);
+        }
+        match choice {
+            Some(true) => {
+                self.window_state.quit_drops_edits = true;
+                self.window_state.quit_prompt = false;
+                // Asked again: a transaction still open gets its own question.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Some(false) => self.window_state.quit_prompt = false,
             None => {}
         }
     }

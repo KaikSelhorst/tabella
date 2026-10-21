@@ -568,6 +568,47 @@ fn grid_survives_random_input() {
     }
 }
 
+/// Closing the window with grid edits not saved asks first (the session doesn't keep them);
+/// once the user says to discard them, it closes.
+#[test]
+fn quitting_with_unsaved_edits_asks_first() {
+    let mut h = Driver::new();
+    let (res, info) = big_result(5, 2);
+    {
+        let tab = &mut h.state_mut().tabs[1];
+        tab.result = Some(res);
+        let mut src = TableState::new("public", "large", None);
+        src.cols = info;
+        src.changes.push(Change::Set {
+            key: vec![Some("1".into())],
+            col: "column_1".into(),
+            value: Some("new".into()),
+            before: None,
+        });
+        tab.editor_mut().unwrap().source = Some(Box::new(src));
+    }
+    let close = |h: &mut Driver| {
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+        let app = &mut h.app;
+        let mut out = h.ctx.run_ui(input, |ui| app.draw(ui));
+        out.textures_delta.clear();
+        out.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&egui::ViewportCommand::CancelClose)
+    };
+    assert!(close(&mut h), "closing is held back");
+    assert!(h.app.window_state.quit_prompt, "and the user is asked");
+    h.app.window_state.quit_prompt = false;
+    h.app.window_state.quit_drops_edits = true;
+    assert!(!close(&mut h), "discarding them lets it close");
+}
+
 /// A closed tab leaves nothing behind in egui's memory: its laid-out text (hundreds of MB for a
 /// big script) and other caches go with it, whichever way it was closed.
 #[test]
