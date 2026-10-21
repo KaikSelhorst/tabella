@@ -25,6 +25,31 @@ use eframe::egui;
 
 use crate::app::{App, Dialog};
 
+/// The app's window is egui's.
+impl crate::app::Window for egui::Context {
+    fn wake(&self) {
+        self.request_repaint();
+    }
+
+    fn close(&self) {
+        self.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn set_title(&self, title: &str) {
+        self.send_viewport_cmd(egui::ViewportCommand::Title(title.into()));
+    }
+
+    fn request_attention(&self) {
+        self.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+            egui::UserAttentionType::Informational,
+        ));
+    }
+
+    fn focused(&self) -> Option<bool> {
+        self.input(|i| i.viewport().focused)
+    }
+}
+
 pub use egui_phosphor::regular as icon;
 
 impl App {

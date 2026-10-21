@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
+use crate::app::Waker;
 use crate::db::{
     ActivityView, Canceller, ColumnInfo, Conn, ConnConfig, DbObject, FkEdge, IncomingFk, PreviewData,
     QueryResult, SchemaColumn, ServerInfo, TableRef, TableStructure,
@@ -720,7 +721,7 @@ fn capped_read(conn: &mut Conn, pg: bool, in_tx: bool, sql: &str) -> DbResult<Qu
 
 /// "Test connection": connects (through the SSH tunnel, if any) on its own thread and says
 /// which server answered and how fast, without touching the open session.
-pub fn test_connection(cfg: ConnConfig, ctx: eframe::egui::Context) -> Receiver<Result<String, String>> {
+pub fn test_connection(cfg: ConnConfig, wake: Waker) -> Receiver<Result<String, String>> {
     let (tx, rx) = channel();
     thread::spawn(move || {
         let started = std::time::Instant::now();
@@ -748,7 +749,7 @@ pub fn test_connection(cfg: ConnConfig, ctx: eframe::egui::Context) -> Receiver<
             Ok(format!("Connected in {ms} ms · {version}"))
         })();
         let _ = tx.send(res);
-        ctx.request_repaint();
+        wake();
     });
     rx
 }
@@ -965,7 +966,7 @@ fn start_schema(conn: &mut Conn, tables: &[TableRef]) -> Option<String> {
 /// tab then doesn't hold up the sidebar, an export or the server panel. A dispatcher thread
 /// picks the connection for each job; until the second is up (or if it can't connect),
 /// everything runs on the first.
-pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> Spawned {
+pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
     let (job_tx, job_rx) = channel::<Job>();
     let (front_tx, front_rx) = channel::<Job>();
     let (reply_tx, reply_rx) = channel::<Reply>();
@@ -981,7 +982,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> Spawned {
         let send = |r: Reply| {
             // Only fails once the app dropped its end: nobody is left to tell.
             let _ = reply_tx.send(r);
-            ctx.request_repaint();
+            wake();
         };
         // Lives as long as this thread: dropping it stops ssh.
         let tunnel = match &cfg.ssh {
@@ -1007,7 +1008,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> Spawned {
                 location.clone(),
                 back,
                 reply_tx.clone(),
-                ctx.clone(),
+                wake.clone(),
             );
             let _ = shared.background.set(bg);
         }
@@ -1115,7 +1116,7 @@ fn spawn_background(
     location: Option<String>,
     running: Arc<Running>,
     reply_tx: Sender<Reply>,
-    ctx: eframe::egui::Context,
+    wake: Waker,
 ) -> Background {
     let (jobs, job_rx) = channel::<Job>();
     let ready = Arc::new(AtomicBool::new(false));
@@ -1123,7 +1124,7 @@ fn spawn_background(
     thread::spawn(move || {
         let send = |r: Reply| {
             let _ = reply_tx.send(r);
-            ctx.request_repaint();
+            wake();
         };
         let Ok(mut conn) = Conn::connect(&cfg, via) else {
             // Everything stays on the first connection.
@@ -1740,7 +1741,7 @@ mod tests {
         };
 
         cfg.manual_commit = true;
-        let Spawned { jobs, replies, .. } = spawn(cfg, eframe::egui::Context::default());
+        let Spawned { jobs, replies, .. } = spawn(cfg, Arc::new(|| {}));
         // Next reply that `f` picks out, skipping the rest.
         let wait = |f: &dyn Fn(Reply) -> Option<String>| -> String {
             loop {
@@ -1916,7 +1917,7 @@ mod tests {
         use std::time::Duration;
         let mut cfg = crate::sqlite::tests::sample_db("worker");
         cfg.manual_commit = true;
-        let Spawned { jobs, replies, .. } = spawn(cfg.clone(), eframe::egui::Context::default());
+        let Spawned { jobs, replies, .. } = spawn(cfg.clone(), Arc::new(|| {}));
         let wait = |f: &dyn Fn(Reply) -> Option<String>| -> String {
             loop {
                 let r = replies
@@ -1984,7 +1985,7 @@ mod tests {
         cfg.password = "pw".into();
         cfg.database = db.into();
         let mut other = Conn::connect(&cfg, None).expect("connect");
-        let Spawned { jobs, replies, .. } = spawn(cfg, eframe::egui::Context::default());
+        let Spawned { jobs, replies, .. } = spawn(cfg, Arc::new(|| {}));
         let next = || {
             replies
                 .recv_timeout(Duration::from_secs(15))
@@ -2056,7 +2057,7 @@ mod tests {
             "CREATE TABLE dbl_adv (id INT PRIMARY KEY, owner INT, status VARCHAR(20), created TIMESTAMP)",
         )
         .unwrap();
-        let Spawned { jobs, replies, .. } = spawn(cfg, eframe::egui::Context::default());
+        let Spawned { jobs, replies, .. } = spawn(cfg, Arc::new(|| {}));
         let ask = |sql: &str| {
             jobs.send(Job::SuggestIndex {
                 tab: 1,
@@ -2210,7 +2211,7 @@ mod tests {
             jobs,
             replies,
             running,
-        } = spawn(cfg, eframe::egui::Context::default());
+        } = spawn(cfg, Arc::new(|| {}));
         // Which replies came, in order: "rows:<tab>" (ok or err) and "tables".
         let next = |timeout: u64| -> Option<String> {
             let deadline = Instant::now() + Duration::from_secs(timeout);
@@ -2514,7 +2515,7 @@ mod tests {
         cfg.port = 55432;
         cfg.password = "pw".into();
         cfg.database = "postgres".into();
-        let ctx = eframe::egui::Context::default();
+        let ctx: Waker = Arc::new(|| {});
         let ok = test_connection(cfg.clone(), ctx.clone()).recv().unwrap().unwrap();
         assert!(
             ok.starts_with("Connected in ") && ok.contains("PostgreSQL 1"),

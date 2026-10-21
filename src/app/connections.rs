@@ -85,6 +85,7 @@ impl App {
     /// Starts deriving the vault key from the typed master password, off the UI thread
     /// (Argon2 is slow on purpose); `finish_master_kdf` applies it.
     pub fn start_master_kdf(&mut self) {
+        let wake = self.waker();
         let Some(p) = &mut self.master else { return };
         let create = p.mode == MasterMode::Create;
         if create && p.password != p.confirm {
@@ -97,10 +98,9 @@ impl App {
         match vault.kdf_job(&p.password, create) {
             Ok(job) => {
                 let (tx, rx) = std::sync::mpsc::channel();
-                let ctx = self.ctx.clone();
                 std::thread::spawn(move || {
                     let _ = tx.send(job.run());
-                    ctx.request_repaint();
+                    wake();
                 });
                 p.error = None;
                 p.working = Some(rx);
@@ -154,7 +154,7 @@ impl App {
         let Some(form) = &self.form else { return };
         self.conn_test = Some(ConnTest {
             key: form.cfg.test_key(),
-            rx: worker::test_connection(form.cfg.clone(), self.ctx.clone()),
+            rx: worker::test_connection(form.cfg.clone(), self.waker()),
             result: None,
         });
     }
@@ -258,7 +258,7 @@ impl App {
             jobs: tx,
             replies: rx,
             running,
-        } = worker::spawn(cfg.clone(), self.ctx.clone());
+        } = worker::spawn(cfg.clone(), self.waker());
         self.notice = Notice::info(format!("Connecting to {}…", cfg.name));
         self.session = Some(Session {
             cfg,
@@ -425,10 +425,10 @@ impl App {
             file.display()
         ));
         let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = self.ctx.clone();
+        let wake = self.waker();
         std::thread::spawn(move || {
             let _ = tx.send(crate::backup::run(&cfg, op, &file));
-            ctx.request_repaint();
+            wake();
         });
         self.backup = Some(rx);
     }

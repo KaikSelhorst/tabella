@@ -2,10 +2,9 @@ use super::tests::fake_session;
 use super::*;
 
 fn app_with(session: Session) -> App {
-    let ctx = egui::Context::default();
     let dir = std::env::temp_dir().join("tabella-poll-tests-config");
     crate::store::use_dir_in_this_thread(dir);
-    let mut app = App::new(&ctx);
+    let mut app = App::new(super::window::NoWindow);
     app.session = Some(session);
     app
 }
@@ -138,14 +137,13 @@ fn a_resumed_postgres_session_returns_to_its_database() {
 /// `--conn` with a name that isn't saved says so instead of connecting somewhere else.
 #[test]
 fn an_unknown_connection_on_the_command_line_is_reported() {
-    let ctx = egui::Context::default();
     let dir = std::env::temp_dir().join("tabella-launch-tests-config");
     crate::store::use_dir_in_this_thread(dir);
     let launch = crate::cli::Launch {
         conn: Some("nowhere".into()),
         ..Default::default()
     };
-    let app = App::with_launch(&ctx, launch);
+    let app = App::with_launch(super::window::NoWindow, launch);
     assert!(app.session.is_none());
     let n = app.notice.as_ref().expect("a notice");
     assert!(n.error && n.text.contains("nowhere"), "{}", n.text);
@@ -154,7 +152,7 @@ fn an_unknown_connection_on_the_command_line_is_reported() {
         url: Some("sqlite::memory:".into()),
         ..Default::default()
     };
-    let app = App::with_launch(&ctx, launch);
+    let app = App::with_launch(super::window::NoWindow, launch);
     assert_eq!(app.session.as_ref().map(|s| s.cfg.kind), Some(Kind::Sqlite));
     assert!(
         app.saved

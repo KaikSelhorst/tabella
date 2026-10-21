@@ -7,8 +7,6 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
-use eframe::egui;
-
 mod connections;
 mod dialogs;
 mod files;
@@ -19,6 +17,7 @@ mod replies;
 mod run;
 mod tab;
 mod table_edit;
+mod window;
 
 pub use connections::create_database_file;
 pub use dialogs::{
@@ -51,6 +50,7 @@ pub use table_edit::{
     undo_change,
 };
 use table_edit::{enum_value, set_cell};
+pub use window::{Waker, Window};
 
 use crate::config;
 use crate::db::{
@@ -288,8 +288,9 @@ pub enum CopyAs {
 }
 
 pub struct App {
-    /// Handle to the UI, for work started outside a frame (e.g. connecting after an unlock).
-    ctx: egui::Context,
+    /// The window it runs in, for work started outside a frame (e.g. connecting after an
+    /// unlock) and for its title and attention.
+    host: Arc<dyn Window>,
     pub saved: Vec<ConnConfig>,
     pub secrets: SecretStore,
     pub master: Option<MasterPrompt>,
@@ -354,13 +355,19 @@ pub struct App {
 }
 
 impl App {
+    /// For threads to wake the window up when their work is done.
+    pub(in crate::app) fn waker(&self) -> Waker {
+        let host = self.host.clone();
+        Arc::new(move || host.wake())
+    }
+
     #[cfg(test)]
-    pub fn new(ctx: &egui::Context) -> Self {
-        Self::with_launch(ctx, crate::cli::Launch::default())
+    pub fn new(host: impl Window + 'static) -> Self {
+        Self::with_launch(host, crate::cli::Launch::default())
     }
 
     /// Starts as the command line asked (see `cli`).
-    pub fn with_launch(ctx: &egui::Context, launch: crate::cli::Launch) -> Self {
+    pub fn with_launch(host: impl Window + 'static, launch: crate::cli::Launch) -> Self {
         let mut secrets = SecretStore::detect();
         let conns = config::load(&secrets);
         let history = history::load();
@@ -388,7 +395,7 @@ impl App {
         .flatten()
         .collect();
         let mut app = Self {
-            ctx: ctx.clone(),
+            host: Arc::new(host),
             saved: conns.list,
             secrets,
             master: None,
@@ -618,26 +625,20 @@ impl App {
         else {
             return;
         };
-        if self.ctx.input(|i| i.viewport().focused) != Some(false) {
+        if self.host.focused() != Some(false) {
             return;
         }
-        self.ctx
-            .send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
-                egui::UserAttentionType::Informational,
-            ));
-        self.ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-            "✓ {title} finished ({} s) · tabella",
-            took.as_secs()
-        )));
+        self.host.request_attention();
+        self.host
+            .set_title(&format!("✓ {title} finished ({} s) · tabella", took.as_secs()));
         self.title_changed = true;
     }
 
     /// Back in the window: the plain title again.
     pub fn clear_finished_notice(&mut self) {
-        if self.title_changed && self.ctx.input(|i| i.viewport().focused) == Some(true) {
+        if self.title_changed && self.host.focused() == Some(true) {
             self.title_changed = false;
-            self.ctx
-                .send_viewport_cmd(egui::ViewportCommand::Title("tabella".into()));
+            self.host.set_title("tabella");
         }
     }
 

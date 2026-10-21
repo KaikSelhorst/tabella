@@ -12,7 +12,7 @@ pub fn fake_app(ctx: &egui::Context) -> App {
     crate::store::use_dir_in_this_thread(dir.clone());
     // Widths dragged in an earlier run would change how the screens look.
     let _ = std::fs::remove_file(dir.join("column_widths.json"));
-    let mut app = App::new(ctx);
+    let mut app = App::new(ctx.clone());
     app.max_fps = false;
     let mut cfg = ConnConfig::new(Kind::Postgres);
     cfg.id = "dev".into();

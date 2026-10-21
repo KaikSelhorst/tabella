@@ -93,7 +93,7 @@ impl App {
             }
             Reply::TxEnded { commit, res } => {
                 if std::mem::take(&mut self.quit_after_tx) && res.is_ok() {
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.host.close();
                 }
                 self.notice = match res {
                     Ok(()) if commit => Notice::info("Transaction committed"),

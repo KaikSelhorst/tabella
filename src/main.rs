@@ -75,7 +75,7 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             ui::theme::apply(&cc.egui_ctx);
             cc.egui_ctx.set_zoom_factor(prefs.zoom);
-            let mut app = app::App::with_launch(&cc.egui_ctx, launch);
+            let mut app = app::App::with_launch(cc.egui_ctx.clone(), launch);
             if let Some(e) = launch_error {
                 app.notice = app::Notice::error(e);
             }
