@@ -81,8 +81,9 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
 }
 
 pub fn format_count(n: i64) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
+    // The digits in threes; the sign isn't one of them ("-123", not "-,123").
+    let s = n.unsigned_abs().to_string();
+    let mut out = String::from(if n < 0 { "-" } else { "" });
     for (i, c) in s.chars().enumerate() {
         if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
@@ -644,5 +645,42 @@ mod tests {
         assert_eq!(format_bytes(126 * 1024 * 1024), "126 MB");
         assert_eq!(compact_count(1_250), "1.2k");
         assert_eq!(compact_count(3_400_000), "3.4M");
+    }
+
+    /// Ctrl+P scores every name against what is typed, at every keystroke.
+    #[test]
+    fn fuzzy_scores_take_any_text() {
+        crate::testgen::each_text(28, 3000, |text, g| {
+            let query = g.text_of(2);
+            let _ = (
+                fuzzy_score(&query, text),
+                fuzzy_score(text, &query),
+                fuzzy_score(text, text),
+            );
+        });
+    }
+
+    #[test]
+    fn counts_and_sizes_at_the_extremes() {
+        for n in [
+            i64::MIN,
+            -1_234_567,
+            -123,
+            -1,
+            0,
+            999,
+            1_000,
+            999_999,
+            1_000_000,
+            i64::MAX,
+        ] {
+            let _ = (format_bytes(n), compact_count(n));
+            let s = format_count(n);
+            // Digits in threes after the sign, and nothing else changed.
+            assert_eq!(s.replace(',', ""), n.to_string());
+            assert!(!s.starts_with(',') && !s.starts_with("-,"), "{s}");
+        }
+        assert_eq!(format_count(-1_234_567), "-1,234,567");
+        assert_eq!(format_count(-123), "-123");
     }
 }

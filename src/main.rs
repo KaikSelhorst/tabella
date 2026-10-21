@@ -56,7 +56,7 @@ fn main() -> eframe::Result {
     };
     // Same size as when it was last closed.
     // Problems reading these files are reported by `App::new`, which reads them again.
-    let size = session::load().value.window.unwrap_or([1100.0, 700.0]);
+    let size = session::load().value.window_size();
     // Preferences first: the theme is built from them.
     let prefs = settings::load().value;
     ui::theme::set_light(prefs.light);

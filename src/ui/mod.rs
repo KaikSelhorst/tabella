@@ -109,10 +109,13 @@ impl App {
         self.tick_fps();
         self.forget_closed_tabs(ui.ctx());
         self.clear_finished_notice();
-        self.window_state.size = ui
-            .ctx()
-            .input(|i| i.viewport().inner_rect)
-            .map(|r| [r.width(), r.height()]);
+        // Not while minimized: the window may say 0 x 0 then, and that would be saved.
+        if ui.ctx().input(|i| i.viewport().minimized) != Some(true) {
+            self.window_state.size = ui
+                .ctx()
+                .input(|i| i.viewport().inner_rect)
+                .map(|r| [r.width(), r.height()]);
+        }
         if self.fps.max {
             // vsync paces this to the monitor's refresh rate.
             ui.ctx().request_repaint();

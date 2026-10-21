@@ -52,6 +52,15 @@ pub fn ticks(lo: f64, hi: f64) -> Vec<f64> {
         return vec![lo];
     }
     let raw = (hi - lo) / 4.0;
+    // Too narrow (a quarter of it rounds to zero) or too wide (past f64) for nice steps: its
+    // ends. A step of zero would ask for every i64 in between.
+    if !raw.is_normal() {
+        return if lo.is_finite() && hi.is_finite() {
+            vec![lo, hi]
+        } else {
+            vec![0.0]
+        };
+    }
     let mag = 10f64.powf(raw.log10().floor());
     let step = [1.0, 2.0, 5.0, 10.0]
         .iter()
@@ -59,10 +68,19 @@ pub fn ticks(lo: f64, hi: f64) -> Vec<f64> {
         .find(|s| *s >= raw)
         .unwrap_or(10.0 * mag);
     // From the tick at or below `lo` to the first one at or above `hi`, as multiples of the
-    // step (rounded, so 3 × 0.2 reads 0.6, not 0.6000000000000001).
+    // step (rounded, so 3 × 0.2 reads 0.6, not 0.6000000000000001; not tiny steps, which the
+    // rounding would make all zero, nor huge ones, where it would overflow).
     let (first, last) = ((lo / step).floor() as i64, (hi / step - 1e-9).ceil() as i64);
+    let round = |v: f64| {
+        if (1e-6..1e15).contains(&step) {
+            (v * 1e9).round() / 1e9
+        } else {
+            v
+        }
+    };
+    // The tick past the largest f64 is that one.
     (first..=last)
-        .map(|k| ((k as f64 * step) * 1e9).round() / 1e9)
+        .map(|k| round(k as f64 * step).clamp(-f64::MAX, f64::MAX))
         .collect()
 }
 
@@ -123,12 +141,18 @@ pub fn chart(
         });
     });
 
-    // Points in result order; rows whose value isn't a number are skipped.
+    // Points in result order; rows whose value isn't a number are skipped, and so are
+    // Infinity and NaN (Postgres floats have them): there's no place for them on the axis.
     let mut points: Vec<(String, f64)> = res
         .rows
         .iter()
         .filter_map(|r| {
-            let y = r.cell(spec.y)?.trim().parse::<f64>().ok()?;
+            let y = r
+                .cell(spec.y)?
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|y| y.is_finite())?;
             let x = r
                 .cell(spec.x)
                 .map_or("NULL".to_string(), |v| display_value(kinds[spec.x], v));
@@ -165,7 +189,11 @@ pub fn chart(
     let hi = points.iter().map(|p| p.1).fold(0.0f64, f64::max);
     let ticks = ticks(lo, if hi == lo { lo + 1.0 } else { hi });
     let (t0, t1) = (ticks[0], *ticks.last().unwrap());
-    let y_at = |v: f64| plot.bottom() - ((v - t0) / (t1 - t0).max(f64::EPSILON)) as f32 * plot.height();
+    // In halves: from -f64::MAX to f64::MAX the full differences overflow (∞ / ∞ is NaN).
+    let y_at = |v: f64| {
+        let share = (v * 0.5 - t0 * 0.5) / (t1 * 0.5 - t0 * 0.5).max(f64::EPSILON);
+        plot.bottom() - share as f32 * plot.height()
+    };
     let label_font = FontId::proportional(11.0);
 
     // Grid: faint lines at the ticks, the zero line a step stronger.
@@ -345,5 +373,95 @@ mod tests {
             Some((0, 1, ChartKind::Line))
         );
         assert_eq!(default_spec(&res, &[ValueKind::Text; 3]), None);
+    }
+
+    /// Any range the data can make (it always takes in zero): a few finite ticks covering it.
+    #[test]
+    fn ticks_for_any_range() {
+        let ends = [
+            0.0,
+            1e-300,
+            5e-324,
+            0.1,
+            1.0,
+            7.0,
+            1e6,
+            1e15,
+            9.2e18,
+            1e300,
+            f64::MAX,
+        ];
+        for lo in ends.map(|v: f64| -v) {
+            for hi in ends {
+                let t = ticks(lo, hi);
+                assert!(!t.is_empty() && t.len() <= 12, "{lo}..{hi}: {t:?}");
+                assert!(t.iter().all(|v| v.is_finite()), "{lo}..{hi}: {t:?}");
+                // Covered, but for a millionth of the range (floats).
+                let slack = (hi - lo) * 1e-6;
+                if hi > lo && slack.is_finite() {
+                    assert!(
+                        t[0] <= lo + slack && *t.last().unwrap() >= hi - slack,
+                        "{lo}..{hi}: {t:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Values a server really returns (`'Infinity'::float`, NaN, the extremes) chart without
+    /// panicking, as bars and as a line.
+    #[test]
+    fn charts_extreme_values() {
+        let mut res = QueryResult {
+            columns: vec!["k".into(), "v".into()],
+            ..Default::default()
+        };
+        for (i, v) in [
+            "Infinity",
+            "-Infinity",
+            "NaN",
+            "1e308",
+            "-1e308",
+            "0",
+            "5e-324",
+            "x",
+        ]
+        .iter()
+        .enumerate()
+        {
+            res.rows.push([Some(i.to_string()), Some(v.to_string())]);
+        }
+        let kinds = [ValueKind::Text, ValueKind::Number];
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        for kind in [ChartKind::Bars, ChartKind::Line] {
+            for rows in [1, 2, res.rows.len()] {
+                let mut part = res.clone();
+                part.rows.truncate(rows);
+                let mut spec = ChartSpec { x: 0, y: 1, kind };
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 400.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    chart(ui, 1, &part, &kinds, &mut spec);
+                });
+                out.textures_delta.clear();
+                let mesh = ctx.tessellate(out.shapes, out.pixels_per_point);
+                for m in &mesh {
+                    if let egui::epaint::Primitive::Mesh(m) = &m.primitive {
+                        assert!(
+                            m.vertices
+                                .iter()
+                                .all(|v| v.pos.x.is_finite() && v.pos.y.is_finite()),
+                            "{kind:?} {rows}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

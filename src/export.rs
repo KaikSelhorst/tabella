@@ -42,6 +42,8 @@ impl Format {
 const XLSX_MAX_ROWS: u64 = 1_048_575;
 /// Excel's column limit.
 const XLSX_MAX_COLS: usize = 16_384;
+/// Characters an Excel cell holds; longer text is cut to it rather than failing the export.
+const XLSX_MAX_CHARS: usize = 32_767;
 
 /// Where rows go: a text file written as it goes, or a sheet saved at the end.
 enum Sink {
@@ -227,7 +229,13 @@ fn xlsx_row(
         };
         match done {
             Some(res) => res.map(|_| ()).map_err(xlsx_err)?,
-            None => sheet.write_string(r, c, v).map(|_| ()).map_err(xlsx_err)?,
+            None => {
+                let v = match v.char_indices().nth(XLSX_MAX_CHARS) {
+                    Some((end, _)) => &v[..end],
+                    None => v,
+                };
+                sheet.write_string(r, c, v).map(|_| ()).map_err(xlsx_err)?
+            }
         }
     }
     Ok(())
@@ -237,16 +245,18 @@ fn xlsx_err(e: rust_xlsxwriter::XlsxError) -> std::io::Error {
     std::io::Error::other(e.to_string())
 }
 
-/// RFC 4180: quote fields with separators, quotes or line breaks; NULL is an empty field.
+/// RFC 4180: quote fields with separators, quotes or line breaks; NULL is an empty field. A
+/// row that would be an empty line (one column, empty) is `""`: readers skip blank lines.
 fn csv_line<'a>(fields: impl Iterator<Item = Option<&'a str>>) -> String {
-    fields
+    let line = fields
         .map(|f| match f.map(defuse_formula) {
             None => String::new(),
             Some(v) if v.contains([',', '"', '\n', '\r']) => format!("\"{}\"", v.replace('"', "\"\"")),
             Some(v) => v.into_owned(),
         })
         .collect::<Vec<_>>()
-        .join(",")
+        .join(",");
+    if line.is_empty() { "\"\"".into() } else { line }
 }
 
 /// Spreadsheets run a cell starting with `=`, `+`, `-` or `@` as a formula (which can launch
@@ -453,5 +463,146 @@ mod tests {
             "{name}"
         );
         assert_eq!(timestamp().len(), 15);
+    }
+
+    /// A result of awkward names and values (quotes, separators, line breaks, any letters,
+    /// NULLs), all text columns.
+    fn random_result(g: &mut crate::testgen::Gen) -> (QueryResult, Vec<ColumnInfo>) {
+        let cols = 1 + g.below(4);
+        // Unique even ignoring case: a number in front.
+        let columns: Vec<String> = (0..cols).map(|i| format!("{i}{}", g.text_of(2))).collect();
+        let mut res = QueryResult {
+            columns: columns.clone(),
+            ..Default::default()
+        };
+        for _ in 0..g.below(20) {
+            let row: Vec<Option<String>> = (0..cols)
+                .map(|_| (g.below(5) != 0).then(|| g.text_of(3)))
+                .collect();
+            res.rows.push(row.iter().map(|v| v.as_deref()));
+        }
+        let info = columns
+            .into_iter()
+            .map(|name| ColumnInfo {
+                name,
+                data_type: "text".into(),
+                pk: false,
+                nullable: true,
+                has_default: false,
+                references: None,
+                enum_values: Vec::new(),
+            })
+            .collect();
+        (res, info)
+    }
+
+    fn write(path: &Path, format: Format, res: &QueryResult, info: &[ColumnInfo], table: &str) -> u64 {
+        let mut w = Writer::create(path, format, Kind::Sqlite, table, res, info).unwrap();
+        w.rows(&res.rows).unwrap();
+        w.finish().unwrap()
+    }
+
+    /// Exported files read back to the same values: CSV (text a spreadsheet would run as a
+    /// formula gets its `'`), JSON, and SQL run into a table.
+    #[test]
+    fn any_values_come_back_from_the_file() {
+        let mut g = crate::testgen::Gen::new(21);
+        let dir = std::env::temp_dir();
+        let cfg = crate::sqlite::tests::sample_db("export-any");
+        let mut c = crate::db::Conn::connect(&cfg, None).unwrap();
+        for round in 0..60 {
+            let (res, info) = random_result(&mut g);
+            let n = res.rows.len() as u64;
+            let text = |v: Option<&str>| v.map_or(String::new(), |v| defuse_formula(v).into_owned());
+
+            let path = dir.join(format!("tabella-export-any-{}.csv", std::process::id()));
+            assert_eq!(write(&path, Format::Csv, &res, &info, "t"), n);
+            let mut rd = csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_path(&path)
+                .unwrap();
+            let back: Vec<Vec<String>> = rd
+                .records()
+                .map(|r| r.unwrap().iter().map(str::to_owned).collect())
+                .collect();
+            let header: Vec<String> = res.columns.iter().map(|c| text(Some(c))).collect();
+            assert_eq!(back[0], header, "round {round}");
+            for (i, row) in res.rows.iter().enumerate() {
+                assert_eq!(
+                    back[i + 1],
+                    row.iter().map(text).collect::<Vec<_>>(),
+                    "round {round}, row {i}"
+                );
+            }
+
+            let path = dir.join(format!("tabella-export-any-{}.json", std::process::id()));
+            write(&path, Format::Json, &res, &info, "t");
+            let back: Vec<serde_json::Map<String, serde_json::Value>> =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(back.len() as u64, n);
+            for (i, row) in res.rows.iter().enumerate() {
+                for (col, v) in res.columns.iter().zip(row.iter()) {
+                    let want = v.map_or(serde_json::Value::Null, |v| v.into());
+                    assert_eq!(back[i][col], want, "round {round}, row {i}, {col:?}");
+                }
+            }
+
+            let table = Kind::Sqlite.quote_ident(&format!("t\"{round}"));
+            let cols: Vec<String> = res
+                .columns
+                .iter()
+                .map(|c| format!("{} TEXT", Kind::Sqlite.quote_ident(c)))
+                .collect();
+            c.query(&format!("CREATE TABLE {table} ({})", cols.join(", ")))
+                .unwrap();
+            let path = dir.join(format!("tabella-export-any-{}.sql", std::process::id()));
+            write(&path, Format::Sql, &res, &info, &table);
+            // Read back the way "Run .sql file" reads it.
+            let file = std::io::BufReader::new(File::open(&path).unwrap());
+            for item in crate::script::ScriptReader::new(file, Kind::Sqlite) {
+                let crate::script::Item::Stmt { sql, .. } = item.unwrap() else {
+                    panic!("round {round}: only statements")
+                };
+                c.query(&sql)
+                    .unwrap_or_else(|e| panic!("round {round}: {e}\n{sql}"));
+            }
+            let names: Vec<String> = res.columns.iter().map(|c| Kind::Sqlite.quote_ident(c)).collect();
+            let back = c
+                .query(&format!(
+                    "SELECT {} FROM {table} ORDER BY rowid",
+                    names.join(", ")
+                ))
+                .unwrap();
+            assert_eq!(back.rows, res.rows, "round {round}");
+        }
+        let _ = std::fs::remove_file(&cfg.database);
+    }
+
+    /// Excel files keep the values too, and a cell past Excel's 32,767 characters doesn't
+    /// stop the export (it is cut to what fits).
+    #[test]
+    fn any_values_come_back_from_excel() {
+        let mut g = crate::testgen::Gen::new(22);
+        let path = std::env::temp_dir().join(format!("tabella-export-any-{}.xlsx", std::process::id()));
+        for round in 0..30 {
+            let (mut res, info) = random_result(&mut g);
+            if round == 0 {
+                res.rows
+                    .push(std::iter::repeat_n(Some("é".repeat(40_000)), res.columns.len()));
+            }
+            write(&path, Format::Xlsx, &res, &info, "t");
+            let (_, back) = crate::import::sheet_rows(&path).unwrap();
+            assert_eq!(back[0], res.columns, "round {round}");
+            for (i, row) in res.rows.iter().enumerate() {
+                let want: Vec<String> = row
+                    .iter()
+                    .map(|v| v.unwrap_or("").chars().take(XLSX_MAX_CHARS).collect())
+                    .collect();
+                let mut got = back.get(i + 1).cloned().unwrap_or_default();
+                got.resize(want.len(), String::new());
+                assert_eq!(got, want, "round {round}, row {i}");
+            }
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }

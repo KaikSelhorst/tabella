@@ -69,6 +69,20 @@ pub enum SavedTab {
 
 const FILE: &str = "session.json";
 
+/// The window a new start opens with when none was saved.
+const DEFAULT_WINDOW: [f32; 2] = [1100.0, 700.0];
+
+impl Saved {
+    /// The saved window size, if it makes a usable window: one closed while minimized can be
+    /// 0 x 0, and a hand-edited file can say anything (a too-big number reads as infinity).
+    pub fn window_size(&self) -> [f32; 2] {
+        match self.window {
+            Some([w, h]) if (400.0..=16_384.0).contains(&w) && (300.0..=16_384.0).contains(&h) => [w, h],
+            _ => DEFAULT_WINDOW,
+        }
+    }
+}
+
 pub fn load() -> Loaded<Saved> {
     store::load(FILE)
 }
@@ -120,5 +134,31 @@ mod tests {
         assert_eq!(old.split, None);
         // A broken file just means "nothing to restore".
         assert!(serde_json::from_str::<Saved>("{oops").is_err());
+    }
+
+    #[test]
+    fn unusable_window_sizes_open_the_default() {
+        let size = |window| {
+            Saved {
+                window,
+                ..Default::default()
+            }
+            .window_size()
+        };
+        assert_eq!(size(Some([1200.0, 800.0])), [1200.0, 800.0]);
+        for bad in [
+            [0.0, 0.0],
+            [-5.0, 700.0],
+            [1100.0, f32::INFINITY],
+            [f32::NAN, 700.0],
+            [1e6, 700.0],
+        ] {
+            assert_eq!(size(Some(bad)), DEFAULT_WINDOW, "{bad:?}");
+        }
+        assert_eq!(size(None), DEFAULT_WINDOW);
+        // What a file can hold that reads as infinity.
+        let s: Saved =
+            serde_json::from_str(r#"{"conn":null,"tabs":[],"active":0,"window":[1e39,700]}"#).unwrap();
+        assert_eq!(s.window_size(), DEFAULT_WINDOW);
     }
 }
