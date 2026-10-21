@@ -479,4 +479,47 @@ mod tests {
         assert_eq!(r.row(40).to_vec(), [Some("a".into()), Some("b".into())]);
         assert_eq!(r.cell(39, 0), Some("39"));
     }
+
+    /// Rows behave like the plain `Vec` of rows they stand for, whatever the pushes, NULLs (the
+    /// bit words cut at 64 cells) and truncations.
+    #[test]
+    fn behaves_like_a_vec_of_rows() {
+        let mut g = crate::testgen::Gen::new(9);
+        for _ in 0..300 {
+            let cols = 1 + g.below(9);
+            let mut rows = Rows::default();
+            let mut model: Vec<Vec<Option<String>>> = Vec::new();
+            for _ in 0..g.below(120) {
+                match g.below(10) {
+                    0 => {
+                        let n = g.below(model.len() + 2);
+                        rows.truncate(n);
+                        model.truncate(n);
+                    }
+                    1 => {
+                        let copy = rows.clone();
+                        rows.extend(&copy);
+                        model.extend(model.clone());
+                    }
+                    _ => {
+                        let row: Vec<Option<String>> = (0..cols)
+                            .map(|_| (g.below(3) != 0).then(|| g.text_of(3)))
+                            .collect();
+                        rows.push(row.iter().map(|v| v.as_deref()));
+                        model.push(row);
+                    }
+                }
+                if model.is_empty() {
+                    // Truncated to nothing: the next row sets the width again.
+                    continue;
+                }
+                assert_eq!(rows.len(), model.len());
+                for (r, row) in model.iter().enumerate() {
+                    for (c, v) in row.iter().enumerate() {
+                        assert_eq!(rows.cell(r, c), v.as_deref(), "cell ({r}, {c})");
+                    }
+                }
+            }
+        }
+    }
 }

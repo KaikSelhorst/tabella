@@ -679,6 +679,45 @@ fn errors_are_found_in_the_editor_text() {
     );
 }
 
+/// Whatever the server says about whatever ran, the mark lands inside the editor text (the
+/// editor slices there: a position between bytes of a char would abort the app).
+#[test]
+fn error_marks_stay_inside_any_text() {
+    use crate::error::DbError;
+    crate::testgen::each_text(16, 2000, |text, g| {
+        let chars: Vec<char> = text.chars().collect();
+        let (a, b) = (g.below(chars.len() + 1), g.below(chars.len() + 1));
+        let sent: String = chars[a.min(b)..a.max(b)].iter().collect();
+        let near = g.text_of(3);
+        let errors = [
+            DbError::MySql(mysql::Error::MySqlError(mysql::MySqlError {
+                state: "42000".into(),
+                message: format!("You have an error near '{near}' at line {}", g.below(4)),
+                code: 1064,
+            })),
+            DbError::MySql(mysql::Error::MySqlError(mysql::MySqlError {
+                state: "42S22".into(),
+                message: format!("Unknown column '{near}' in 'field list'"),
+                code: 1054,
+            })),
+            DbError::Sqlite(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(format!(
+                    "near \"{near}\": syntax error at offset {}",
+                    g.below(sent.len() + 2)
+                )),
+            )),
+            DbError::Other(g.text()),
+        ];
+        for e in &errors {
+            if let Some(spot) = locate_error(text, &sent, e) {
+                assert!(spot.start <= spot.end && spot.end <= chars.len(), "{spot:?}");
+                assert!(spot.line >= 1 && spot.column >= 1);
+            }
+        }
+    });
+}
+
 #[test]
 fn a_tab_is_timed_from_its_first_job_to_its_last_reply() {
     let mut tab = Tab::new(1, "t".into(), TabKind::Sql(Box::new(Editor::new(String::new()))));

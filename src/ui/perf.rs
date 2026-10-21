@@ -358,6 +358,93 @@ fn crop_shot() {
     big.save(output).unwrap();
 }
 
+/// Random typing and editing keys in the SQL editor, frame after frame (find bar, completion,
+/// undo, running): nothing panics, which in the release build would close the window.
+#[test]
+fn editor_survives_random_keys() {
+    use egui::{Event, Key, Modifiers};
+    const KEYS: &[(Key, Modifiers)] = &[
+        (Key::Enter, Modifiers::NONE),
+        (Key::Backspace, Modifiers::NONE),
+        (Key::Delete, Modifiers::NONE),
+        (Key::Tab, Modifiers::NONE),
+        (Key::Tab, Modifiers::SHIFT),
+        (Key::ArrowLeft, Modifiers::NONE),
+        (Key::ArrowRight, Modifiers::SHIFT),
+        (Key::ArrowUp, Modifiers::NONE),
+        (Key::ArrowDown, Modifiers::NONE),
+        (Key::Home, Modifiers::NONE),
+        (Key::End, Modifiers::SHIFT),
+        (Key::PageUp, Modifiers::NONE),
+        (Key::PageDown, Modifiers::NONE),
+        (Key::Escape, Modifiers::NONE),
+        (Key::Space, Modifiers::COMMAND),
+        (Key::Z, Modifiers::COMMAND),
+        (Key::Y, Modifiers::COMMAND),
+        (Key::A, Modifiers::COMMAND),
+        (Key::F, Modifiers::COMMAND),
+        (Key::H, Modifiers::COMMAND),
+        (Key::Enter, Modifiers::COMMAND),
+        (Key::E, Modifiers::COMMAND),
+        (Key::F5, Modifiers::NONE),
+    ];
+    let mut h = Driver::new();
+    let id = {
+        let app = h.state_mut();
+        app.open_sql("SELECT * FROM customers c\nWHERE c.id = :id;\n".into());
+        app.active = app.tabs.len() - 1;
+        app.tabs[app.active].id
+    };
+    let start = "SELECT * FROM customers c\nWHERE c.id = :id;\n";
+    let mut typed = false;
+    let mut g = crate::testgen::Gen::new(15);
+    for frame in 0..1000 {
+        // Back in the editor whatever the last keys opened.
+        h.ctx.memory_mut(|m| m.request_focus(egui::Id::new(("sql", id))));
+        let events: Vec<Event> = (0..1 + g.below(3))
+            .flat_map(|_| {
+                if g.below(3) == 0 {
+                    vec![Event::Text(g.text_of(2))]
+                } else {
+                    let (key, modifiers) = KEYS[g.below(KEYS.len())];
+                    [true, false]
+                        .map(|pressed| Event::Key {
+                            key,
+                            physical_key: None,
+                            pressed,
+                            repeat: false,
+                            modifiers,
+                        })
+                        .to_vec()
+                }
+            })
+            .collect();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            events: events.clone(),
+            ..Default::default()
+        };
+        let app = &mut h.app;
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut out = h.ctx.run_ui(input, |ui| app.draw(ui));
+            out.textures_delta.clear();
+        }));
+        let text = h
+            .app
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.editor())
+            .map(|e| e.text.clone());
+        assert!(run.is_ok(), "frame {frame}: {events:?} on {text:?}");
+        typed |= text.is_some_and(|t| t != start);
+    }
+    assert!(typed, "the keys reached the editor");
+}
+
 /// A closed tab leaves nothing behind in egui's memory: its laid-out text (hundreds of MB for a
 /// big script) and other caches go with it, whichever way it was closed.
 #[test]
@@ -366,6 +453,7 @@ fn closed_tabs_free_their_caches() {
     h.frame();
     let id = {
         let app = h.state_mut();
+        // Two lines: laid out a paragraph at a time.
         app.open_sql("SELECT 1;\nSELECT 2;".into());
         app.active = app.tabs.len() - 1;
         app.tabs[app.active].id
@@ -381,13 +469,18 @@ fn closed_tabs_free_their_caches() {
                     .is_some(),
                 d.get_persisted::<egui::text_edit::TextEditState>(egui::Id::new(("sql", id)))
                     .is_some(),
+                d.get_temp::<std::collections::HashMap<u64, std::sync::Arc<egui::Galley>>>(egui::Id::new((
+                    "editor_paragraphs",
+                    id,
+                )))
+                .is_some(),
             )
         })
     };
     assert_eq!(
         held(&h),
-        (true, true, true),
-        "an open editor keeps its layout, statements and undo history"
+        (true, true, true, true),
+        "an open editor keeps its layout, statements, undo history and paragraphs"
     );
     {
         let app = h.state_mut();
@@ -396,7 +489,7 @@ fn closed_tabs_free_their_caches() {
         app.active = 0;
     }
     h.frame();
-    assert_eq!(held(&h), (false, false, false), "gone with the tab");
+    assert_eq!(held(&h), (false, false, false, false), "gone with the tab");
 }
 
 /// Browsing rows with the detail panel open keeps one buffer per field, not one per row seen.

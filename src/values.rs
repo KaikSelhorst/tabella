@@ -871,4 +871,21 @@ mod tests {
         let d = diff_results(&a, &b, Some("k"));
         assert_eq!((d.removed, d.added, d.changed, d.same), (0, 0, 1, 2));
     }
+
+    /// Cell values and pasted text of any shape; valid JSON keeps its meaning when reformatted.
+    #[test]
+    fn any_text_survives() {
+        crate::testgen::each_text(5, 3000, |s, _| {
+            let _ = (parse_tsv(s), looks_like_json(s));
+            let _ = value_kind(Some("text"), [Some(s), None].into_iter());
+            let _ = value_kind(None, [Some(s)].into_iter());
+            let pretty = json_pretty(s);
+            let compact = json_compact(s);
+            if json_check(s).is_ok() {
+                let v = |t: &str| serde_json::from_str::<serde_json::Value>(t).unwrap();
+                assert_eq!(v(&pretty), v(s));
+                assert_eq!(v(&compact), v(s));
+            }
+        });
+    }
 }

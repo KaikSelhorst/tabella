@@ -168,4 +168,38 @@ mod tests {
             assert_eq!(p.sections.last().unwrap().byte_range.end, ByteIndex(p.text.len()));
         }
     }
+
+    /// For any text, the kept-paragraph layout is the one egui makes, before and after an edit.
+    #[test]
+    fn any_text_lays_out_like_egui() {
+        let ctx = egui::Context::default();
+        let cache = egui::Id::new("paragraphs_any");
+        let rows = |g: &Galley| {
+            g.rows
+                .iter()
+                .map(|r| {
+                    (
+                        r.pos,
+                        r.size,
+                        r.ends_with_newline,
+                        r.char_count_excluding_newline(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        crate::testgen::each_text(14, 400, |s, g| {
+            let edited = format!("{s}{}", g.text_of(3));
+            for text in [s, edited.as_str()] {
+                let mut job = crate::ui::syntax::highlight(text, &egui::FontId::monospace(13.0));
+                job.wrap.max_width = [f32::INFINITY, 80.0, 333.3][g.below(3)];
+                let mut out = ctx.run_ui(Default::default(), |ui| {
+                    let ours = layout(ui, cache, job.clone());
+                    let theirs = ui.fonts_mut(|f| f.layout_job(job.clone()));
+                    assert_eq!(ours.text(), theirs.text());
+                    assert_eq!(rows(&ours), rows(&theirs));
+                });
+                out.textures_delta.clear();
+            }
+        });
+    }
 }

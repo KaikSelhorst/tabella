@@ -263,4 +263,28 @@ mod tests {
             .sum();
         assert_eq!(total, job.text.len());
     }
+
+    /// Ctrl+F on any text with any needle: matches are slices of the text, in order, apart, and
+    /// equal to the needle (ignoring case when asked); replacing does as many.
+    #[test]
+    fn any_needle_in_any_text() {
+        use crate::testgen::{each_text, on_boundary};
+        each_text(12, 3000, |hay, g| {
+            let needle = g.text_of(2);
+            for case in [true, false] {
+                let found = find_all(hay, &needle, case);
+                let mut end = 0;
+                for r in &found {
+                    assert!(end <= r.start && r.start < r.end, "{found:?}");
+                    assert!(on_boundary(hay, r.start) && on_boundary(hay, r.end), "{r:?}");
+                    if case {
+                        assert_eq!(&hay[r.clone()], needle);
+                    }
+                    end = r.end;
+                }
+                let mut text = hay.to_string();
+                assert_eq!(replace_all(&mut text, &needle, "#", case), found.len());
+            }
+        });
+    }
 }

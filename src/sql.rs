@@ -1537,6 +1537,66 @@ pub fn fk_label(columns: &[(String, String)], key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// What the editor runs on every text, every frame: no panic, and ranges inside the text.
+    #[test]
+    fn scanners_take_any_text() {
+        use crate::testgen::each_text;
+        each_text(1, 3000, |s, g| {
+            let n = s.chars().count();
+            for blank in [false, true] {
+                let ranges = statement_ranges(s, blank);
+                let mut end = 0;
+                for &(a, b) in &ranges {
+                    assert!(end <= a && a < b && b <= n, "{ranges:?} of {n} chars");
+                    end = b;
+                }
+                for c in [0, n / 2, n, g.below(n + 1)] {
+                    if let Some(r) = statement_in(&ranges, c) {
+                        assert!(ranges.contains(&r));
+                    }
+                }
+            }
+            for c in [0, n, g.below(n + 1)] {
+                // The word may end before the cursor: trailing dots aren't part of it.
+                if let Some((a, b)) = word_at(s, c) {
+                    assert!(a <= c && a < b && b <= n, "word {a}..{b} at {c} of {n}");
+                }
+            }
+            for (a, b, name) in param_spans(s) {
+                assert!(a < b && b <= n && !name.is_empty());
+            }
+            let _ = bind_params(Kind::Postgres, s, |p| format!("'{p}'"));
+            if let Some((a, b)) = single_read(s) {
+                assert!(statement_ranges(s, false).contains(&(a, b)));
+                assert!(!script_risk(s).writes, "a single read doesn't write");
+            }
+            let _ = (
+                tx_control(s),
+                script_risk(s),
+                mysql_implicit_commit(s),
+                statement_words_first(s),
+            );
+            let _ = (
+                editable_select(s),
+                preview_queries(s),
+                parse_args(s),
+                parse_bool(s),
+            );
+            let _ = (check_filter(s), check_expression(s), remove_condition(s, "x = 1"));
+            let _ = and(s, "x = 1");
+        });
+    }
+
+    /// The formatter is a dependency: whatever it makes of broken SQL, the editor survives it.
+    #[test]
+    fn format_takes_any_text() {
+        crate::testgen::each_text(2, 1500, |s, _| {
+            for kind in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
+                let _ = format_sql(kind, s);
+            }
+        });
+    }
+
     #[test]
     fn single_reads() {
         let range = |s: &str| single_read(s).map(|(a, b)| s.chars().skip(a).take(b - a).collect::<String>());

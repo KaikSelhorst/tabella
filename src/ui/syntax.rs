@@ -397,4 +397,22 @@ mod tests {
         // Unterminated strings (while typing) don't panic either.
         let _ = highlight_json("{\"a\": \"no end \\", &FontId::monospace(12.0));
     }
+
+    /// Any text gets colored whole: each byte in one section, in order, nothing left out (a gap
+    /// or overlap would make egui panic or drop text).
+    #[test]
+    fn any_text_colored_whole() {
+        let font = FontId::monospace(12.0);
+        crate::testgen::each_text(13, 3000, |s, _| {
+            assert_eq!(tokens(s).iter().map(|(_, t)| *t).collect::<String>(), s);
+            for job in [highlight(s, &font), highlight_json(s, &font)] {
+                let mut at = 0;
+                for sec in &job.sections {
+                    assert_eq!(sec.byte_range.start.0, at);
+                    at = sec.byte_range.end.0;
+                }
+                assert_eq!(at, s.len());
+            }
+        });
+    }
 }

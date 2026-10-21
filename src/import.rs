@@ -458,4 +458,11 @@ pub(crate) mod tests {
             "INSERT INTO \"db\".\"t\" (\"x\", \"y\") VALUES ('a''b', NULL), ('c', '1')"
         );
     }
+
+    #[test]
+    fn numbers_take_any_text() {
+        crate::testgen::each_text(8, 3000, |s, _| {
+            let _ = normalize_number(s);
+        });
+    }
 }

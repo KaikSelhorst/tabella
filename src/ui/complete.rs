@@ -715,4 +715,30 @@ mod tests {
             .is_none()
         ); // exact match only
     }
+
+    /// Completion is asked at every cursor move: any text, any place in it.
+    #[test]
+    fn any_text_any_cursor() {
+        let tables = [crate::db::TableRef {
+            schema: "public".into(),
+            name: "t".into(),
+            is_view: false,
+            estimate: None,
+            search_key: "t".into(),
+            size: None,
+        }];
+        let columns = [("t".to_string(), "id".to_string())];
+        crate::testgen::each_text(10, 2000, |s, g| {
+            let n = s.chars().count();
+            let _ = query_tables(s);
+            for c in [0, n, g.below(n + 1), n + 5] {
+                let cat = Catalog {
+                    tables: &tables,
+                    columns: &columns,
+                    fks: &[],
+                };
+                let _ = suggest(s, c, cat);
+            }
+        });
+    }
 }

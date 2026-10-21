@@ -452,4 +452,20 @@ mod tests {
                 .is_empty()
         );
     }
+
+    /// Ctrl+hover resolves whatever word is under the pointer, in whatever statement.
+    #[test]
+    fn any_word_any_statement() {
+        let cat = Catalog {
+            tables: &[],
+            objects: &[],
+            columns: &[],
+            current_schema: "public",
+        };
+        crate::testgen::each_text(11, 2000, |s, g| {
+            let word = g.text_of(3);
+            let _ = resolve(&cat, &word, s);
+            let _ = resolve(&cat, s, &word);
+        });
+    }
 }
