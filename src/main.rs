@@ -31,6 +31,8 @@ mod sql;
 mod sqlite;
 mod starred;
 mod store;
+#[cfg(test)]
+mod testgen;
 mod tls;
 mod tunnel;
 mod ui;

@@ -434,7 +434,9 @@ pub fn filter_columns(cond: &str) -> Vec<String> {
         };
         // An identifier, possibly qualified (a.b, "a"."b"): keep its last part.
         let mut last;
+        let mut last_start;
         loop {
+            last_start = i;
             let mut part = String::new();
             if i < chars.len() && (chars[i] == '"' || chars[i] == '`') {
                 let q = chars[i];
@@ -458,7 +460,8 @@ pub fn filter_columns(cond: &str) -> Vec<String> {
             break;
         }
         // Function calls and casts (`lower(x)`, `::text`) aren't plain columns.
-        if chars.get(i) == Some(&'(') || (i >= 2 + last.len() && chars[i - last.len() - 1] == ':') {
+        // (Where the name starts, in chars: its length in bytes, or quotes, would land elsewhere.)
+        if chars.get(i) == Some(&'(') || (last_start >= 2 && chars[last_start - 1] == ':') {
             continue;
         }
         // Postgres writes `(name)::text = …`: closing parens and casts sit between the column and
@@ -670,5 +673,23 @@ mod tests {
         assert!(!plain.analyzed);
         assert_eq!(plain.root.details, ["(t.a > 5)"]);
         assert_eq!(plain.root.children[0].est_rows, Some(30.0));
+    }
+
+    /// A plan from a server we didn't expect (or a truncated one): an error, not a crash.
+    #[test]
+    fn any_text_is_an_answer() {
+        crate::testgen::each_text(6, 3000, |s, _| {
+            let _ = (from_pg_json(s), from_mysql_tree(s), filter_columns(s));
+        });
+        // JSON-shaped but not a plan.
+        for s in [
+            "[]",
+            "[{}]",
+            "[{\"Plan\": 1}]",
+            "[{\"Plan\": {\"Plans\": [1]}}]",
+            "{\"Plan\": null}",
+        ] {
+            let _ = from_pg_json(s);
+        }
     }
 }

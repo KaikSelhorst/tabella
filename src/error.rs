@@ -101,7 +101,8 @@ fn mysql_position(message: &str, sql: &str) -> Option<usize> {
         let needle = near.lines().next().unwrap_or("").trim();
         if needle.is_empty() {
             // Near '' means the statement ended too early.
-            return Some(sql.trim_end().len().saturating_sub(1).min(sql.len()));
+            // Its last char (not its last byte, which may be inside one).
+            return Some(sql.trim_end().char_indices().next_back().map_or(0, |(i, _)| i));
         }
         return Some(
             sql[line_start..]
@@ -122,7 +123,8 @@ fn sqlite_position(message: &str, sql: &str) -> Option<usize> {
         .next()
         .filter(|_| message.contains("at offset "))
         && let Ok(n) = at.trim().parse::<usize>()
-        && n <= sql.len()
+        // A byte offset: the editor slices there, so it must fall between chars.
+        && sql.is_char_boundary(n)
     {
         return Some(n);
     }
@@ -179,5 +181,30 @@ mod tests {
         // Not a word of its own: "id" inside "pid" doesn't count.
         assert_eq!(find_word("SELECT pid, id", "id"), Some(12));
         assert_eq!(mysql_position("Something else", "SELECT 1"), None);
+    }
+
+    /// Positions found in any message point between chars of the SQL (the editor slices there).
+    #[test]
+    fn positions_are_char_boundaries() {
+        use crate::testgen::{each_text, on_boundary};
+        each_text(4, 3000, |sql, g| {
+            let near = g.text_of(4);
+            let messages = [
+                g.text(),
+                format!("You have an error near '{near}' at line {}", g.below(4)),
+                format!("Unknown column '{near}' in 'field list'"),
+                format!("near \"{near}\": syntax error"),
+                format!("no such column: {near}"),
+                format!("bad thing in {sql} at offset {}", g.below(sql.len() + 2)),
+            ];
+            for m in &messages {
+                for at in [mysql_position(m, sql), sqlite_position(m, sql)]
+                    .into_iter()
+                    .flatten()
+                {
+                    assert!(on_boundary(sql, at), "{at} in {sql:?} for {m:?}");
+                }
+            }
+        });
     }
 }

@@ -7,7 +7,7 @@ use crate::db::{ConnConfig, Kind};
 pub fn apply(cfg: &mut ConnConfig, url: &str) -> Result<(), String> {
     let url = url.trim();
     // sqlite:///C:/data/shop.db, sqlite:///home/eu/shop.db, sqlite:shop.db: a file path.
-    if url.len() > 7 && url[..7].eq_ignore_ascii_case("sqlite:") {
+    if url.len() > 7 && url.get(..7).is_some_and(|s| s.eq_ignore_ascii_case("sqlite:")) {
         let path = url[7..].trim_start_matches("//");
         // "/C:/…" is a Windows drive, not a path under the root.
         let windows_drive = path.len() > 2 && path.starts_with('/') && path.as_bytes()[2] == b':';
@@ -177,5 +177,15 @@ mod tests {
         apply(&mut c, "SQLITE:dev.db").unwrap();
         assert_eq!(c.database, "dev.db");
         assert!(apply(&mut c, "sqlite://").is_err());
+    }
+
+    /// Whatever gets pasted into the URL field: an error at worst.
+    #[test]
+    fn any_text_is_an_answer() {
+        crate::testgen::each_text(3, 3000, |s, _| {
+            for kind in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
+                let _ = apply(&mut ConnConfig::new(kind), s);
+            }
+        });
     }
 }

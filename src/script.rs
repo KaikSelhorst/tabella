@@ -106,7 +106,9 @@ impl<R: BufRead> ScriptReader<R> {
             // `DELIMITER $$` (mysql client syntax) changes the terminator.
             if self.kind == Kind::MySql
                 && trimmed.len() > 10
-                && trimmed[..10].eq_ignore_ascii_case("DELIMITER ")
+                && trimmed
+                    .get(..10)
+                    .is_some_and(|s| s.eq_ignore_ascii_case("DELIMITER "))
             {
                 self.delimiter = trimmed[10..].trim().to_string();
                 return;
@@ -392,5 +394,21 @@ mod tests {
             stmts(&read(Kind::Sqlite, "BEGIN;\nSELECT 1;\nEND;\n")),
             ["BEGIN", "SELECT 1", "END"]
         );
+    }
+
+    /// Any file splits the same whatever size the reads come in (a statement or quote can cut
+    /// across them), and never panics.
+    #[test]
+    fn any_text_splits_alike_in_any_reads() {
+        crate::testgen::each_text(7, 1500, |s, _| {
+            for kind in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
+                let read = |cap: usize| -> Vec<Item> {
+                    ScriptReader::new(std::io::BufReader::with_capacity(cap, s.as_bytes()), kind)
+                        .map(Result::unwrap)
+                        .collect()
+                };
+                assert_eq!(read(1), read(1 << 16), "{kind:?}");
+            }
+        });
     }
 }
