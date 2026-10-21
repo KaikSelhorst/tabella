@@ -20,6 +20,7 @@ mod run;
 mod tab;
 mod table_edit;
 
+pub use connections::create_database_file;
 pub use dialogs::{
     AfterMaster, BulkPrompt, ConnForm, ConnTest, Dialog, FavPrompt, FkPicker, MasterMode, MasterPrompt,
     Palette, PathPrompt, PathUse, PickFor, TableActionPrompt, ValueEditor, fk_search, open_fk_picker,
@@ -166,7 +167,12 @@ impl Session {
             .any(|t| t.is_view && t.schema == schema && t.name == table)
     }
 
-    pub fn send(&self, job: Job) {
+    /// Lists the tables, columns, keys and objects again (sidebar, autocomplete).
+    pub fn reload_tables(&self) {
+        self.send(Job::Tables);
+    }
+
+    pub(in crate::app) fn send(&self, job: Job) {
         // Only fails when the worker is gone; `poll` reports that.
         let _ = self.tx.send(job);
     }

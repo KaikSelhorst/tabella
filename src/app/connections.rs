@@ -82,6 +82,94 @@ impl App {
         }
     }
 
+    /// Starts deriving the vault key from the typed master password, off the UI thread
+    /// (Argon2 is slow on purpose); `finish_master_kdf` applies it.
+    pub fn start_master_kdf(&mut self) {
+        let Some(p) = &mut self.master else { return };
+        let create = p.mode == MasterMode::Create;
+        if create && p.password != p.confirm {
+            p.error = Some("The passwords don't match".into());
+            return;
+        }
+        let Some(vault) = self.secrets.vault_mut() else {
+            return;
+        };
+        match vault.kdf_job(&p.password, create) {
+            Ok(job) => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let ctx = self.ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(job.run());
+                    ctx.request_repaint();
+                });
+                p.error = None;
+                p.working = Some(rx);
+            }
+            Err(e) => p.error = Some(e),
+        }
+    }
+
+    /// Applies a finished key derivation (or shows why it failed).
+    pub fn finish_master_kdf(&mut self) {
+        let Some(p) = &mut self.master else { return };
+        let Some(rx) = &p.working else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        p.working = None;
+        let applied = match (result, self.secrets.vault_mut()) {
+            (Ok(derived), Some(vault)) => vault.finish(derived),
+            (Err(e), _) => Err(e),
+            (Ok(_), None) => Ok(()),
+        };
+        match applied {
+            Ok(()) => {
+                let then = p.then.clone();
+                self.master = None;
+                self.notice = Notice::info(format!("Passwords protected by the {}", self.secrets.describe()));
+                self.after_master(then);
+            }
+            Err(e) => {
+                p.error = Some(e);
+                p.password.clear();
+                p.confirm.clear();
+            }
+        }
+    }
+
+    /// The form's connection test: a finished one arrives, and one run with other settings
+    /// than the form has now is dropped once it is done.
+    pub fn poll_conn_test(&mut self) {
+        let Some(form) = &self.form else { return };
+        let key = form.cfg.test_key();
+        if let Some(test) = &mut self.conn_test {
+            if test.key != key && test.result.is_some() {
+                self.conn_test = None;
+            } else if let Ok(r) = test.rx.try_recv() {
+                test.result = Some(r);
+            }
+        }
+    }
+
+    /// "Test connection": connects with the form's settings without saving them.
+    pub fn start_conn_test(&mut self) {
+        let Some(form) = &self.form else { return };
+        self.conn_test = Some(ConnTest {
+            key: form.cfg.test_key(),
+            rx: worker::test_connection(form.cfg.clone(), self.ctx.clone()),
+            result: None,
+        });
+    }
+
+    /// Leaves the connection form, saving what it holds or not.
+    pub fn close_connection_form(&mut self, save: bool) {
+        self.conn_test = None;
+        if let Some(mut form) = self.form.take()
+            && save
+        {
+            form.cfg.name = form.cfg.name.trim().to_string();
+            self.store_connection(form.cfg);
+        }
+    }
+
     pub fn ask_master(&mut self, then: AfterMaster) {
         let Some(v) = self.secrets.locked_vault() else {
             return self.after_master(then);
@@ -361,4 +449,9 @@ impl App {
             Err(e) => Notice::error(e),
         };
     }
+}
+
+/// A new, empty SQLite database at `path`.
+pub fn create_database_file(path: &Path) -> crate::error::DbResult<()> {
+    crate::sqlite::create(&path.display().to_string())
 }

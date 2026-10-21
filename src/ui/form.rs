@@ -2,7 +2,7 @@ use eframe::egui::{self, TextEdit};
 
 use super::icon;
 use super::theme;
-use crate::app::{App, Dialog, MasterMode, Notice};
+use crate::app::{App, Dialog, MasterMode};
 use crate::config;
 use crate::db::{ConnConfig, Kind, SshConfig, Tag};
 
@@ -10,6 +10,7 @@ const FIELD_WIDTH: f32 = 280.0;
 
 impl App {
     pub fn connection_form(&mut self, ctx: &egui::Context) {
+        self.poll_conn_test();
         let Some(form) = &mut self.form else { return };
         let mut save = false;
         let mut cancel = false;
@@ -20,15 +21,7 @@ impl App {
         };
         let t = theme::tokens();
         let duplicate = config::name_taken(&self.saved, &form.cfg.name, form.editing.as_deref());
-        // A finished test arrives; a result for other settings is dropped.
         let key = form.cfg.test_key();
-        if let Some(test) = &mut self.conn_test {
-            if test.key != key && test.result.is_some() {
-                self.conn_test = None;
-            } else if let Ok(r) = test.rx.try_recv() {
-                test.result = Some(r);
-            }
-        }
         let test = self.conn_test.as_ref().filter(|t| t.key == key);
         let mut start_test = false;
         // Modal dims everything behind it and closes on Esc / click outside.
@@ -84,26 +77,12 @@ impl App {
                 (save, cancel, start_test) = (clicks.save, clicks.cancel, clicks.test);
             });
         cancel |= modal.should_close();
-        if start_test && let Some(form) = &self.form {
-            self.conn_test = Some(crate::app::ConnTest {
-                key: form.cfg.test_key(),
-                rx: crate::worker::test_connection(form.cfg.clone(), ctx.clone()),
-                result: None,
-            });
-        }
-        if save || cancel {
-            self.conn_test = None;
+        if start_test {
+            self.start_conn_test();
         }
         if save || cancel {
             ctx.data_mut(|d| d.remove::<(String, Option<String>)>(egui::Id::new("conn_form_url")));
-        }
-        if save {
-            if let Some(mut form) = self.form.take() {
-                form.cfg.name = form.cfg.name.trim().to_string();
-                self.store_connection(form.cfg);
-            }
-        } else if cancel {
-            self.form = None;
+            self.close_connection_form(save);
         }
     }
 }
@@ -190,60 +169,9 @@ impl App {
         let skip = !working && (skip || modal.should_close());
 
         if submit && !working {
-            self.start_master_kdf(ctx);
+            self.start_master_kdf();
         } else if skip && let Some(p) = self.master.take() {
             self.after_master(p.then);
-        }
-    }
-
-    fn start_master_kdf(&mut self, ctx: &egui::Context) {
-        let Some(p) = &mut self.master else { return };
-        let create = p.mode == MasterMode::Create;
-        if create && p.password != p.confirm {
-            p.error = Some("The passwords don't match".into());
-            return;
-        }
-        let Some(vault) = self.secrets.vault_mut() else {
-            return;
-        };
-        match vault.kdf_job(&p.password, create) {
-            Ok(job) => {
-                let (tx, rx) = std::sync::mpsc::channel();
-                let ctx = ctx.clone();
-                std::thread::spawn(move || {
-                    let _ = tx.send(job.run());
-                    ctx.request_repaint();
-                });
-                p.error = None;
-                p.working = Some(rx);
-            }
-            Err(e) => p.error = Some(e),
-        }
-    }
-
-    /// Applies a finished key derivation (or shows why it failed).
-    fn finish_master_kdf(&mut self) {
-        let Some(p) = &mut self.master else { return };
-        let Some(rx) = &p.working else { return };
-        let Ok(result) = rx.try_recv() else { return };
-        p.working = None;
-        let applied = match (result, self.secrets.vault_mut()) {
-            (Ok(derived), Some(vault)) => vault.finish(derived),
-            (Err(e), _) => Err(e),
-            (Ok(_), None) => Ok(()),
-        };
-        match applied {
-            Ok(()) => {
-                let then = p.then.clone();
-                self.master = None;
-                self.notice = Notice::info(format!("Passwords protected by the {}", self.secrets.describe()));
-                self.after_master(then);
-            }
-            Err(e) => {
-                p.error = Some(e);
-                p.password.clear();
-                p.confirm.clear();
-            }
         }
     }
 }
@@ -683,7 +611,7 @@ fn sqlite_file_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
                 Some(std::path::PathBuf::from(c.database.trim())).filter(|p| !p.as_os_str().is_empty())
             };
             if let Some(p) = path {
-                match crate::sqlite::create(&p.display().to_string()) {
+                match crate::app::create_database_file(&p) {
                     Ok(()) => {
                         msg = Some((false, "File created".into()));
                         chosen = Some(p);

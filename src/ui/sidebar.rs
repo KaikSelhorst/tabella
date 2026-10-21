@@ -4,7 +4,6 @@ use super::{icon, palette, theme};
 use crate::app::{App, ConnForm, Dialog, DumpScope, Session, TabKind, TableActionPrompt};
 use crate::db::{ConnConfig, DbObject, Kind, ObjKind, TableRef};
 use crate::sql::{TableAction, Template};
-use crate::worker::Job;
 
 /// Schemas with fewer tables than this start expanded.
 const AUTO_EXPAND_BELOW: usize = 200;
@@ -390,7 +389,7 @@ fn tree_toolbar(ui: &mut egui::Ui, s: &Session, by_size: bool) -> Option<TreeAct
                 action = Some(TreeAction::ToggleSort);
             }
             if button(ui, icon::ARROWS_CLOCKWISE, "Reload tables") {
-                s.send(Job::Tables);
+                s.reload_tables();
             }
             if button(ui, icon::CODE, "New SQL editor") {
                 action = Some(TreeAction::NewSql);
