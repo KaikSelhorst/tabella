@@ -309,6 +309,8 @@ pub struct ScriptError {
     pub line: u64,
     pub statement: String,
     pub cancelled: bool,
+    /// The connection dropped (it is replaced before the next job).
+    pub lost: bool,
 }
 
 /// Transaction state of the connection, reported with `Reply::Tx` whenever it changes.
@@ -398,7 +400,7 @@ pub enum Reply {
     },
     IndexAdvice {
         tab: u64,
-        res: Result<crate::advisor::Advice, String>,
+        res: DbResult<crate::advisor::Advice>,
     },
     ScriptProgress {
         tab: u64,
@@ -459,12 +461,12 @@ pub enum Reply {
     },
     Compared {
         tab: u64,
-        res: Result<Vec<crate::compare::TableDiff>, String>,
+        res: DbResult<Vec<crate::compare::TableDiff>>,
     },
     DumpDone {
         tab: u64,
         progress: crate::dump::DumpProgress,
-        res: Result<PathBuf, String>,
+        res: DbResult<PathBuf>,
     },
     Preview {
         tab: u64,
@@ -483,6 +485,8 @@ pub enum Reply {
     SearchDone {
         tab: u64,
         cancelled: bool,
+        /// Stopped because the connection dropped.
+        lost: bool,
     },
     Fks {
         tab: u64,
@@ -500,12 +504,42 @@ impl Reply {
     /// The job failed because the connection is gone.
     fn connection_lost(&self) -> bool {
         match self {
-            Reply::Rows { res, .. } | Reply::Saved { res, .. } => {
-                res.as_ref().as_ref().is_err_and(DbError::is_connection_lost)
-            }
-            Reply::Count { res, .. } => res.as_ref().is_err_and(DbError::is_connection_lost),
-            Reply::Columns { res, .. } => res.as_ref().is_err_and(DbError::is_connection_lost),
-            _ => false,
+            Reply::ScriptDone { error, .. } => error.as_ref().is_some_and(|e| e.lost),
+            Reply::SearchDone { lost, .. } => *lost,
+            _ => self.error().is_some_and(DbError::is_connection_lost),
+        }
+    }
+
+    /// The database's error a reply carries, if any.
+    fn error(&self) -> Option<&DbError> {
+        match self {
+            Reply::Connected(Err(e))
+            | Reply::Reconnected { res: Err(e), .. }
+            | Reply::Tables(Err(e))
+            | Reply::Columns { res: Err(e), .. }
+            | Reply::Count { res: Err(e), .. }
+            | Reply::AllColumns(Err(e))
+            | Reply::AllFks(Err(e))
+            | Reply::Objects(Err(e))
+            | Reply::Location(Err(e))
+            | Reply::Admin { res: Err(e), .. }
+            | Reply::IndexAdvice { res: Err(e), .. }
+            | Reply::Source { res: Err(e), .. }
+            | Reply::Structure { res: Err(e), .. }
+            | Reply::Plan { res: Err(e), .. }
+            | Reply::Imported { res: Err(e), .. }
+            | Reply::Exported { res: Err(e), .. }
+            | Reply::ColumnStats { res: Err(e), .. }
+            | Reply::Distinct { res: Err(e), .. }
+            | Reply::FkOptions { res: Err(e), .. }
+            | Reply::Compared { res: Err(e), .. }
+            | Reply::DumpDone { res: Err(e), .. }
+            | Reply::Preview { res: Err(e), .. }
+            | Reply::ServerInfo { res: Err(e), .. }
+            | Reply::Fks { res: Err(e), .. }
+            | Reply::TxEnded { res: Err(e), .. } => Some(e),
+            Reply::Rows { res, .. } | Reply::Saved { res, .. } => res.as_ref().as_ref().err(),
+            _ => None,
         }
     }
 
@@ -590,6 +624,11 @@ pub(crate) fn run_script(
         line,
         statement: statement.chars().take(300).collect(),
         cancelled,
+        lost: false,
+    };
+    let fail_db = |e: DbError, line: u64, statement: &str, cancelled: bool| ScriptError {
+        lost: e.is_connection_lost(),
+        ..fail(e.to_string(), line, statement, cancelled)
     };
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -617,7 +656,7 @@ pub(crate) fn run_script(
         ("BEGIN", "COMMIT", "ROLLBACK")
     };
     if transaction && let Err(e) = conn.query(begin) {
-        return (p, Some(fail(e.to_string(), 0, begin, false)), Vec::new());
+        return (p, Some(fail_db(e, 0, begin, false)), Vec::new());
     }
     let mut last_report = std::time::Instant::now();
     let error = loop {
@@ -643,7 +682,7 @@ pub(crate) fn run_script(
                         p.copied += n;
                         keep(sql, *line, begun.elapsed(), n);
                     })
-                    .map_err(|e| fail(e.to_string(), *line, sql, cancel.load(Ordering::Relaxed)))
+                    .map_err(|e| fail_db(e, *line, sql, cancel.load(Ordering::Relaxed)))
             }
             Item::Stmt { sql, line } => {
                 let begun = Instant::now();
@@ -670,7 +709,7 @@ pub(crate) fn run_script(
                 })
                 .map_err(|e| {
                     let cancelled = cancel.load(Ordering::Relaxed);
-                    fail(e.to_string(), *line, sql, cancelled)
+                    fail_db(e, *line, sql, cancelled)
                 })
             }
         };
@@ -687,7 +726,7 @@ pub(crate) fn run_script(
         if let Err(e) = conn.query(end)
             && error.is_none()
         {
-            return (p, Some(fail(e.to_string(), p.line, end, false)), slowest);
+            return (p, Some(fail_db(e, p.line, end, false)), slowest);
         }
     }
     (p, error, slowest)
@@ -770,29 +809,33 @@ fn compare_with(
     source_schema: &str,
     target: Option<&ConnConfig>,
     target_schema: &str,
-) -> Result<Vec<crate::compare::TableDiff>, String> {
+) -> DbResult<Vec<crate::compare::TableDiff>> {
     let kind = conn.kind();
-    let source = crate::compare::snapshot(conn, source_schema).map_err(|e| e.to_string())?;
+    let source = crate::compare::snapshot(conn, source_schema)?;
     let dest = match target {
         None => crate::compare::snapshot(conn, target_schema),
         Some(cfg) => {
             if cfg.kind != kind {
-                return Err("both sides must be the same kind of database".into());
+                return Err(DbError::Other(
+                    "both sides must be the same kind of database".into(),
+                ));
             }
             let tunnel = match &cfg.ssh {
-                Some(ssh) => {
-                    Some(Tunnel::open(ssh, &cfg.host, cfg.port).map_err(|e| format!("SSH tunnel: {e}"))?)
-                }
+                Some(ssh) => Some(
+                    Tunnel::open(ssh, &cfg.host, cfg.port)
+                        .map_err(|e| DbError::Other(format!("SSH tunnel: {e}")))?,
+                ),
                 None => None,
             };
+            // The target's errors are its own: not this connection's, which stays up.
             let mut other = Conn::connect(cfg, tunnel.as_ref().map(|t| t.local_port))
-                .map_err(|e| format!("couldn't connect to the target: {e}"))?;
+                .map_err(|e| DbError::Other(format!("couldn't connect to the target: {e}")))?;
             crate::compare::snapshot(&mut other, target_schema)
+                .map_err(|e| DbError::Other(format!("target: {e}")))
         }
-    }
-    .map_err(|e| e.to_string())?;
+    }?;
     if dest.tables.is_empty() && source.tables.is_empty() {
-        return Err("no tables on either side: check the names".into());
+        return Err(DbError::Other("no tables on either side: check the names".into()));
     }
     Ok(crate::compare::diff(kind, &source, &dest))
 }
@@ -1394,9 +1437,11 @@ impl<S: Fn(Reply)> Worker<'_, S> {
             },
             Job::SuggestIndex { tab, sql, schema } => {
                 let kind = conn.kind();
-                let res = crate::advisor::parse(&sql).and_then(|plans| {
-                    crate::advisor::advise(kind, &schema, &plans, |s, t| conn.structure(s, t).ok())
-                });
+                let res = crate::advisor::parse(&sql)
+                    .and_then(|plans| {
+                        crate::advisor::advise(kind, &schema, &plans, |s, t| conn.structure(s, t).ok())
+                    })
+                    .map_err(DbError::Other);
                 Reply::IndexAdvice { tab, res }
             }
             Job::ServerInfo { tab } => Reply::ServerInfo {
@@ -1534,9 +1579,9 @@ impl<S: Fn(Reply)> Worker<'_, S> {
                 tab,
                 progress: Default::default(),
                 res: Err(if cancel.load(Ordering::Relaxed) {
-                    "cancelled".into()
+                    DbError::Other("cancelled".into())
                 } else {
-                    e.to_string()
+                    e
                 }),
             },
         }
@@ -1551,6 +1596,7 @@ impl<S: Fn(Reply)> Worker<'_, S> {
         targets: &[crate::search::SearchTarget],
         cancel: &AtomicBool,
     ) -> Reply {
+        let mut lost = false;
         for t in targets {
             if cancel.load(Ordering::Relaxed) {
                 break;
@@ -1558,13 +1604,21 @@ impl<S: Fn(Reply)> Worker<'_, S> {
             let (hit, error) =
                 match crate::search::search_table(&mut self.conn, self.cfg.kind, t, term, exact) {
                     Ok(h) => (h, None),
-                    Err(e) => (None, Some(format!("{}.{}: {e}", t.schema, t.table))),
+                    Err(e) => {
+                        // Every table after it would fail the same way.
+                        lost = e.is_connection_lost();
+                        (None, Some(format!("{}.{}: {e}", t.schema, t.table)))
+                    }
                 };
             (self.send)(Reply::SearchProgress { tab, hit, error });
+            if lost {
+                break;
+            }
         }
         Reply::SearchDone {
             tab,
             cancelled: cancel.load(Ordering::Relaxed),
+            lost,
         }
     }
 }
@@ -1651,6 +1705,41 @@ fn export(conn: &mut Conn, spec: ExportSpec) -> DbResult<(PathBuf, u64)> {
 mod tests {
     use super::*;
     use crate::db::Kind;
+
+    #[test]
+    fn any_reply_can_report_a_lost_connection() {
+        let dropped = || DbError::MySql(mysql::Error::IoError(std::io::ErrorKind::ConnectionReset.into()));
+        let refused = || DbError::Other("syntax error".into());
+        let exported = |e: DbError| Reply::Exported { tab: 1, res: Err(e) };
+        assert!(exported(dropped()).connection_lost());
+        assert!(!exported(refused()).connection_lost());
+        assert!(
+            Reply::Compared {
+                tab: 1,
+                res: Err(dropped())
+            }
+            .connection_lost()
+        );
+        let script = |lost: bool| Reply::ScriptDone {
+            tab: 1,
+            progress: ScriptProgress::default(),
+            error: Some(ScriptError {
+                message: String::new(),
+                line: 1,
+                statement: String::new(),
+                cancelled: false,
+                lost,
+            }),
+            slowest: Vec::new(),
+        };
+        assert!(script(true).connection_lost() && !script(false).connection_lost());
+        let search = |lost: bool| Reply::SearchDone {
+            tab: 1,
+            cancelled: false,
+            lost,
+        };
+        assert!(search(true).connection_lost() && !search(false).connection_lost());
+    }
 
     /// Needs `docker compose --profile test up -d --wait`.
     fn export_whole_table(kind: Kind, port: u16, db: &str) {
@@ -2080,7 +2169,7 @@ mod tests {
         c.query(&a.ddl)
             .unwrap_or_else(|e| panic!("{kind:?}: the suggestion runs: {e}\n{}", a.ddl));
         let err = ask(q).unwrap_err();
-        assert!(err.contains("Already indexed"), "{kind:?}: {err}");
+        assert!(err.to_string().contains("Already indexed"), "{kind:?}: {err}");
         c.query("DROP TABLE dbl_adv").unwrap();
     }
 

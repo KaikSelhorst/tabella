@@ -2244,6 +2244,7 @@ fn screenshots() {
                 line: 418,
                 statement: "ALTER TABLE customers ADD COLUMN phone text".into(),
                 cancelled: false,
+                lost: false,
             }));
             let stmt = |line: usize, ms: u64, rows: u64, sql: &str| crate::db::StatementTime {
                 line,

@@ -214,7 +214,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
         }
         Reply::IndexAdvice { res, .. } => {
             if let TabKind::Activity(st) = &mut t.kind {
-                st.advice = Some(res);
+                st.advice = Some(res.map_err(|e| e.to_string()));
             }
         }
         Reply::ServerInfo { res, .. } => {
@@ -230,7 +230,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
         Reply::Compared { res, .. } => {
             if let TabKind::Compare(st) = &mut t.kind {
                 st.running = false;
-                st.result = Some(res);
+                st.result = Some(res.map_err(|e| e.to_string()));
             }
         }
         Reply::DumpProgress { progress, .. } => {
@@ -245,7 +245,7 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                     st.progress = progress;
                 }
                 st.took = st.started.map(|at| at.elapsed());
-                st.outcome = Some(res);
+                st.outcome = Some(res.map_err(|e| e.to_string()));
             }
         }
         Reply::FkOptions { res, search, .. } => {
