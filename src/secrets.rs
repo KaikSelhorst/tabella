@@ -15,6 +15,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use chacha20poly1305::aead::{Aead, Generate, Key, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+use eframe::egui;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -46,9 +47,42 @@ impl std::ops::Deref for Secret {
     }
 }
 
-impl std::ops::DerefMut for Secret {
-    fn deref_mut(&mut self) -> &mut String {
-        &mut self.0
+impl Secret {
+    /// Empties it, wiping what it held (`String::clear` leaves the bytes in the buffer).
+    pub fn clear(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+/// Typed into a `TextEdit` without `DerefMut`: a `String` that grows moves to a bigger buffer
+/// and frees the old one as it is, so the password would stay behind in freed memory.
+impl egui::TextBuffer for Secret {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn insert_text(&mut self, text: &str, char_index: egui::text::CharIndex) -> usize {
+        let needed = self.0.len() + text.len();
+        if needed > self.0.capacity() {
+            let mut bigger = String::with_capacity(needed.max(2 * self.0.capacity()).max(32));
+            bigger.push_str(&self.0);
+            // The old buffer is wiped when the old `Secret` drops.
+            drop(std::mem::replace(self, Secret(bigger)));
+        }
+        self.0.insert_text(text, char_index)
+    }
+
+    fn delete_char_range(&mut self, char_range: std::ops::Range<egui::text::CharIndex>) {
+        // Shrinks in place: the bytes left past the end are wiped with the rest on drop.
+        self.0.delete_char_range(char_range);
+    }
+
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<Self>()
     }
 }
 
@@ -421,6 +455,25 @@ mod os {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_edits_like_a_string() {
+        use egui::TextBuffer as _;
+        use egui::text::CharIndex;
+        let mut s = Secret::default();
+        // Past the first buffer's capacity: it moves to a bigger one on the way.
+        for (i, ch) in "correct horse battery staple, twice: correct horse"
+            .chars()
+            .enumerate()
+        {
+            s.insert_text(&ch.to_string(), CharIndex(i));
+        }
+        s.insert_text("é", CharIndex(0));
+        s.delete_char_range(CharIndex(1)..CharIndex(9));
+        assert_eq!(s.as_str(), "éhorse battery staple, twice: correct horse");
+        s.clear();
+        assert!(s.is_empty());
+    }
 
     #[test]
     fn a_secret_is_saved_as_plain_text_but_never_debug_printed() {

@@ -143,7 +143,7 @@ impl App {
             ui.add_space(12.0);
             ui.add_enabled_ui(!working, |ui| {
                 let r = ui.add(
-                    TextEdit::singleline(&mut *p.password)
+                    TextEdit::singleline(&mut p.password)
                         .password(true)
                         .hint_text("Master password")
                         .desired_width(f32::INFINITY),
@@ -155,7 +155,7 @@ impl App {
                 if create {
                     ui.add_space(4.0);
                     let r2 = ui.add(
-                        TextEdit::singleline(&mut *p.confirm)
+                        TextEdit::singleline(&mut p.confirm)
                             .password(true)
                             .hint_text("Repeat the master password")
                             .desired_width(f32::INFINITY),
@@ -311,7 +311,7 @@ fn server_rows(ui: &mut egui::Ui, c: &mut ConnConfig, is_new: bool) {
     ui.end_row();
     ui.label("Password");
     ui.add(
-        TextEdit::singleline(&mut *c.password)
+        TextEdit::singleline(&mut c.password)
             .password(true)
             .desired_width(FIELD_WIDTH),
     );
