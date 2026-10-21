@@ -7,7 +7,7 @@ authors = ["Kaik Selhorst"]
 [dependencies]
 argon2 = "0.6.0"
 base64 = "0.23.1"
-calamine = { version = "0.36.1", default-features = false }
+calamine = { version = "0.37.0", default-features = false }
 chacha20poly1305 = "0.11.0"
 csv = "1"
 dirs = { version = "7.0.0", default-features = false }
@@ -19,7 +19,7 @@ getrandom = "0.3"
 mysql = { version = "28.0.3", default-features = false, features = ["minimal", "rustls-tls-ring"] }
 postgres = { version = "0.19.14", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled"] }
-rust_xlsxwriter = "0.99.1"
+rust_xlsxwriter = "0.101.0"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -45,7 +45,7 @@ keyring = { version = "3", default-features = false, features = ["sync-secret-se
 [dev-dependencies]
 egui_kittest = { version = "0.36.2", features = ["wgpu", "eframe"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "ico"] }
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 
 [features]
