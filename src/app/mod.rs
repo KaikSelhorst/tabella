@@ -682,6 +682,8 @@ pub struct Tab {
     /// A script's result sets when it returned more than one, in order. The one on screen lives
     /// in `result`; its slot here is an empty placeholder.
     pub sets: Vec<QueryResult>,
+    /// Time of each statement of the script that produced the results (all sets share it).
+    pub timings: Vec<crate::db::StatementTime>,
     pub set_shown: usize,
     /// "Set value in selection": the value being typed.
     pub fill_prompt: Option<String>,
@@ -755,6 +757,7 @@ impl Tab {
             exported: None,
             copied: None,
             sets: Vec::new(),
+            timings: Vec::new(),
             set_shown: 0,
             fill_prompt: None,
             bulk_prompt: None,

@@ -362,6 +362,21 @@ pub struct QueryResult {
     pub elapsed: Duration,
     /// Result sets of earlier statements in the same script (oldest first); this one is the last.
     pub previous: Vec<QueryResult>,
+    /// How long each statement of a multi-statement run took (empty for a single statement).
+    pub timings: Vec<StatementTime>,
+}
+
+/// One statement of a script run from the editor, timed on its own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatementTime {
+    /// 1-based line where it starts.
+    pub line: usize,
+    /// Its first line, shortened.
+    pub sql: String,
+    pub elapsed: Duration,
+    /// Rows it returned, or the rows it affected when it returned none.
+    pub rows: u64,
+    pub returned_rows: bool,
 }
 
 /// Most result sets kept from one script (each up to `max_rows()` rows).
@@ -373,7 +388,9 @@ impl QueryResult {
         if self.columns.is_empty() {
             return;
         }
+        let timings = std::mem::take(&mut self.timings);
         let mut done = std::mem::take(self);
+        self.timings = timings;
         self.previous = std::mem::take(&mut done.previous);
         if self.previous.len() < MAX_SETS {
             self.previous.push(done);

@@ -427,6 +427,7 @@ fn on_rows(
     match res {
         Ok(mut r) => {
             let earlier = std::mem::take(&mut r.previous);
+            t.timings = std::mem::take(&mut r.timings);
             t.sets.clear();
             if !earlier.is_empty() {
                 t.sets = earlier;

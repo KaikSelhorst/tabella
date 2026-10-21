@@ -649,6 +649,7 @@ pub(crate) mod screenshots {
             truncated: false,
             elapsed: Duration::from_millis(3),
             previous: Vec::new(),
+            timings: Vec::new(),
         };
         let mut ts = TableState::new("public", "customers", Some(40));
         ts.cols = cols;
@@ -1329,6 +1330,7 @@ pub(crate) mod screenshots {
                 truncated: false,
                 elapsed: Duration::from_millis(2),
                 previous: Vec::new(),
+                timings: Vec::new(),
             };
             let st = crate::app::ActivityState {
                 view: crate::db::ActivityView::Sessions,

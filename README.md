@@ -142,6 +142,9 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
   cell lights the same value elsewhere in its column
 - Export → "Copy to clipboard" (CSV, JSON or SQL INSERT): the rows on screen as text, ready to
   paste, without a file; the same text the file export writes. Up to 20 MB
+- A script of several statements run from the editor is timed statement by statement: the
+  footer's "N statements" lists the line, time and rows of each one (the slowest is highlighted).
+  Scripts with BEGIN/COMMIT inside, or over 100 statements, run as a single text
 - Column widths dragged in a table are remembered for that table (per connection), across tabs
   and runs
 - Functions, procedures, triggers and sequences in the sidebar (views along with the tables):

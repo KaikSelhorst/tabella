@@ -65,6 +65,43 @@ pub(super) fn result_sets_strip(ui: &mut egui::Ui, tab: &Tab) -> Option<usize> {
     pick
 }
 
+/// "5 statements" in the footer: opens the time each statement of the script took.
+fn timings_menu(ui: &mut egui::Ui, timings: &[crate::db::StatementTime]) {
+    let t = theme::tokens();
+    let slowest = timings.iter().map(|s| s.elapsed).max().unwrap_or_default();
+    let label = format!("{} statements ▾", timings.len());
+    ui.menu_button(egui::RichText::new(label).small().color(t.lime), |ui| {
+        egui::Grid::new("statement_times")
+            .num_columns(4)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                for (i, st) in timings.iter().enumerate() {
+                    let hot = st.elapsed == slowest;
+                    let color = if hot { t.lime } else { t.muted_foreground };
+                    ui.label(egui::RichText::new(format!("#{}", i + 1)).small().color(t.subtle));
+                    ui.label(
+                        egui::RichText::new(format!("line {}", st.line))
+                            .small()
+                            .color(t.subtle),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{} ms", st.elapsed.as_millis()))
+                            .small()
+                            .color(color),
+                    );
+                    let unit = if st.returned_rows { "row(s)" } else { "affected" };
+                    ui.label(
+                        egui::RichText::new(format!("{} {unit}", st.rows))
+                            .small()
+                            .color(t.subtle),
+                    );
+                    ui.label(egui::RichText::new(&st.sql).small().monospace());
+                    ui.end_row();
+                }
+            });
+    });
+}
+
 pub(super) fn summary(res: &QueryResult) -> String {
     if res.columns.is_empty() {
         format!(
@@ -186,6 +223,9 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
                             .small()
                             .color(t.muted_foreground),
                     );
+                    if tab.timings.len() > 1 {
+                        timings_menu(ui, &tab.timings);
+                    }
                     if can_more {
                         let more = egui::Button::new(
                             egui::RichText::new(format!(

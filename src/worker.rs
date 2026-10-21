@@ -687,6 +687,95 @@ fn run_user_sql(conn: &mut Conn, tx: &mut TxState, pg: bool, sql: &str) -> DbRes
     res
 }
 
+/// Most statements, and bytes of SQL, of an editor run that is timed statement by statement.
+const TIMED_MAX_STATEMENTS: usize = 100;
+const TIMED_MAX_BYTES: usize = 200_000;
+
+/// Runs what the editor sent. A script of several statements goes one statement at a time so each
+/// one is timed; the result is the same the server would have given for the whole text (every
+/// result set, the last statement's outcome), plus `timings`.
+fn run_editor_sql(conn: &mut Conn, tx: &mut TxState, pg: bool, sql: &str) -> DbResult<QueryResult> {
+    let ranges = sql::statement_ranges(sql, false);
+    // Transaction control inside the script changes what "one statement at a time" means.
+    if ranges.len() < 2
+        || ranges.len() > TIMED_MAX_STATEMENTS
+        || sql.len() > TIMED_MAX_BYTES
+        || sql::tx_control(sql).is_some()
+    {
+        return run_user_sql(conn, tx, pg, sql);
+    }
+    let at: Vec<usize> = sql
+        .char_indices()
+        .map(|(b, _)| b)
+        .chain(std::iter::once(sql.len()))
+        .collect();
+    // Postgres runs a multi-statement text as one transaction: keep that.
+    let wrap = pg && !tx.open && !tx.manual && sql::script_risk(sql).writes;
+    let started = Instant::now();
+    if wrap {
+        conn.query("BEGIN")?;
+    }
+    let mut out = QueryResult::default();
+    for &(a, b) in &ranges {
+        let (a, b) = (at[a], at[b]);
+        // The statement keeps its place in the text (blanks in front of it), so the position an
+        // error reports still points into the editor.
+        let blank: String = sql[..a]
+            .chars()
+            .map(|c| if c == '\n' { '\n' } else { ' ' })
+            .collect();
+        let text = format!("{blank}{}", &sql[a..b]);
+        let begun = Instant::now();
+        let res = if wrap {
+            conn.query(&text)
+        } else {
+            run_user_sql(conn, tx, pg, &text)
+        };
+        let mut r = match res {
+            Ok(r) => r,
+            Err(e) => {
+                if wrap {
+                    let _ = conn.query("ROLLBACK");
+                }
+                return Err(e);
+            }
+        };
+        let elapsed = begun.elapsed();
+        let returned_rows = !r.columns.is_empty();
+        out.timings.push(crate::db::StatementTime {
+            line: sql[..a].matches('\n').count() + 1,
+            sql: sql[a..b]
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(80)
+                .collect(),
+            elapsed,
+            rows: if returned_rows {
+                r.rows.len() as u64
+            } else {
+                r.affected.unwrap_or(0)
+            },
+            returned_rows,
+        });
+        if returned_rows {
+            out.next_set();
+            out.columns = std::mem::take(&mut r.columns);
+            out.rows = std::mem::take(&mut r.rows);
+            out.truncated = r.truncated;
+            out.elapsed = elapsed;
+        }
+        out.affected = r.affected;
+    }
+    if wrap {
+        conn.query("COMMIT")?;
+    }
+    out.elapsed = started.elapsed();
+    Ok(out)
+}
+
 fn send_tx(send: &impl Fn(Reply), before: TxState, now: TxState) {
     if before != now {
         send(Reply::Tx(now));
@@ -825,7 +914,7 @@ impl<S: Fn(Reply)> Worker<'_, S> {
         Some(match job {
             Job::Query { tab, sql } => Reply::Rows {
                 tab,
-                res: Box::new(run_user_sql(conn, &mut self.tx, self.pg, &sql)),
+                res: Box::new(run_editor_sql(conn, &mut self.tx, self.pg, &sql)),
                 notice: None,
             },
             Job::MoreRows { tab, sql, limit } => Reply::Rows {
@@ -1392,6 +1481,39 @@ mod tests {
         other.query("DROP TABLE dbl_tx").unwrap();
     }
 
+    /// A script from the editor is timed statement by statement and still ends with the same
+    /// result sets and error position as the whole text would.
+    #[test]
+    fn editor_script_is_timed_per_statement() {
+        let cfg = crate::sqlite::tests::sample_db("timed");
+        let mut conn = Conn::connect(&cfg, None).unwrap();
+        let mut tx = TxState::default();
+        let sql = "CREATE TABLE tm (n INTEGER);\nINSERT INTO tm VALUES (1), (2);\nSELECT n FROM tm;\nSELECT n * 10 AS x FROM tm;";
+        let r = run_editor_sql(&mut conn, &mut tx, false, sql).unwrap();
+        let lines: Vec<usize> = r.timings.iter().map(|t| t.line).collect();
+        assert_eq!(lines, [1, 2, 3, 4]);
+        assert_eq!(r.timings[1].rows, 2, "an INSERT reports what it affected");
+        assert!(!r.timings[1].returned_rows && r.timings[2].returned_rows);
+        assert_eq!(r.timings[2].sql, "SELECT n FROM tm");
+        assert_eq!(r.columns, ["x"], "the last result set is on screen");
+        assert_eq!(r.previous.len(), 1, "the first SELECT is kept as an earlier set");
+        // A single statement is left alone.
+        assert!(
+            run_editor_sql(&mut conn, &mut tx, false, "SELECT 1")
+                .unwrap()
+                .timings
+                .is_empty()
+        );
+        // An error still points into the editor text.
+        let bad = "SELECT 1;\nSELECT * FROM missing_table;";
+        let e = run_editor_sql(&mut conn, &mut tx, false, bad).unwrap_err();
+        let at = e.position_in(bad).expect("a position");
+        assert!(bad[at..].starts_with("missing_table"), "{}", &bad[at..]);
+        // Transaction control keeps the old whole-text run.
+        let r = run_editor_sql(&mut conn, &mut tx, false, "BEGIN; SELECT 1; COMMIT;").unwrap();
+        assert!(r.timings.is_empty());
+    }
+
     /// SQLite through the worker, like the app uses it: connect, catalog, location, a query,
     /// and "commit manual" undoing an UPDATE. No server needed.
     #[test]
@@ -1666,6 +1788,58 @@ mod tests {
     #[ignore]
     fn manual_commit_mysql() {
         manual_commit(Kind::MySql, 53306, "test");
+    }
+
+    /// Timed editor scripts on a real server: Postgres keeps the all-or-nothing of a
+    /// multi-statement text, and an error points at the failing statement in the text.
+    fn timed_script(kind: Kind, port: u16, db: &str) {
+        let mut cfg = ConnConfig::new(kind);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = port;
+        cfg.password = "pw".into();
+        cfg.database = db.into();
+        if kind == Kind::Postgres {
+            cfg.user = "postgres".into();
+        } else {
+            cfg.user = "root".into();
+        }
+        let mut conn = Conn::connect(&cfg, None).unwrap();
+        let pg = kind == Kind::Postgres;
+        let mut tx = TxState::default();
+        conn.query("DROP TABLE IF EXISTS dbl_timed").unwrap();
+        conn.query("CREATE TABLE dbl_timed (n INT PRIMARY KEY)").unwrap();
+        let sql =
+            "INSERT INTO dbl_timed VALUES (1);\nSELECT n FROM dbl_timed;\nINSERT INTO dbl_timed VALUES (2)";
+        let r = run_editor_sql(&mut conn, &mut tx, pg, sql).unwrap();
+        assert_eq!(r.timings.len(), 3, "{kind:?}");
+        assert_eq!(r.timings[1].rows, 1);
+        let bad = "INSERT INTO dbl_timed VALUES (3);\nSELECT * FROM missing_tbl";
+        let e = run_editor_sql(&mut conn, &mut tx, pg, bad).unwrap_err();
+        let at = e
+            .position_in(bad)
+            .unwrap_or_else(|| panic!("{kind:?}: no position in {e}"));
+        assert!(bad[at..].contains("missing_tbl"), "{kind:?}: {}", &bad[at..]);
+        let n = conn.query("SELECT count(*) FROM dbl_timed WHERE n = 3").unwrap();
+        if pg {
+            assert_eq!(
+                n.rows[0][0].as_deref(),
+                Some("0"),
+                "Postgres rolls the whole text back"
+            );
+        }
+        conn.query("DROP TABLE dbl_timed").unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn timed_script_postgres() {
+        timed_script(Kind::Postgres, 55432, "postgres");
+    }
+
+    #[test]
+    #[ignore]
+    fn timed_script_mysql() {
+        timed_script(Kind::MySql, 53306, "test");
     }
 
     /// A file with a routine body, a COPY block / DELIMITER, then a failing statement: in a
