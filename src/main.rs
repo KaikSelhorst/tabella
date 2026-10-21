@@ -7,6 +7,7 @@ mod cli;
 mod compare;
 mod config;
 mod db;
+mod definition;
 mod design;
 mod diagram;
 mod dump;

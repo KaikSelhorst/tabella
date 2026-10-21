@@ -22,7 +22,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let mut run: Option<String> = None;
     let mut explain: Option<(String, bool)> = None;
     let mut preview: Option<String> = None;
-    let mut open_table: Option<(String, String)> = None;
+    let mut go_to: Option<Request> = None;
     let mut file_menu_action: Option<Request> = None;
     let t = theme::tokens();
     let f5 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
@@ -292,22 +292,59 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             egui::Stroke::new(2.0, t.lime),
                         );
                     }
-                    // A table name under the pointer: its columns on hover, Ctrl+click opens it.
+                    // A name under the pointer: a table shows its columns on hover; Ctrl+click opens
+                    // the table's data, or the code of a view, function, trigger or sequence, or
+                    // the structure of the table a column belongs to.
                     let hovered = out.response.hover_pos().and_then(|p| {
-                        let at = out.galley.cursor_from_pos(p - out.galley_pos);
-                        let (a, b) = sql::word_at(text, usize::from(at.index))?;
+                        let at = usize::from(out.galley.cursor_from_pos(p - out.galley_pos).index);
+                        let (a, b) = sql::word_at(text, at)?;
                         let word: String = text.chars().skip(a).take(b - a).collect();
-                        table_named(s, &word)
+                        let statement: String = sql::statement_in(&ranges, at)
+                            .map(|(a, b)| text.chars().skip(a).take(b - a).collect())
+                            .unwrap_or_default();
+                        let catalog = definition::Catalog {
+                            tables: &s.tables,
+                            objects: &s.objects,
+                            columns: &s.schema_cols,
+                            current_schema: &s.current_schema,
+                        };
+                        definition::resolve(&catalog, &word, &statement).into_iter().next()
                     });
-                    if let Some(t) = hovered {
+                    if let Some(target) = hovered {
                         let ctrl = ui.input(|i| i.modifiers.command);
                         if ctrl {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
                         if ctrl && out.response.clicked() {
-                            open_table = Some((t.schema.clone(), t.name.clone()));
+                            go_to = Some(match &target {
+                                definition::Target::Table { schema, name } => {
+                                    Request::Data(schema.clone(), name.clone())
+                                }
+                                definition::Target::Object(o) => Request::Object(o.clone()),
+                                definition::Target::Column { schema, table, .. } => {
+                                    Request::Structure(schema.clone(), table.clone())
+                                }
+                            });
                         }
-                        out.response.response.clone().on_hover_ui_at_pointer(|ui| table_tooltip(ui, s, t));
+                        let tip = out.response.response.clone();
+                        match &target {
+                            definition::Target::Table { schema, name } => {
+                                if let Some(t) = s.tables.iter().find(|t| &t.schema == schema && &t.name == name) {
+                                    tip.on_hover_ui_at_pointer(|ui| table_tooltip(ui, s, t));
+                                }
+                            }
+                            other => {
+                                let what = other.describe();
+                                tip.on_hover_ui_at_pointer(|ui| {
+                                    ui.label(egui::RichText::new(&what).color(t.foreground));
+                                    ui.label(
+                                        egui::RichText::new("Ctrl+click opens the definition")
+                                            .size(11.0)
+                                            .color(t.subtle),
+                                    );
+                                });
+                            }
+                        }
                     }
                     if let (Some((sugg, selected)), Some(range)) = (popup, out.cursor_range) {
                         let at = out.galley.pos_from_cursor(range.primary);
@@ -338,8 +375,8 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 None => d.remove::<find::FindState>(find_id),
             });
         });
-    if let Some((schema, table)) = open_table {
-        cx.request = Some(Request::Data(schema, table));
+    if go_to.is_some() {
+        cx.request = go_to;
     }
     // "Repeat every": stops at the first error, so a broken query doesn't keep failing.
     let repeat_value = repeat_value.filter(|_| tab.error.is_none());
@@ -614,27 +651,6 @@ fn statement_ranges_cached(ctx: &egui::Context, tab: u64, text: &str) -> Vec<(us
     let r = sql::statement_ranges(text, true);
     ctx.data_mut(|d| d.insert_temp(cache, (key, r.clone())));
     r
-}
-
-/// The sidebar's table for a name typed in the editor (`customers`, `public.customers`,
-/// `"Customers"`), ignoring case when there's no exact match.
-pub(super) fn table_named<'a>(s: &'a Session, word: &str) -> Option<&'a crate::db::TableRef> {
-    let parts: Vec<String> = word
-        .split('.')
-        .map(|p| p.trim_matches(|c| c == '"' || c == '`').to_string())
-        .collect();
-    let (schema, name) = match &parts[..] {
-        [n] => (None, n.as_str()),
-        [sc, n] => (Some(sc.as_str()), n.as_str()),
-        _ => return None,
-    };
-    let find = |exact: bool| {
-        let same = |a: &str, b: &str| if exact { a == b } else { a.eq_ignore_ascii_case(b) };
-        s.tables
-            .iter()
-            .find(|t| same(&t.name, name) && schema.is_none_or(|sc| same(&t.schema, sc)))
-    };
-    find(true).or_else(|| find(false))
 }
 
 /// Hover card for a table name in the editor: its columns and types.

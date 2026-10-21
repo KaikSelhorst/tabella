@@ -15,6 +15,7 @@ use super::structure::{self, InsertAction, StructAction};
 use super::{chart, complete, find, icon, palette, plan_view, syntax, theme};
 use crate::app::{self, App, Dialog, Effect, FavPrompt, GridEvent, RunMode, Session, Tab, TabKind};
 use crate::db::{ActivityView, QueryResult};
+use crate::definition;
 use crate::export::{self, Format};
 use crate::favorites::{self, Favorite};
 use crate::filters::{self, SavedFilter};
@@ -121,6 +122,8 @@ pub(super) enum Request {
     Diagram(String),
     /// A view's definition in an editor.
     ViewSource(String, String),
+    /// The code of a function, procedure, trigger, view or sequence in an editor.
+    Object(crate::db::DbObject),
     /// Save the active editor tab to its file (`true`: ask where).
     SaveFile(bool),
     OpenFile,
@@ -604,6 +607,7 @@ impl App {
             }
             Some(Request::DeleteFavorite(id)) => self.delete_favorite(&id),
             Some(Request::Diagram(schema)) => self.open_diagram(Some(&schema)),
+            Some(Request::Object(object)) => self.open_object(object),
             Some(Request::ViewSource(schema, name)) => {
                 let view = self.session.as_ref().and_then(|s| {
                     s.objects
