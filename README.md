@@ -83,7 +83,8 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
 - In the editor, hovering a table name shows its columns; `Ctrl+click` opens it
   (a table opens its data; a view, function, procedure, trigger or sequence opens its code; a
   column, written `alias.col`, `table.col` or bare when the statement reads from one table that
-  has it, opens the structure of its table with that column highlighted)
+  has it, opens the structure of its table with that column highlighted). A name with several
+  matches (an overloaded function, `id` in two joined tables) lists them to choose from
 - Tabs: right-click to rename, duplicate, close the others/the ones to the right;
   `Ctrl+Shift+T` reopens the last closed one
 - Split view, like in Zed: `Ctrl+\` (or right-click a tab → "Split right") opens a second pane with

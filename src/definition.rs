@@ -31,9 +31,18 @@ impl Target {
                     ObjKind::View => "view",
                     ObjKind::Sequence => "sequence",
                 };
-                format!("{what} {}.{}", o.schema, o.name)
+                // Overloads differ only in their arguments.
+                if matches!(o.kind, ObjKind::Function | ObjKind::Procedure) {
+                    format!("{what} {}.{}({})", o.schema, o.name, o.args)
+                } else {
+                    format!("{what} {}.{}", o.schema, o.name)
+                }
             }
-            Target::Column { table, column, .. } => format!("column {column} of {table}"),
+            Target::Column {
+                schema,
+                table,
+                column,
+            } => format!("column {column} of {schema}.{table}"),
         }
     }
 }
@@ -403,6 +412,18 @@ mod tests {
         // Not a name the database knows.
         assert!(f.at("select", "select 1").is_empty());
         assert!(f.at("a.b.c.d", "").is_empty());
+    }
+
+    /// The picker lists `describe()`: overloads must read differently.
+    #[test]
+    fn descriptions_tell_overloads_and_tables_apart() {
+        let f = |args: &str| Target::Object(object("public", "calc_total", ObjKind::Function, args));
+        assert_eq!(f("integer").describe(), "function public.calc_total(integer)");
+        assert_ne!(f("integer").describe(), f("integer, numeric").describe());
+        assert_eq!(
+            col("archive", "orders", "id").describe(),
+            "column id of archive.orders"
+        );
     }
 
     #[test]

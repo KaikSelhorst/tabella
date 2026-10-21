@@ -1412,6 +1412,64 @@ fn screenshots() {
             .unwrap();
         harness.hover_at(egui::pos2(900.0, 700.0));
     }
+    // Ctrl+click on `id`, a column of both tables the statement reads: a list to choose from.
+    {
+        let state = harness.state_mut();
+        if let Some(text) = state.tabs[1].editor_mut().map(|ed| &mut ed.text) {
+            *text = "SELECT id\nFROM customers c\nJOIN orders o ON o.customer_id = c.id;".into();
+        }
+        harness.run();
+        let at = egui::pos2(306.0, 86.0);
+        harness.event(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+        harness.hover_at(at);
+        harness.step();
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::COMMAND,
+            });
+            harness.step();
+        }
+        harness.run_steps(2);
+        harness
+            .render()
+            .unwrap()
+            .save(format!("{dir}/definition-picker.png"))
+            .unwrap();
+        // Picking the second one, Ctrl still held and the pointer crossing `customers` on its
+        // way down: the list wins, the editor under it doesn't react.
+        for p in [egui::pos2(300.0, 104.0), egui::pos2(395.0, 160.0)] {
+            harness.hover_at(p);
+            harness.step();
+        }
+        let choice = egui::pos2(395.0, 160.0);
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos: choice,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::COMMAND,
+            });
+            harness.step();
+        }
+        harness.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        // The structure is loading (a spinner keeps repainting): a few frames, not `run`.
+        harness.run_steps(3);
+        let state = harness.state_mut();
+        let opened = state.tabs.iter().find_map(|t| match &t.kind {
+            TabKind::Structure(st) => Some((st.table.clone(), st.focus.clone())),
+            _ => None,
+        });
+        let titles: Vec<&str> = state.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(opened, Some(("orders".into(), Some("id".into()))), "tabs: {titles:?}");
+        assert_eq!(state.tabs.len(), 3, "nothing else opened: {titles:?}");
+        let i = state.tabs.len() - 1;
+        state.tabs.remove(i);
+        state.active = 1;
+        harness.run();
+    }
     // ER diagram of "public".
     {
         let fk = |t: &str, c: &str, rt: &str| crate::db::FkEdge {

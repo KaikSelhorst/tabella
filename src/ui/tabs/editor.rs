@@ -295,7 +295,8 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     }
                     // A name under the pointer: a table shows its columns on hover; Ctrl+click opens
                     // the table's data, or the code of a view, function, trigger or sequence, or
-                    // the structure of the table a column belongs to.
+                    // the structure of the table a column belongs to. A name with several matches
+                    // (overloads, a column in two tables) lists them to pick from.
                     let hovered = out.response.hover_pos().and_then(|p| {
                         let at = usize::from(out.galley.cursor_from_pos(p - out.galley_pos).index);
                         let (a, b) = sql::word_at(text, at)?;
@@ -309,33 +310,35 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             columns: &s.schema_cols,
                             current_schema: &s.current_schema,
                         };
-                        definition::resolve(&catalog, &word, &statement).into_iter().next()
+                        let found = definition::resolve(&catalog, &word, &statement);
+                        (!found.is_empty()).then_some((p, found))
                     });
-                    if let Some(target) = hovered {
+                    let picker_id = egui::Id::new(("definition_picker", tab.id));
+                    if let Some((pointer, found)) = hovered {
                         let ctrl = ui.input(|i| i.modifiers.command);
                         if ctrl {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
                         if ctrl && out.response.clicked() {
-                            go_to = Some(match &target {
-                                definition::Target::Table { schema, name } => {
-                                    Request::Data(schema.clone(), name.clone())
+                            match found.as_slice() {
+                                [one] => go_to = Some(definition_request(one)),
+                                _ => {
+                                    // Read before `data_mut`: the context can't be asked while its
+                                    // memory is locked.
+                                    let pass = ui.ctx().cumulative_pass_nr();
+                                    ui.data_mut(|d| d.insert_temp(picker_id, (pointer, found.clone(), pass)));
                                 }
-                                definition::Target::Object(o) => Request::Object(o.clone()),
-                                definition::Target::Column { schema, table, column } => {
-                                    Request::StructureColumn(schema.clone(), table.clone(), column.clone())
-                                }
-                            });
+                            }
                         }
                         let tip = out.response.response.clone();
-                        match &target {
-                            definition::Target::Table { schema, name } => {
+                        match found.as_slice() {
+                            [definition::Target::Table { schema, name }] => {
                                 if let Some(t) = s.tables.iter().find(|t| &t.schema == schema && &t.name == name) {
                                     tip.on_hover_ui_at_pointer(|ui| table_tooltip(ui, s, t));
                                 }
                             }
-                            other => {
-                                let what = other.describe();
+                            [one] => {
+                                let what = one.describe();
                                 tip.on_hover_ui_at_pointer(|ui| {
                                     ui.label(egui::RichText::new(&what).color(t.foreground));
                                     ui.label(
@@ -345,7 +348,23 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                                     );
                                 });
                             }
+                            many => {
+                                let n = many.len();
+                                tip.on_hover_ui_at_pointer(|ui| {
+                                    for m in many.iter().take(TOOLTIP_COLUMNS) {
+                                        ui.label(egui::RichText::new(m.describe()).color(t.foreground));
+                                    }
+                                    ui.label(
+                                        egui::RichText::new(format!("{n} matches: Ctrl+click to choose"))
+                                            .size(11.0)
+                                            .color(t.subtle),
+                                    );
+                                });
+                            }
                         }
+                    }
+                    if let Some(picked) = definition_picker(ui.ctx(), picker_id) {
+                        go_to = Some(definition_request(&picked));
                     }
                     if let (Some((sugg, selected)), Some(range)) = (popup, out.cursor_range) {
                         let at = out.galley.pos_from_cursor(range.primary);
@@ -668,6 +687,49 @@ fn previewable_cached(ctx: &egui::Context, tab: u64, sql: &str) -> bool {
     let v = app::previewable(sql);
     ctx.data_mut(|d| d.insert_temp(cache, (key, v)));
     v
+}
+
+/// What opening a definition target asks the app for.
+fn definition_request(target: &definition::Target) -> Request {
+    match target {
+        definition::Target::Table { schema, name } => Request::Data(schema.clone(), name.clone()),
+        definition::Target::Object(o) => Request::Object(o.clone()),
+        definition::Target::Column {
+            schema,
+            table,
+            column,
+        } => Request::StructureColumn(schema.clone(), table.clone(), column.clone()),
+    }
+}
+
+/// The list a Ctrl+click on an ambiguous name opened, at the pointer; the chosen target once
+/// one is clicked. Escape or a click elsewhere closes it.
+fn definition_picker(ctx: &egui::Context, id: egui::Id) -> Option<definition::Target> {
+    let (at, found, opened): (egui::Pos2, Vec<definition::Target>, u64) = ctx.data(|d| d.get_temp(id))?;
+    let t = theme::tokens();
+    let mut picked = None;
+    let area = egui::Area::new(id)
+        .order(egui::Order::Foreground)
+        .fixed_pos(at + egui::vec2(4.0, 12.0))
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.label(egui::RichText::new("Open which one?").size(11.0).color(t.subtle));
+                for target in &found {
+                    let b = egui::Button::new(egui::RichText::new(target.describe()).color(t.foreground))
+                        .frame(false);
+                    if ui.add(b).clicked() {
+                        picked = Some(target.clone());
+                    }
+                }
+            });
+        });
+    let escape = ctx.input(|i| i.key_pressed(Key::Escape));
+    // The click that opened it is "elsewhere" too, in the frame it opened.
+    let away = area.response.clicked_elsewhere() && ctx.cumulative_pass_nr() != opened;
+    if picked.is_some() || escape || away {
+        ctx.data_mut(|d| d.remove::<(egui::Pos2, Vec<definition::Target>, u64)>(id));
+    }
+    picked
 }
 
 /// Hover card for a table name in the editor: its columns and types.
