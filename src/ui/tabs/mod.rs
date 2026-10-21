@@ -12,7 +12,7 @@ use super::diagram::{self, DiagramAction};
 use super::grid::{self, GridOpts, grid};
 use super::import_form::{self, ImportAction};
 use super::structure::{self, InsertAction, StructAction};
-use super::{chart, complete, find, icon, palette, plan_view, syntax, theme};
+use super::{chart, complete, find, icon, palette, paragraphs, plan_view, syntax, theme};
 use crate::app::{self, App, Dialog, Effect, FavPrompt, GridEvent, RunMode, Session, Tab, TabKind};
 use crate::db::{ActivityView, QueryResult};
 use crate::definition;
@@ -722,6 +722,9 @@ pub(crate) fn forget_tab_caches(ctx: &egui::Context, id: u64) {
     ctx.data_mut(|d| {
         d.remove::<(egui::Id, Arc<egui::Galley>)>(egui::Id::new(("editor_galley", id)));
         d.remove::<(egui::Id, Arc<egui::Galley>)>(egui::Id::new(("value_editor_galley", id)));
+        for paragraphs in ["editor_paragraphs", "value_editor_paragraphs"] {
+            d.remove::<std::collections::HashMap<u64, Arc<egui::Galley>>>(egui::Id::new((paragraphs, id)));
+        }
         d.remove::<(egui::Id, Vec<(usize, usize)>)>(egui::Id::new(("statement_ranges", id)));
         d.remove::<(egui::Id, bool)>(egui::Id::new(("previewable", id)));
         d.remove::<(egui::Id, Vec<(usize, usize)>)>(egui::Id::new(("result_find_cache", id)));

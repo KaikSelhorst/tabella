@@ -11,6 +11,10 @@ use crate::store::{self, Loaded, StoreError};
 /// Oldest entries are dropped past this.
 const MAX_ENTRIES: usize = 3_000;
 
+/// Bigger SQL (a pasted dump, a long script) isn't kept: every save copies the whole history
+/// on the UI thread, and the history list shows only a line of each anyway.
+const MAX_SQL_BYTES: usize = 64 * 1024;
+
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Entry {
     pub conn: String,
@@ -86,8 +90,9 @@ pub fn now() -> u64 {
 /// Adds an entry (most recent last) and saves. Re-running the same SQL moves it to the end
 /// instead of duplicating it.
 pub fn push(list: &mut Vec<Entry>, entry: Entry, writer: &Writer) {
-    insert(list, entry);
-    writer.save(list);
+    if insert(list, entry) {
+        writer.save(list);
+    }
 }
 
 /// Removes an entry and saves.
@@ -96,12 +101,17 @@ pub fn forget(list: &mut Vec<Entry>, conn: &str, sql: &str, writer: &Writer) {
     writer.save(list);
 }
 
-fn insert(list: &mut Vec<Entry>, entry: Entry) {
+/// False when the entry is too big to keep (see `MAX_SQL_BYTES`).
+fn insert(list: &mut Vec<Entry>, entry: Entry) -> bool {
+    if entry.sql.len() > MAX_SQL_BYTES {
+        return false;
+    }
     list.retain(|e| !(e.conn == entry.conn && e.sql.trim() == entry.sql.trim()));
     list.push(entry);
     if list.len() > MAX_ENTRIES {
         list.drain(..list.len() - MAX_ENTRIES);
     }
+    true
 }
 
 /// "now", "5 min ago", "3 h ago", "2 d ago".
@@ -139,6 +149,11 @@ mod tests {
         }
         assert_eq!(list.len(), MAX_ENTRIES);
         assert_eq!(list.last().unwrap().at, 10 + MAX_ENTRIES as u64 - 1);
+        assert!(
+            !insert(&mut list, e(&"x".repeat(MAX_SQL_BYTES + 1), 1)),
+            "too big to keep"
+        );
+        assert_eq!(list.len(), MAX_ENTRIES);
     }
 
     #[test]

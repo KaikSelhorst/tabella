@@ -9,6 +9,7 @@ mod grid;
 mod help;
 mod import_form;
 mod palette;
+mod paragraphs;
 #[cfg(test)]
 mod perf;
 mod plan_view;

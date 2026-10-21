@@ -410,7 +410,7 @@ fn editor_body(
             find::mark(&mut job, &ranges, current_match);
         }
         job.wrap.max_width = wrap;
-        let g = ui.fonts_mut(|f| f.layout_job(job));
+        let g = paragraphs::layout(ui, egui::Id::new(("editor_paragraphs", tab_id)), job);
         ui.data_mut(|d| d.insert_temp(galley_cache, (key, g.clone())));
         g
     };

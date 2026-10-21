@@ -670,7 +670,7 @@ impl Conn {
     fn query_limit(&mut self, sql: &str, limit: usize) -> DbResult<QueryResult> {
         let start = Instant::now();
         let mut out = match self {
-            Conn::Pg(c) => pg_query(c, sql, limit)?,
+            Conn::Pg(c) => pg_read(c, sql, limit)?,
             Conn::My(c) => my_query(c, sql, limit)?,
             Conn::Lite(c) => crate::sqlite::query(c, sql, limit)?,
         };
@@ -842,6 +842,33 @@ fn pg_query(c: &mut postgres::Client, sql: &str, limit: usize) -> DbResult<Query
             _ => {}
         }
     }
+    Ok(out)
+}
+
+/// `pg_query` for a single read through a cursor, so the server sends `limit + 1` rows rather
+/// than all of them (`simple_query` holds every row in memory before it returns: a `SELECT *`
+/// of a big table would come over whole to show the first few thousand). In the same message,
+/// so inside the user's transaction when one is open, or else in one of its own.
+fn pg_read(c: &mut postgres::Client, sql: &str, limit: usize) -> DbResult<QueryResult> {
+    const CURSOR: &str = "tabella_read";
+    let Some((a, b)) = crate::sql::single_read(sql) else {
+        return pg_query(c, sql, limit);
+    };
+    let byte = |ch: usize| sql.char_indices().nth(ch).map_or(sql.len(), |(i, _)| i);
+    let head = format!("DECLARE {CURSOR} NO SCROLL CURSOR FOR ");
+    // The line break ends a `--` comment the statement may finish with.
+    let text = format!(
+        "{head}{}\n;FETCH {} FROM {CURSOR};CLOSE {CURSOR}",
+        &sql[byte(a)..byte(b)],
+        limit.saturating_add(1)
+    );
+    let shift = head.chars().count() as isize - a as isize;
+    let mut out = pg_query(c, &text, limit).map_err(|e| match e {
+        DbError::Postgres(e, _) => DbError::Postgres(e, shift),
+        e => e,
+    })?;
+    // The count CLOSE reported; a SELECT's is the rows it returned.
+    out.affected = Some(out.rows.len() as u64);
     Ok(out)
 }
 

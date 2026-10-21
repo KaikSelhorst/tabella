@@ -1165,6 +1165,33 @@ pub fn script_risk(script: &str) -> ScriptRisk {
     risk
 }
 
+/// The char range of `script`'s statement when it is a single read a cursor can fetch a few
+/// rows of (SELECT, VALUES, TABLE, a WITH that only reads). Not a locking read (a cursor locks
+/// only the rows fetched) nor SELECT INTO (it creates a table; a cursor refuses it).
+pub fn single_read(script: &str) -> Option<(usize, usize)> {
+    let chars: Vec<char> = script.chars().collect();
+    // A comment after the last `;` is a range of its own, with no words.
+    let statements: Vec<_> = statement_ranges(script, false)
+        .into_iter()
+        .filter_map(|(a, b)| {
+            let words = statement_words(&chars[a..b].iter().collect::<String>())
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            (!words.is_empty()).then_some(((a, b), words))
+        })
+        .collect();
+    let [(range, words)] = &statements[..] else {
+        return None;
+    };
+    let range = *range;
+    let reads = ["SELECT", "VALUES", "TABLE", "WITH"].contains(&words.first()?.as_str());
+    let locks_or_creates = words
+        .iter()
+        .any(|w| matches!(w.as_str(), "INTO" | "UPDATE" | "SHARE"));
+    (reads && !locks_or_creates && !script_risk(script).writes).then_some(range)
+}
+
 /// Pretty-prints SQL: keywords in caps, one clause per line, short lists kept inline.
 pub fn format_sql(kind: Kind, sql: &str) -> String {
     let options = sqlformat::FormatOptions {
@@ -1510,6 +1537,38 @@ pub fn fk_label(columns: &[(String, String)], key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn single_reads() {
+        let range = |s: &str| single_read(s).map(|(a, b)| s.chars().skip(a).take(b - a).collect::<String>());
+        assert_eq!(
+            range("  SELECT * FROM t;  -- done").as_deref(),
+            Some("SELECT * FROM t")
+        );
+        assert_eq!(
+            range("with x as (select 1) select * from x").as_deref(),
+            Some("with x as (select 1) select * from x")
+        );
+        assert!(range("VALUES (1), (2)").is_some());
+        assert!(range("TABLE t").is_some());
+        assert!(
+            range("SELECT 'update' FROM t").is_some(),
+            "words in quotes don't count"
+        );
+        for no in [
+            "SELECT 1; SELECT 2",
+            "SELECT * FROM t FOR UPDATE",
+            "SELECT * FROM t FOR SHARE",
+            "SELECT * INTO copy FROM t",
+            "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
+            "SELECT set_config('default_transaction_read_only', 'off', false)",
+            "SHOW search_path",
+            "UPDATE t SET a = 1",
+            "",
+        ] {
+            assert_eq!(range(no), None, "{no}");
+        }
+    }
+
     #[test]
     fn previews_read_quoted_table_names() {
         let q = preview_queries("UPDATE \"public\".\"My Table\"\nSET \"a\" = a + 1\nWHERE \"id\" IN ('1');")

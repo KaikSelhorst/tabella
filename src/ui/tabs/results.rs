@@ -1418,7 +1418,7 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
                     egui::text::LayoutJob::simple(buf.as_str().to_string(), font, t.foreground, wrap)
                 };
                 job.wrap.max_width = wrap;
-                let g = ui.fonts_mut(|f| f.layout_job(job));
+                let g = paragraphs::layout(ui, egui::Id::new(("value_editor_paragraphs", id)), job);
                 ui.data_mut(|d| d.insert_temp(cache, (key, g.clone())));
                 g
             };

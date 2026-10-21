@@ -97,6 +97,17 @@ enum Kind {
     Param,
 }
 
+/// Every `Kind`, in declaration order (indexed by `kind as usize`).
+const KINDS: [Kind; 7] = [
+    Kind::Keyword,
+    Kind::Str,
+    Kind::Number,
+    Kind::Comment,
+    Kind::Ident,
+    Kind::Punct,
+    Kind::Param,
+];
+
 /// Splits `text` into colored spans. Every byte ends up in exactly one span.
 fn tokens(text: &str) -> Vec<(Kind, &str)> {
     let b = text.as_bytes();
@@ -203,11 +214,34 @@ pub fn sql_line_layouter(
 
 pub fn highlight(text: &str, font: &FontId) -> LayoutJob {
     let t = theme::tokens();
-    let mut job = LayoutJob::default();
-    for (kind, s) in tokens(text) {
+    // Worked out once, not per token: a big script has hundreds of thousands of them, and the
+    // keyword and string colors are conversions.
+    let formats = KINDS.map(|kind| {
         let mut fmt = TextFormat::simple(font.clone(), color(kind, t));
         fmt.italics = kind == Kind::Comment;
-        job.append(s, 0.0, fmt);
+        fmt
+    });
+    let mut job = LayoutJob {
+        text: text.to_owned(),
+        ..Default::default()
+    };
+    let tokens = tokens(text);
+    job.sections.reserve(tokens.len());
+    let mut at = 0;
+    let mut last = None;
+    for (kind, s) in tokens {
+        let end = at + s.len();
+        // Neighbors of one kind share a section: fewer of them to hash and lay out.
+        match job.sections.last_mut() {
+            Some(sec) if last == Some(kind) => sec.byte_range.end = egui::text::ByteIndex(end),
+            _ => job.sections.push(egui::text::LayoutSection {
+                leading_space: 0.0,
+                byte_range: egui::text::ByteIndex(at)..egui::text::ByteIndex(end),
+                format: formats[kind as usize].clone(),
+            }),
+        }
+        last = Some(kind);
+        at = end;
     }
     job
 }
@@ -315,6 +349,29 @@ mod tests {
         // Nothing is lost: spans concatenate back to the input.
         let src = "SELECT é, 1.5 /* x */ FROM t";
         assert_eq!(tokens(src).iter().map(|(_, s)| *s).collect::<String>(), src);
+    }
+
+    #[test]
+    fn highlight_covers_every_byte_once() {
+        let src = "SELECT a, 'x' -- hi\n/* c */ FROM t WHERE id = :id;  ";
+        let job = highlight(src, &FontId::monospace(12.0));
+        assert_eq!(job.text, src);
+        let mut at = 0;
+        for (i, sec) in job.sections.iter().enumerate() {
+            assert_eq!(
+                sec.byte_range.start.0, at,
+                "section {i} starts where the last ended"
+            );
+            at = sec.byte_range.end.0;
+        }
+        assert_eq!(at, src.len());
+        assert!(
+            job.sections.len() < tokens(src).len(),
+            "neighbors of one kind are merged"
+        );
+        for (i, k) in KINDS.iter().enumerate() {
+            assert_eq!(*k as usize, i);
+        }
     }
 
     #[test]

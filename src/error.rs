@@ -2,8 +2,9 @@ use std::fmt::Write as _;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
+    /// With how many chars of SQL the server got in front of the user's (see `position_in`).
     #[error("{}", pg_message(.0))]
-    Postgres(#[from] postgres::Error),
+    Postgres(postgres::Error, isize),
     #[error("{}", with_cert_hint(.0.to_string()))]
     MySql(#[from] mysql::Error),
     #[error("{0}")]
@@ -13,6 +14,12 @@ pub enum DbError {
 }
 
 pub type DbResult<T> = Result<T, DbError>;
+
+impl From<postgres::Error> for DbError {
+    fn from(e: postgres::Error) -> Self {
+        DbError::Postgres(e, 0)
+    }
+}
 
 /// The server's own words. `postgres::Error`'s Display is only "db error" for anything the
 /// server reports; the message, detail and hint are in the attached `DbError`.
@@ -52,7 +59,7 @@ impl DbError {
     /// opposed to a statement the server refused.
     pub fn is_connection_lost(&self) -> bool {
         match self {
-            DbError::Postgres(e) => e.is_closed(),
+            DbError::Postgres(e, _) => e.is_closed(),
             DbError::MySql(mysql::Error::IoError(_)) => true,
             DbError::MySql(mysql::Error::MySqlError(e)) => matches!(e.code, 1053 | 2006 | 2013),
             _ => false,
@@ -64,11 +71,11 @@ impl DbError {
     /// table, looked up in the statement.
     pub fn position_in(&self, sql: &str) -> Option<usize> {
         match self {
-            DbError::Postgres(e) => match e.as_db_error()?.position()? {
-                // 1-based, in characters.
+            DbError::Postgres(e, shift) => match e.as_db_error()?.position()? {
+                // 1-based, in characters of what the server got.
                 postgres::error::ErrorPosition::Original(n) => sql
                     .char_indices()
-                    .nth((*n as usize).checked_sub(1)?)
+                    .nth(usize::try_from(*n as isize - 1 - shift).ok()?)
                     .map(|(b, _)| b),
                 postgres::error::ErrorPosition::Internal { .. } => None,
             },

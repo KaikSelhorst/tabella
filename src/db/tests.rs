@@ -915,3 +915,47 @@ fn mysql_tls() {
     let r = c.query("SHOW STATUS LIKE 'Ssl_cipher'").unwrap();
     assert!(!r.rows.cell(0, 1).unwrap_or("").is_empty());
 }
+
+/// A single read is fetched through a cursor: only the rows kept come over, in or out of an
+/// open transaction, and an error still points into the user's SQL.
+#[test]
+#[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
+fn postgres_reads_through_a_cursor() {
+    let cfg = ConnConfig {
+        password: "pw".into(),
+        database: "postgres".into(),
+        host: "127.0.0.1".into(),
+        port: 55432,
+        user: "postgres".into(),
+        ..ConnConfig::new(Kind::Postgres)
+    };
+    let mut c = Conn::connect(&cfg, None).expect("connect");
+    let big = "SELECT g, repeat('x', 100) FROM generate_series(1, 200000) g -- the rest";
+    let r = c.query_up_to(big, 1000).unwrap();
+    assert_eq!((r.rows.len(), r.truncated), (1000, true));
+    assert_eq!(r.rows.cell(999, 0), Some("1000"));
+    let r = c.query_up_to("SELECT 1 AS a UNION ALL SELECT 2;", 2).unwrap();
+    assert_eq!(
+        (r.columns.as_slice(), r.rows.len(), r.truncated),
+        (&["a".to_string()][..], 2, false)
+    );
+    let r = c.query("SELECT 1 WHERE false").unwrap();
+    assert_eq!((r.columns.len(), r.rows.len()), (1, 0));
+
+    // Inside the user's transaction: sees its writes, and leaves it open.
+    c.query("BEGIN").unwrap();
+    c.query("CREATE TEMP TABLE dbl_cur (x int)").unwrap();
+    c.query("INSERT INTO dbl_cur VALUES (1), (2), (3)").unwrap();
+    assert_eq!(c.query_up_to("TABLE dbl_cur", 2).unwrap().rows.len(), 2);
+    c.query("ROLLBACK").unwrap();
+    assert!(
+        c.query("TABLE dbl_cur").is_err(),
+        "rolled back with the user's transaction"
+    );
+
+    let sql = "  SELECT nope FROM generate_series(1, 3) g";
+    let e = c.query(sql).unwrap_err();
+    assert_eq!(e.position_in(sql), sql.find("nope"));
+    // Still usable after the error.
+    assert_eq!(c.count("SELECT count(*) FROM generate_series(1, 7)").unwrap(), 7);
+}
