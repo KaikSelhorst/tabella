@@ -305,7 +305,7 @@ pub fn cancel_dump(tab: &mut Tab, s: &Session) {
         && st.running
     {
         st.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        s.cancel();
+        s.cancel(tab.id);
     }
 }
 
@@ -339,7 +339,7 @@ pub fn cancel_script(tab: &mut Tab, s: &Session) {
         && st.running
     {
         st.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        s.cancel();
+        s.cancel(tab.id);
     }
 }
 
@@ -380,7 +380,7 @@ pub fn cancel_search(tab: &mut Tab, s: &Session) {
         && st.running
     {
         st.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        s.cancel();
+        s.cancel(tab.id);
     }
 }
 

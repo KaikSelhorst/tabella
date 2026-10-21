@@ -166,13 +166,17 @@ impl App {
             return;
         }
         let cfg_manual = cfg.manual_commit;
-        let (tx, rx) = worker::spawn(cfg.clone(), self.ctx.clone());
+        let worker::Spawned {
+            jobs: tx,
+            replies: rx,
+            running,
+        } = worker::spawn(cfg.clone(), self.ctx.clone());
         self.notice = Notice::info(format!("Connecting to {}…", cfg.name));
         self.session = Some(Session {
             cfg,
             tx,
             rx,
-            canceller: None,
+            running,
             ready: false,
             tables: vec![],
             columns: vec![],
@@ -208,7 +212,7 @@ impl App {
         if let Some(s) = self.session.take() {
             // Don't leave a long query running on the server after we stop listening.
             if self.tabs.iter().any(Tab::busy) {
-                s.cancel();
+                s.cancel_all();
             }
             self.notice = Notice::info("Disconnected");
         }

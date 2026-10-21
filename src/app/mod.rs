@@ -53,8 +53,8 @@ use table_edit::{enum_value, set_cell};
 
 use crate::config;
 use crate::db::{
-    ActivityView, Canceller, ColumnInfo, ConnConfig, DbObject, FkEdge, IncomingFk, Kind, PreviewData,
-    QueryResult, SchemaColumn, ServerInfo, TableRef, TableStructure,
+    ActivityView, ColumnInfo, ConnConfig, DbObject, FkEdge, IncomingFk, Kind, PreviewData, QueryResult,
+    SchemaColumn, ServerInfo, TableRef, TableStructure,
 };
 use crate::design::Design;
 use crate::diagram::DiagramState;
@@ -103,7 +103,8 @@ pub struct Session {
     pub cfg: ConnConfig,
     tx: Sender<Job>,
     rx: Receiver<Reply>,
-    canceller: Option<Arc<Canceller>>,
+    /// What each of the session's connections is running, for cancelling a tab's statement.
+    running: Vec<Arc<worker::Running>>,
     pub ready: bool,
     pub tables: Vec<TableRef>,
     /// `(table, column)` pairs for SQL autocomplete.
@@ -170,14 +171,25 @@ impl Session {
         let _ = self.tx.send(job);
     }
 
-    /// Asks the server to stop the running statement. Runs on its own thread: it opens a
-    /// connection and must not block the UI.
-    pub fn cancel(&self) {
-        if let Some(c) = self.canceller.clone() {
-            std::thread::spawn(move || {
-                let _ = c.cancel();
-            });
-        }
+    /// Asks the server to stop the statement running for this tab (on whichever of the
+    /// session's connections has it). Runs on its own thread: it may open a connection and
+    /// must not block the UI.
+    pub fn cancel(&self, tab: u64) {
+        self.cancel_running(Some(tab));
+    }
+
+    /// Stops whatever the session's connections are running.
+    pub fn cancel_all(&self) {
+        self.cancel_running(None);
+    }
+
+    fn cancel_running(&self, tab: Option<u64>) {
+        let running = self.running.clone();
+        std::thread::spawn(move || {
+            for r in running {
+                r.cancel(tab);
+            }
+        });
     }
 }
 

@@ -1,5 +1,5 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::search::{SearchHit, SearchTarget};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -177,6 +177,118 @@ pub enum Job {
     },
 }
 
+impl Job {
+    /// The tab it runs for, if any.
+    fn tab(&self) -> Option<u64> {
+        match self {
+            Job::Query { tab, .. }
+            | Job::MoreRows { tab, .. }
+            | Job::Exec { tab, .. }
+            | Job::Columns { tab, .. }
+            | Job::Count { tab, .. }
+            | Job::Batch { tab, .. }
+            | Job::Structure { tab, .. }
+            | Job::Import { tab, .. }
+            | Job::Explain { tab, .. }
+            | Job::Activity { tab, .. }
+            | Job::SearchValue { tab, .. }
+            | Job::Fks { tab }
+            | Job::RunScript { tab, .. }
+            | Job::Source { tab, .. }
+            | Job::SuggestIndex { tab, .. }
+            | Job::ServerInfo { tab }
+            | Job::ResetQueryStats { tab }
+            | Job::Kill { tab, .. }
+            | Job::Export { tab, .. }
+            | Job::Preview { tab, .. }
+            | Job::ColumnStats { tab, .. }
+            | Job::Distinct { tab, .. }
+            | Job::FkOptions { tab, .. }
+            | Job::Compare { tab, .. }
+            | Job::Dump { tab, .. } => Some(*tab),
+            Job::Tables | Job::UseSchema(_) | Job::Admin { .. } | Job::SetManual(_) | Job::EndTx { .. } => {
+                None
+            }
+        }
+    }
+
+    /// Reads that can run on the session's second connection, so they don't wait behind (or
+    /// hold up) the editor's statements. Only while no transaction is open: inside one they
+    /// must see its uncommitted changes. The others either write, depend on the session's
+    /// state, or answer a tab whose replies must come in order.
+    fn runs_in_background(&self) -> bool {
+        matches!(
+            self,
+            Job::Tables
+                | Job::Export { .. }
+                | Job::Dump { .. }
+                | Job::SearchValue { .. }
+                | Job::Compare { .. }
+                | Job::Fks { .. }
+                | Job::ServerInfo { .. }
+                | Job::Activity { .. }
+                | Job::Kill { .. }
+                | Job::ResetQueryStats { .. }
+                | Job::Source { .. }
+                | Job::SuggestIndex { .. }
+        )
+    }
+}
+
+impl Job {
+    /// Jobs on the first connection that later reads must wait for, rather than run on the
+    /// second: ones that may open a transaction (whose changes the reads must then see) and
+    /// a switch to another schema (which the second connection follows once it's done). A
+    /// plain read, however long, holds nothing back.
+    fn holds_back_background(&self) -> bool {
+        match self {
+            Job::Query { sql, .. } => sql::tx_control(sql).is_some() || sql::script_risk(sql).writes,
+            Job::Exec { .. }
+            | Job::Batch { .. }
+            | Job::Import { .. }
+            | Job::Admin { .. }
+            | Job::RunScript { .. }
+            | Job::UseSchema(_) => true,
+            _ => false,
+        }
+    }
+}
+
+/// What one of a session's connections is running, so that cancelling a tab stops that tab's
+/// statement and not whichever one happens to be running.
+#[derive(Default)]
+pub struct Running {
+    tab: Mutex<Option<u64>>,
+    canceller: Mutex<Option<Arc<Canceller>>>,
+}
+
+impl Running {
+    fn set_tab(&self, tab: Option<u64>) {
+        if let Ok(mut t) = self.tab.lock() {
+            *t = tab;
+        }
+    }
+
+    fn set_canceller(&self, c: Canceller) {
+        if let Ok(mut slot) = self.canceller.lock() {
+            *slot = Some(Arc::new(c));
+        }
+    }
+
+    /// Stops the statement running for `tab`, or whatever runs with `None`. Blocks (it may
+    /// open a connection to ask the server): call it off the UI thread.
+    pub fn cancel(&self, tab: Option<u64>) {
+        let running = self.tab.lock().ok().and_then(|t| *t);
+        if running.is_none() || (tab.is_some() && running != tab) {
+            return;
+        }
+        let canceller = self.canceller.lock().ok().and_then(|c| c.clone());
+        if let Some(c) = canceller {
+            let _ = c.cancel();
+        }
+    }
+}
+
 /// How far a script file got.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScriptProgress {
@@ -236,7 +348,14 @@ pub enum ExportSource {
 
 pub struct Connected {
     pub tables: Vec<TableRef>,
-    pub canceller: Arc<Canceller>,
+}
+
+/// A session's worker: where jobs go, where replies come from, and what each of its
+/// connections is running (for cancelling).
+pub struct Spawned {
+    pub jobs: Sender<Job>,
+    pub replies: Receiver<Reply>,
+    pub running: Vec<Arc<Running>>,
 }
 
 pub enum Reply {
@@ -821,8 +940,6 @@ fn send_tx(send: &impl Fn(Reply), before: TxState, now: TxState) {
     }
 }
 
-/// Spawns a thread that owns the connection. Dropping the returned sender closes it once the
-/// current statement (if any) finishes; use the `Canceller` to stop that statement early.
 /// Postgres opens in the first schema of the search path, usually `public`. When the sidebar
 /// lists nothing there (it's empty, or holds only what extensions installed) but tables elsewhere,
 /// the connection starts in the first schema that has some instead (`public` stays in the path).
@@ -840,9 +957,26 @@ fn start_schema(conn: &mut Conn, tables: &[TableRef]) -> Option<String> {
     Some(first)
 }
 
-pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Receiver<Reply>) {
+/// Spawns the thread that owns the session's connection. Dropping `Spawned::jobs` closes it once
+/// the current statement (if any) finishes; `Running::cancel` stops that statement early.
+///
+/// Postgres and MySQL sessions also get a second connection on a thread of its own, opened
+/// once the first is up, for the reads `Job::runs_in_background` lists: a long query in one
+/// tab then doesn't hold up the sidebar, an export or the server panel. A dispatcher thread
+/// picks the connection for each job; until the second is up (or if it can't connect),
+/// everything runs on the first.
+pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> Spawned {
     let (job_tx, job_rx) = channel::<Job>();
+    let (front_tx, front_rx) = channel::<Job>();
     let (reply_tx, reply_rx) = channel::<Reply>();
+    let front = Arc::new(Running::default());
+    let back = Arc::new(Running::default());
+    let running = vec![front.clone(), back.clone()];
+    let shared = Arc::new(Shared::default());
+    {
+        let shared = shared.clone();
+        thread::spawn(move || dispatch(&job_rx, &front_tx, &shared));
+    }
     thread::spawn(move || {
         let send = |r: Reply| {
             // Only fails once the app dropped its end: nobody is left to tell.
@@ -862,12 +996,21 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
             Ok(c) => c,
             Err(e) => return send(Reply::Connected(Err(e))),
         };
-        let canceller = Arc::new(conn.canceller(&cfg, via));
+        front.set_canceller(conn.canceller(&cfg, via));
         let tables = conn.tables();
         let location = tables.as_ref().ok().and_then(|t| start_schema(&mut conn, t));
-        send(Reply::Connected(
-            tables.map(|tables| Connected { tables, canceller }),
-        ));
+        send(Reply::Connected(tables.map(|tables| Connected { tables })));
+        if cfg.kind != crate::db::Kind::Sqlite {
+            let bg = spawn_background(
+                cfg.clone(),
+                via,
+                location.clone(),
+                back,
+                reply_tx.clone(),
+                ctx.clone(),
+            );
+            let _ = shared.background.set(bg);
+        }
         send(Reply::AllColumns(conn.all_columns()));
         send(Reply::AllFks(conn.all_fks()));
         send(Reply::Objects(conn.objects()));
@@ -884,24 +1027,132 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
             location,
             last_job: Instant::now(),
             send: &send,
+            running: &front,
+            background: false,
         };
-        while let Ok(job) = job_rx.recv() {
-            let before = w.tx;
-            w.ensure_alive(false);
-            if let Some(reply) = w.handle(job) {
-                // A job that found the connection dead (MySQL can't tell beforehand): replace
-                // it now, so the run-again the user is about to do works.
-                let lost = reply.connection_lost();
-                send(reply);
-                if lost {
-                    w.ensure_alive(true);
-                }
+        while let Ok(job) = front_rx.recv() {
+            let holds_back = job.holds_back_background();
+            let schema = match &job {
+                Job::UseSchema(name) => Some(name.clone()),
+                _ => None,
+            };
+            w.run(job);
+            // The second connection follows, before the reads waiting for this go to it.
+            if let (Some(name), Some(bg)) = (schema, shared.background.get())
+                && w.location.as_ref() == Some(&name)
+            {
+                bg.send(Job::UseSchema(name));
             }
-            w.last_job = Instant::now();
-            send_tx(&send, before, w.tx);
+            // Stored before the count drops: `dispatch` reads them the other way round.
+            shared.tx_open.store(w.tx.open, Ordering::SeqCst);
+            if holds_back {
+                shared.holding_back.fetch_sub(1, Ordering::SeqCst);
+            }
         }
     });
-    (job_tx, reply_rx)
+    Spawned {
+        jobs: job_tx,
+        replies: reply_rx,
+        running,
+    }
+}
+
+/// What the dispatcher and the first connection's thread share.
+#[derive(Default)]
+struct Shared {
+    /// The second connection, once its thread is started.
+    background: OnceLock<Background>,
+    /// A transaction is open on the first connection.
+    tx_open: AtomicBool,
+    /// Jobs sent to the first connection that later reads must wait for (see
+    /// `Job::holds_back_background`), not finished yet.
+    holding_back: AtomicUsize,
+}
+
+/// Sends each job to the second connection when it can run there, to the first otherwise.
+fn dispatch(jobs: &Receiver<Job>, front: &Sender<Job>, shared: &Shared) {
+    while let Ok(job) = jobs.recv() {
+        if let Some(bg) = shared.background.get().filter(|bg| bg.ready())
+            && job.runs_in_background()
+            // The count first: when it reads 0, the thread already stored `tx_open`.
+            && shared.holding_back.load(Ordering::SeqCst) == 0
+            && !shared.tx_open.load(Ordering::SeqCst)
+        {
+            bg.send(job);
+            continue;
+        }
+        if job.holds_back_background() {
+            shared.holding_back.fetch_add(1, Ordering::SeqCst);
+        }
+        if front.send(job).is_err() {
+            return;
+        }
+    }
+}
+
+/// The session's second connection, as the first thread sees it.
+struct Background {
+    jobs: Sender<Job>,
+    /// Connected, and not lost since.
+    ready: Arc<AtomicBool>,
+}
+
+impl Background {
+    fn ready(&self) -> bool {
+        self.ready.load(Ordering::Relaxed)
+    }
+
+    fn send(&self, job: Job) {
+        let _ = self.jobs.send(job);
+    }
+}
+
+/// Opens the second connection on its own thread and runs what the first thread hands it. It
+/// ends when the first thread does (its sender is dropped).
+fn spawn_background(
+    cfg: ConnConfig,
+    via: Option<u16>,
+    location: Option<String>,
+    running: Arc<Running>,
+    reply_tx: Sender<Reply>,
+    ctx: eframe::egui::Context,
+) -> Background {
+    let (jobs, job_rx) = channel::<Job>();
+    let ready = Arc::new(AtomicBool::new(false));
+    let ready_flag = ready.clone();
+    thread::spawn(move || {
+        let send = |r: Reply| {
+            let _ = reply_tx.send(r);
+            ctx.request_repaint();
+        };
+        let Ok(mut conn) = Conn::connect(&cfg, via) else {
+            // Everything stays on the first connection.
+            return;
+        };
+        if let Some(name) = &location {
+            let _ = conn.use_schema(name);
+        }
+        running.set_canceller(conn.canceller(&cfg, via));
+        ready_flag.store(true, Ordering::Relaxed);
+        let mut w = Worker {
+            conn,
+            tx: TxState::default(),
+            pg: cfg.kind == crate::db::Kind::Postgres,
+            cfg: &cfg,
+            via,
+            location,
+            last_job: Instant::now(),
+            send: &send,
+            running: &running,
+            background: true,
+        };
+        while let Ok(job) = job_rx.recv() {
+            if !w.run(job) {
+                ready_flag.store(false, Ordering::Relaxed);
+            }
+        }
+    });
+    Background { jobs, ready }
 }
 
 /// The connection's thread: runs jobs one at a time and keeps the transaction's bookkeeping.
@@ -917,6 +1168,11 @@ struct Worker<'a, S: Fn(Reply)> {
     last_job: Instant,
     /// For replies sent before the job's own (progress, refreshed lists).
     send: &'a S,
+    /// The tab whose job runs now, and how to cancel it.
+    running: &'a Running,
+    /// The session's second connection: it only reads, and a lost connection is replaced
+    /// without telling the app (no session state of the user's was on it).
+    background: bool,
 }
 
 /// MySQL isn't asked whether it is alive on every click, only after this long without a job.
@@ -925,15 +1181,37 @@ const PING_AFTER_IDLE: Duration = Duration::from_secs(30);
 const RECONNECT_WAITS: [Duration; 3] = [Duration::ZERO, Duration::from_secs(1), Duration::from_secs(3)];
 
 impl<S: Fn(Reply)> Worker<'_, S> {
+    /// Runs one job and sends its reply. Returns false when the connection is gone and
+    /// couldn't be replaced.
+    fn run(&mut self, job: Job) -> bool {
+        let before = self.tx;
+        let mut alive = self.ensure_alive(false);
+        self.running.set_tab(job.tab());
+        let reply = self.handle(job);
+        self.running.set_tab(None);
+        if let Some(reply) = reply {
+            // A job that found the connection dead (MySQL can't tell beforehand): replace
+            // it now, so the run-again the user is about to do works.
+            let lost = reply.connection_lost();
+            (self.send)(reply);
+            if lost {
+                alive = self.ensure_alive(true);
+            }
+        }
+        self.last_job = Instant::now();
+        send_tx(self.send, before, self.tx);
+        alive
+    }
+
     /// A connection that dropped since the last job (idle timeout, restart, network) is replaced
     /// before the next job runs, so it doesn't fail with "connection closed". Whatever the old
     /// session held (an open transaction) is gone; the app is told.
-    fn ensure_alive(&mut self, ping: bool) {
+    fn ensure_alive(&mut self, ping: bool) -> bool {
         if self
             .conn
             .is_alive(ping || self.last_job.elapsed() >= PING_AFTER_IDLE)
         {
-            return;
+            return true;
         }
         let mut last_error = None;
         for wait in RECONNECT_WAITS {
@@ -943,26 +1221,31 @@ impl<S: Fn(Reply)> Worker<'_, S> {
                     if let Some(name) = &self.location {
                         let _ = conn.use_schema(name);
                     }
-                    let canceller = Arc::new(conn.canceller(self.cfg, self.via));
+                    self.running.set_canceller(conn.canceller(self.cfg, self.via));
                     let rolled_back = self.tx.open;
                     self.tx = TxState {
                         manual: self.tx.manual,
                         ..Default::default()
                     };
-                    let res = conn.tables().map(|tables| Connected { tables, canceller });
+                    let res = conn.tables().map(|tables| Connected { tables });
                     self.conn = conn;
-                    (self.send)(Reply::Reconnected { res, rolled_back });
-                    return;
+                    if !self.background {
+                        (self.send)(Reply::Reconnected { res, rolled_back });
+                    }
+                    return true;
                 }
                 Err(e) => last_error = Some(e),
             }
         }
-        if let Some(e) = last_error {
+        if let Some(e) = last_error
+            && !self.background
+        {
             (self.send)(Reply::Reconnected {
                 res: Err(e),
                 rolled_back: false,
             });
         }
+        false
     }
 
     /// Runs one job; `None` when it has no reply of its own.
@@ -1097,6 +1380,10 @@ impl<S: Fn(Reply)> Worker<'_, S> {
                 let res = conn.use_schema(&name).and_then(|()| conn.location());
                 if res.is_ok() {
                     self.location = Some(name);
+                }
+                // The first connection answers for both.
+                if self.background {
+                    return None;
                 }
                 Reply::Location(res)
             }
@@ -1453,7 +1740,7 @@ mod tests {
         };
 
         cfg.manual_commit = true;
-        let (jobs, replies) = spawn(cfg, eframe::egui::Context::default());
+        let Spawned { jobs, replies, .. } = spawn(cfg, eframe::egui::Context::default());
         // Next reply that `f` picks out, skipping the rest.
         let wait = |f: &dyn Fn(Reply) -> Option<String>| -> String {
             loop {
@@ -1629,7 +1916,7 @@ mod tests {
         use std::time::Duration;
         let mut cfg = crate::sqlite::tests::sample_db("worker");
         cfg.manual_commit = true;
-        let (jobs, replies) = spawn(cfg.clone(), eframe::egui::Context::default());
+        let Spawned { jobs, replies, .. } = spawn(cfg.clone(), eframe::egui::Context::default());
         let wait = |f: &dyn Fn(Reply) -> Option<String>| -> String {
             loop {
                 let r = replies
@@ -1697,7 +1984,7 @@ mod tests {
         cfg.password = "pw".into();
         cfg.database = db.into();
         let mut other = Conn::connect(&cfg, None).expect("connect");
-        let (jobs, replies) = spawn(cfg, eframe::egui::Context::default());
+        let Spawned { jobs, replies, .. } = spawn(cfg, eframe::egui::Context::default());
         let next = || {
             replies
                 .recv_timeout(Duration::from_secs(15))
@@ -1769,7 +2056,7 @@ mod tests {
             "CREATE TABLE dbl_adv (id INT PRIMARY KEY, owner INT, status VARCHAR(20), created TIMESTAMP)",
         )
         .unwrap();
-        let (jobs, replies) = spawn(cfg, eframe::egui::Context::default());
+        let Spawned { jobs, replies, .. } = spawn(cfg, eframe::egui::Context::default());
         let ask = |sql: &str| {
             jobs.send(Job::SuggestIndex {
                 tab: 1,
@@ -1900,6 +2187,109 @@ mod tests {
     #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn manual_commit_mysql() {
         manual_commit(Kind::MySql, 53306, "test");
+    }
+
+    /// Reads for the sidebar run on the second connection while the first is busy, but not
+    /// inside an open transaction (they must see its changes); cancelling a tab stops only
+    /// that tab's statement.
+    fn background_connection(kind: Kind, port: u16, db: &str) {
+        let mut cfg = ConnConfig::new(kind);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = port;
+        cfg.password = "pw".into();
+        cfg.database = db.into();
+        cfg.manual_commit = true;
+        let mut setup = Conn::connect(&cfg, None).expect("connect");
+        setup.query("DROP TABLE IF EXISTS dbl_bg").unwrap();
+        setup.query("CREATE TABLE dbl_bg (id INT PRIMARY KEY)").unwrap();
+        let sleep = |secs: u32| match kind {
+            Kind::Postgres => format!("SELECT pg_sleep({secs})"),
+            _ => format!("SELECT SLEEP({secs})"),
+        };
+        let Spawned {
+            jobs,
+            replies,
+            running,
+        } = spawn(cfg, eframe::egui::Context::default());
+        // Which replies came, in order: "rows:<tab>" (ok or err) and "tables".
+        let next = |timeout: u64| -> Option<String> {
+            let deadline = Instant::now() + Duration::from_secs(timeout);
+            while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+                match replies.recv_timeout(left).ok()? {
+                    Reply::Rows { tab, res, .. } => {
+                        return Some(format!("rows:{tab}:{}", if res.is_ok() { "ok" } else { "err" }));
+                    }
+                    Reply::Tables(_) => return Some("tables".into()),
+                    _ => {}
+                }
+            }
+            None
+        };
+        // The second connection opens once the first is up.
+        thread::sleep(Duration::from_secs(1));
+
+        jobs.send(Job::Query {
+            tab: 1,
+            sql: sleep(2),
+        })
+        .unwrap();
+        thread::sleep(Duration::from_millis(200));
+        jobs.send(Job::Tables).unwrap();
+        assert_eq!(
+            next(1).as_deref(),
+            Some("tables"),
+            "{kind:?}: the sidebar didn't wait"
+        );
+        assert_eq!(next(5).as_deref(), Some("rows:1:ok"));
+
+        // A tab waiting in line isn't the one running: cancelling it stops nothing.
+        jobs.send(Job::Query {
+            tab: 2,
+            sql: sleep(30),
+        })
+        .unwrap();
+        thread::sleep(Duration::from_millis(300));
+        running.iter().for_each(|r| r.cancel(Some(3)));
+        assert_eq!(next(1), None, "{kind:?}: another tab's statement was cancelled");
+        // Stopped long before its 30 s (MySQL's SLEEP then returns 1 rather than failing).
+        running.iter().for_each(|r| r.cancel(Some(2)));
+        let stopped = next(10).unwrap_or_default();
+        assert!(stopped.starts_with("rows:2:"), "{kind:?}: its own is ({stopped})");
+
+        // With a transaction open, the sidebar reads on the first connection, after it.
+        jobs.send(Job::Query {
+            tab: 1,
+            sql: "INSERT INTO dbl_bg VALUES (1)".into(),
+        })
+        .unwrap();
+        assert_eq!(next(5).as_deref(), Some("rows:1:ok"));
+        jobs.send(Job::Query {
+            tab: 1,
+            sql: sleep(1),
+        })
+        .unwrap();
+        jobs.send(Job::Tables).unwrap();
+        assert_eq!(
+            next(5).as_deref(),
+            Some("rows:1:ok"),
+            "{kind:?}: in order inside a transaction"
+        );
+        assert_eq!(next(5).as_deref(), Some("tables"));
+        jobs.send(Job::EndTx { commit: false }).unwrap();
+        drop(jobs);
+        setup.query("DROP TABLE dbl_bg").unwrap();
+    }
+
+    #[test]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
+    fn background_connection_postgres() {
+        background_connection(Kind::Postgres, 55432, "postgres");
+    }
+
+    #[test]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
+    fn background_connection_mysql() {
+        background_connection(Kind::MySql, 53306, "test");
     }
 
     /// Timed editor scripts on a real server: Postgres keeps the all-or-nothing of a

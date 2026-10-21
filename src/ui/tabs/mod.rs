@@ -870,8 +870,8 @@ pub(super) fn export_banner(ui: &mut egui::Ui, tab: &mut Tab) {
     }
 }
 
-/// Spinner plus a button that stops the running statement on the server.
-pub(super) fn busy_indicator(ui: &mut egui::Ui, s: &Session) {
+/// Spinner plus a button that stops the tab's running statement on the server.
+pub(super) fn busy_indicator(ui: &mut egui::Ui, s: &Session, tab_id: u64) {
     let t = theme::tokens();
     ui.spinner();
     let stop = egui::Button::new(theme::icon_text(
@@ -885,7 +885,7 @@ pub(super) fn busy_indicator(ui: &mut egui::Ui, s: &Session) {
         .on_hover_text("Stops the query on the server")
         .clicked()
     {
-        s.cancel();
+        s.cancel(tab_id);
     }
 }
 

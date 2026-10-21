@@ -117,7 +117,6 @@ impl App {
                 }
                 s.ready = true;
                 s.tables = c.tables;
-                s.canceller = Some(c.canceller);
                 self.notice = Notice::info(format!("Connected to {}", s.cfg.name));
             }
             Reply::Reconnected {
@@ -125,7 +124,6 @@ impl App {
                 rolled_back,
             } => {
                 s.tables = c.tables;
-                s.canceller = Some(c.canceller);
                 if rolled_back {
                     s.txn = TxState {
                         manual: s.txn.manual,

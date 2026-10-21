@@ -66,6 +66,8 @@ struct Asked {
 
 /// What Run, Run all and Preview act on, from the text, the selection and the cursor.
 struct Targets {
+    /// The tab they are for.
+    tab_id: u64,
     /// The selection in chars, and its text.
     selected_range: Option<(usize, usize)>,
     selection: Option<String>,
@@ -107,6 +109,7 @@ impl Targets {
         let all = selection.clone().unwrap_or_else(|| text.to_string());
         let can_preview = previewable_cached(ctx, tab_id, &one);
         Targets {
+            tab_id,
             selected_range,
             selection,
             ranges,
@@ -232,7 +235,7 @@ fn toolbar(
             asked.preview = Some(tg.one.clone());
         }
         if busy {
-            busy_indicator(ui, s);
+            busy_indicator(ui, s, tg.tab_id);
         }
         match history_menu(ui, cx.history, &s.cfg.name, compact) {
             Some(HistoryPick::Load(sql)) => ed.text = sql,

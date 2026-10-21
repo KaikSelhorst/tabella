@@ -84,7 +84,7 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         reload_now = true;
                     }
                     if busy {
-                        busy_indicator(ui, s);
+                        busy_indicator(ui, s, tab_id);
                     }
                 });
             });
