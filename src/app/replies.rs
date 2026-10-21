@@ -19,7 +19,7 @@ struct TabReplyCx<'a> {
 impl App {
     /// Applies every reply that arrived since the last frame.
     pub fn poll(&mut self) {
-        if let Some(e) = self.history_writer.take_error() {
+        if let Some(e) = self.library.history_writer.take_error() {
             self.notice = Notice::error(format!("Error saving history: {e}"));
         }
         let mut restore = None;
@@ -59,8 +59,8 @@ impl App {
             }
             let mut cx = TabReplyCx {
                 notice: &mut self.notice,
-                history: &mut self.history,
-                history_writer: &self.history_writer,
+                history: &mut self.library.history,
+                history_writer: &self.library.history_writer,
                 designed: &mut designed,
                 uncommitted: &mut uncommitted,
             };
@@ -92,7 +92,7 @@ impl App {
                 }
             }
             Reply::TxEnded { commit, res } => {
-                if std::mem::take(&mut self.quit_after_tx) && res.is_ok() {
+                if std::mem::take(&mut self.window_state.quit_after_tx) && res.is_ok() {
                     self.host.close();
                 }
                 self.notice = match res {

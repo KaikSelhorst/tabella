@@ -147,7 +147,7 @@ impl App {
                 detail: "Ctrl+T".into(),
                 cmd: Cmd::NewSql,
             });
-            for f in favorites::for_conn(&self.favorites, &s.cfg.id) {
+            for f in favorites::for_conn(&self.library.favorites, &s.cfg.id) {
                 items.push(Item {
                     icon: icon::STAR,
                     label: f.name.clone(),
@@ -157,6 +157,7 @@ impl App {
             }
             let now = history::now();
             for e in self
+                .library
                 .history
                 .iter()
                 .rev()
@@ -180,7 +181,7 @@ impl App {
                 });
             }
         }
-        for c in &self.saved {
+        for c in &self.connections.saved {
             items.push(Item {
                 icon: icon::DATABASE,
                 label: format!("Connect: {}", c.name),
@@ -281,7 +282,7 @@ impl App {
         }
         items.push(Item {
             icon: icon::GAUGE,
-            label: if self.show_fps {
+            label: if self.fps.show {
                 "Hide FPS counter"
             } else {
                 "Show FPS counter"
@@ -533,7 +534,7 @@ impl App {
                 Cmd::NewSql => self.open_sql(String::new()),
                 Cmd::OpenSql(sql) => self.open_sql(sql),
                 Cmd::NewConnection => {
-                    self.form = Some(ConnForm {
+                    self.connections.form = Some(ConnForm {
                         editing: None,
                         cfg: ConnConfig::new(Kind::Postgres),
                     })
@@ -551,9 +552,9 @@ impl App {
                 Cmd::History => self.open_history(),
                 Cmd::RunFile => self.pick_script(),
                 Cmd::Fps => {
-                    self.show_fps = !self.show_fps;
+                    self.fps.show = !self.fps.show;
                     // Hidden, it shouldn't keep redrawing at full rate either.
-                    self.max_fps &= self.show_fps;
+                    self.fps.max &= self.fps.show;
                 }
                 Cmd::Dump => self.open_dump(crate::app::DumpScope::Database),
                 Cmd::Compare => self.open_compare(None),

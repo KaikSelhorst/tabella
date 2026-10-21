@@ -46,13 +46,13 @@ impl App {
 
             match &self.session {
                 None => {
-                    for (group, indexes) in crate::db::by_group(&self.saved) {
+                    for (group, indexes) in crate::db::by_group(&self.connections.saved) {
                         if !group.is_empty() {
                             ui.add_space(4.0);
                             ui.label(RichText::new(group).small().color(t.subtle));
                         }
                         for i in indexes {
-                            let c = &self.saved[i];
+                            let c = &self.connections.saved[i];
                             if connection_card(ui, c).clicked() {
                                 connect = Some(c.id.clone());
                             }
@@ -118,7 +118,7 @@ impl App {
             self.connect_saved(&id);
         }
         if new_conn {
-            self.form = Some(ConnForm {
+            self.connections.form = Some(ConnForm {
                 editing: None,
                 cfg: ConnConfig::new(Kind::Postgres),
             });

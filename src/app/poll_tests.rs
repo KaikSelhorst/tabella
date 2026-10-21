@@ -85,12 +85,15 @@ fn a_bulk_update_opens_previewed_in_an_editor() {
 fn tables_are_starred_per_connection() {
     let (s, _jobs, _replies) = fake_session(Kind::Postgres);
     let mut app = app_with(s);
-    app.starred.clear();
+    app.library.starred.clear();
     let id = app.session.as_ref().unwrap().cfg.id.clone();
     app.toggle_star("public", "orders");
-    assert_eq!(app.starred[&id], [("public".to_string(), "orders".to_string())]);
+    assert_eq!(
+        app.library.starred[&id],
+        [("public".to_string(), "orders".to_string())]
+    );
     app.toggle_star("public", "orders");
-    assert!(app.starred.is_empty());
+    assert!(app.library.starred.is_empty());
 }
 
 /// Opening a table makes it the latest recent one, and the list is per connection.
@@ -98,7 +101,7 @@ fn tables_are_starred_per_connection() {
 fn opened_tables_are_remembered_as_recent() {
     let (s, _jobs, _replies) = fake_session(Kind::Postgres);
     let mut app = app_with(s);
-    app.recent.clear();
+    app.library.recent.clear();
     app.open_table("public", "orders");
     app.open_table("public", "customers");
     app.open_table("public", "orders");
@@ -117,7 +120,7 @@ fn a_resumed_postgres_session_returns_to_its_database() {
     saved_cfg.id = "x".into();
     saved_cfg.name = "x".into();
     saved_cfg.database = "a".into();
-    app.saved = vec![saved_cfg];
+    app.connections.saved = vec![saved_cfg];
     let mut snap = app.snapshot();
     assert_eq!(snap.database.as_deref(), Some("b"));
     snap.conn = Some("x".into());
@@ -155,7 +158,8 @@ fn an_unknown_connection_on_the_command_line_is_reported() {
     let app = App::with_launch(super::window::NoWindow, launch);
     assert_eq!(app.session.as_ref().map(|s| s.cfg.kind), Some(Kind::Sqlite));
     assert!(
-        app.saved
+        app.connections
+            .saved
             .iter()
             .all(|c| c.kind != Kind::Sqlite || c.database != ":memory:")
     );
@@ -229,7 +233,7 @@ fn session_snapshot_restores_the_same_tabs() {
 fn a_tab_opens_with_the_widths_remembered_for_its_table() {
     let (s, _jobs, _replies) = fake_session(Kind::Postgres);
     let mut app = app_with(s);
-    app.col_widths.clear();
+    app.library.col_widths.clear();
     app.remember_widths("public", "customers", &[("name".into(), 250.0)]);
     app.open_table("public", "customers");
     app.open_table("public", "orders");
@@ -244,8 +248,8 @@ fn a_tab_opens_with_the_widths_remembered_for_its_table() {
         crate::widths::for_table(&saved, "t", "public", "customers")["name"],
         250.0
     );
-    app.col_widths.clear();
-    let _ = crate::widths::save(&app.col_widths);
+    app.library.col_widths.clear();
+    let _ = crate::widths::save(&app.library.col_widths);
 }
 
 #[test]

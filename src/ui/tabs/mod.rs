@@ -163,10 +163,10 @@ impl App {
             let mut cx = Cx {
                 s,
                 show_detail: &mut self.show_detail,
-                history: &self.history,
-                favorites: &self.favorites,
-                filters: &self.filters,
-                saved: &self.saved,
+                history: &self.library.history,
+                favorites: &self.library.favorites,
+                filters: &self.library.filters,
+                saved: &self.connections.saved,
                 request: None,
             };
             tab_body(ui, tab, &mut cx);
@@ -551,10 +551,10 @@ impl App {
                     let mut cx = Cx {
                         s,
                         show_detail: &mut self.show_detail,
-                        history: &self.history,
-                        favorites: &self.favorites,
-                        filters: &self.filters,
-                        saved: &self.saved,
+                        history: &self.library.history,
+                        favorites: &self.library.favorites,
+                        filters: &self.library.filters,
+                        saved: &self.connections.saved,
                         request: None,
                     };
                     tab_body(ui, tab, &mut cx);

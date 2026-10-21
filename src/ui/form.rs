@@ -11,7 +11,9 @@ const FIELD_WIDTH: f32 = 280.0;
 impl App {
     pub fn connection_form(&mut self, ctx: &egui::Context) {
         self.poll_conn_test();
-        let Some(form) = &mut self.form else { return };
+        let Some(form) = &mut self.connections.form else {
+            return;
+        };
         let mut save = false;
         let mut cancel = false;
         let title = if form.editing.is_some() {
@@ -20,9 +22,9 @@ impl App {
             "New connection"
         };
         let t = theme::tokens();
-        let duplicate = config::name_taken(&self.saved, &form.cfg.name, form.editing.as_deref());
+        let duplicate = config::name_taken(&self.connections.saved, &form.cfg.name, form.editing.as_deref());
         let key = form.cfg.test_key();
-        let test = self.conn_test.as_ref().filter(|t| t.key == key);
+        let test = self.connections.conn_test.as_ref().filter(|t| t.key == key);
         let mut start_test = false;
         // Modal dims everything behind it and closes on Esc / click outside.
         let modal = egui::Modal::new(egui::Id::new("connection_form"))
@@ -92,7 +94,9 @@ impl App {
     /// The key derivation runs on a background thread so the window never freezes.
     pub fn master_prompt(&mut self, ctx: &egui::Context) {
         self.finish_master_kdf();
-        let Some(p) = &mut self.master else { return };
+        let Some(p) = &mut self.connections.master else {
+            return;
+        };
         let t = theme::tokens();
         let create = p.mode == MasterMode::Create;
         let working = p.working.is_some();
@@ -170,7 +174,7 @@ impl App {
 
         if submit && !working {
             self.start_master_kdf();
-        } else if skip && let Some(p) = self.master.take() {
+        } else if skip && let Some(p) = self.connections.master.take() {
             self.after_master(p.then);
         }
     }

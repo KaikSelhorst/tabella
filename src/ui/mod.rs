@@ -55,7 +55,7 @@ pub use egui_phosphor::regular as icon;
 impl App {
     /// Small FPS readout in the bottom-left corner (under the sidebar); click it to toggle max-rate redraw.
     fn fps_overlay(&mut self, ctx: &egui::Context) {
-        if !self.show_fps {
+        if !self.fps.show {
             return;
         }
         let t = theme::tokens();
@@ -65,17 +65,17 @@ impl App {
             .show(ctx, |ui| {
                 // Off by default: frames are only drawn when something changes, so the count
                 // means little until max-rate redraw is switched on.
-                let (label, color) = if self.max_fps {
-                    (format!("{:.0} FPS", self.fps), t.warning)
+                let (label, color) = if self.fps.max {
+                    (format!("{:.0} FPS", self.fps.value), t.warning)
                 } else {
                     ("FPS".to_string(), t.subtle)
                 };
                 let text = egui::RichText::new(label).small().color(color);
                 let r = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
                 if r.clicked() {
-                    self.max_fps = !self.max_fps;
+                    self.fps.max = !self.fps.max;
                 }
-                r.on_hover_text(if self.max_fps {
+                r.on_hover_text(if self.fps.max {
                     "Repainting at the monitor's rate. Click to save CPU."
                 } else {
                     "Repainting on demand. Click to use the maximum rate."
@@ -108,11 +108,11 @@ impl App {
         self.tick_fps();
         self.forget_closed_tabs(ui.ctx());
         self.clear_finished_notice();
-        self.window = ui
+        self.window_state.size = ui
             .ctx()
             .input(|i| i.viewport().inner_rect)
             .map(|r| [r.width(), r.height()]);
-        if self.max_fps {
+        if self.fps.max {
             // vsync paces this to the monitor's refresh rate.
             ui.ctx().request_repaint();
         }
@@ -447,11 +447,11 @@ impl App {
     /// Closing the window would silently roll back an open transaction: ask first.
     fn quit_guard(&mut self, ctx: &egui::Context) {
         let open = self.session.as_ref().is_some_and(|s| s.txn.open);
-        if open && !self.quit_after_tx && ctx.input(|i| i.viewport().close_requested()) {
+        if open && !self.window_state.quit_after_tx && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.quit_prompt = true;
+            self.window_state.quit_prompt = true;
         }
-        if !self.quit_prompt {
+        if !self.window_state.quit_prompt {
             return;
         }
         let t = theme::tokens();
@@ -496,11 +496,11 @@ impl App {
         }
         match choice {
             Some(Some(commit)) => {
-                self.quit_prompt = false;
-                self.quit_after_tx = true;
+                self.window_state.quit_prompt = false;
+                self.window_state.quit_after_tx = true;
                 self.end_tx(commit);
             }
-            Some(None) => self.quit_prompt = false,
+            Some(None) => self.window_state.quit_prompt = false,
             None => {}
         }
     }

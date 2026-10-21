@@ -116,7 +116,7 @@ impl App {
         let current = self
             .session
             .as_ref()
-            .and_then(|s| self.saved.iter().position(|c| c.id == s.cfg.id));
+            .and_then(|s| self.connections.saved.iter().position(|c| c.id == s.cfg.id));
         let mut connect = None;
         let mut edit = None;
         let mut delete = None;
@@ -131,8 +131,8 @@ impl App {
                 let selected: egui::WidgetText = match current {
                     // The label follows this session's mode, which can differ from the saved one.
                     Some(i) => conn_label(&ConnConfig {
-                        manual_commit: session_manual.unwrap_or(self.saved[i].manual_commit),
-                        ..self.saved[i].clone()
+                        manual_commit: session_manual.unwrap_or(self.connections.saved[i].manual_commit),
+                        ..self.connections.saved[i].clone()
                     })
                     .into(),
                     None => egui::RichText::new("Select connection…")
@@ -172,12 +172,12 @@ impl App {
                     // few pixels wider than the panel, and the panel grew by that much every frame.
                     .width(ui.available_width())
                     .show_ui(ui, |ui| {
-                        for (group, indexes) in crate::db::by_group(&self.saved) {
+                        for (group, indexes) in crate::db::by_group(&self.connections.saved) {
                             if !group.is_empty() {
                                 ui.label(egui::RichText::new(group).small().color(theme::tokens().subtle));
                             }
                             for i in indexes {
-                                let c = &self.saved[i];
+                                let c = &self.connections.saved[i];
                                 let r = ui.selectable_label(current == Some(i), conn_label(c));
                                 if r.clicked() {
                                     connect = Some(i);
@@ -195,7 +195,7 @@ impl App {
                                 });
                             }
                         }
-                        if !self.saved.is_empty() {
+                        if !self.connections.saved.is_empty() {
                             ui.separator();
                         }
                         if ui
@@ -219,21 +219,21 @@ impl App {
 
         // Indices are only valid within this frame; from here on connections go by id.
         if add {
-            self.form = Some(ConnForm {
+            self.connections.form = Some(ConnForm {
                 editing: None,
                 cfg: ConnConfig::new(Kind::Postgres),
             });
         }
-        if let Some(id) = connect.map(|i| self.saved[i].id.clone()) {
+        if let Some(id) = connect.map(|i| self.connections.saved[i].id.clone()) {
             self.connect_saved(&id);
         }
-        if let Some(c) = edit.map(|i| self.saved[i].clone()) {
-            self.form = Some(ConnForm {
+        if let Some(c) = edit.map(|i| self.connections.saved[i].clone()) {
+            self.connections.form = Some(ConnForm {
                 editing: Some(c.id.clone()),
                 cfg: c,
             });
         }
-        if let Some(id) = delete.map(|i| self.saved[i].id.clone()) {
+        if let Some(id) = delete.map(|i| self.connections.saved[i].id.clone()) {
             self.delete_connection(&id);
         }
         if let Some(on) = manual {
@@ -277,7 +277,7 @@ impl App {
             | TabKind::Dump(_)
             | TabKind::Compare(_) => None,
         });
-        let starred = self.starred.get(&s.cfg.id).cloned().unwrap_or_default();
+        let starred = self.library.starred.get(&s.cfg.id).cloned().unwrap_or_default();
         let tree = Tree {
             s,
             needle: self.filter.to_lowercase(),

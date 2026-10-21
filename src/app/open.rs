@@ -498,7 +498,7 @@ impl App {
 
     /// Drops one entry from the history (and the file).
     pub fn forget_history(&mut self, conn: &str, sql: &str) {
-        history::forget(&mut self.history, conn, sql, &self.history_writer);
+        history::forget(&mut self.library.history, conn, sql, &self.library.history_writer);
     }
 
     /// Opens the "search value" tab (or focuses it).
@@ -644,7 +644,7 @@ impl App {
     /// Where the table is among the last opened on this connection (0 = the latest).
     pub fn recent_rank(&self, schema: &str, table: &str) -> Option<usize> {
         let s = self.session.as_ref()?;
-        crate::recent::rank(&self.recent, &s.cfg.id, schema, table)
+        crate::recent::rank(&self.library.recent, &s.cfg.id, schema, table)
     }
 
     /// Opens a generated UPDATE in a new editor and shows what it would change; running it is
@@ -659,16 +659,16 @@ impl App {
     /// Stars or unstars a table in the sidebar.
     pub fn toggle_star(&mut self, schema: &str, table: &str) {
         let Some(s) = &self.session else { return };
-        crate::starred::toggle(&mut self.starred, &s.cfg.id, schema, table);
-        if let Err(e) = crate::starred::save(&self.starred) {
+        crate::starred::toggle(&mut self.library.starred, &s.cfg.id, schema, table);
+        if let Err(e) = crate::starred::save(&self.library.starred) {
             self.notice = Notice::error(format!("Error saving starred tables: {e}"));
         }
     }
 
     pub(super) fn remember_recent(&mut self, schema: &str, table: &str) {
         let Some(s) = &self.session else { return };
-        if crate::recent::touch(&mut self.recent, &s.cfg.id, schema, table)
-            && let Err(e) = crate::recent::save(&self.recent)
+        if crate::recent::touch(&mut self.library.recent, &s.cfg.id, schema, table)
+            && let Err(e) = crate::recent::save(&self.library.recent)
         {
             self.notice = Notice::error(format!("Error saving recent tables: {e}"));
         }
@@ -690,7 +690,7 @@ impl App {
             .iter()
             .find(|t| t.schema == schema && t.name == table)
             .and_then(|t| t.estimate);
-        let widths = crate::widths::for_table(&self.col_widths, &s.cfg.id, schema, table);
+        let widths = crate::widths::for_table(&self.library.col_widths, &s.cfg.id, schema, table);
         let i = self.push_tab(
             table.into(),
             TabKind::Table(Box::new(TableState::new(schema, table, estimate))),

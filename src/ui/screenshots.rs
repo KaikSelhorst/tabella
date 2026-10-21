@@ -13,11 +13,11 @@ pub fn fake_app(ctx: &egui::Context) -> App {
     // Widths dragged in an earlier run would change how the screens look.
     let _ = std::fs::remove_file(dir.join("column_widths.json"));
     let mut app = App::new(ctx.clone());
-    app.max_fps = false;
+    app.fps.max = false;
     let mut cfg = ConnConfig::new(Kind::Postgres);
     cfg.id = "dev".into();
     cfg.name = "dev".into();
-    app.saved = vec![cfg.clone()];
+    app.connections.saved = vec![cfg.clone()];
     let table = |schema: &str, name: &str, is_view| TableRef {
         schema: schema.into(),
         name: name.into(),
@@ -55,7 +55,7 @@ pub fn fake_app(ctx: &egui::Context) -> App {
         ok: true,
         ms: 3,
     };
-    app.history = vec![
+    app.library.history = vec![
         entry("SELECT count(*) FROM customers WHERE active", 7200),
         entry("SELECT * FROM orders WHERE customer_id = 3", 600),
     ];
@@ -1571,7 +1571,7 @@ fn screenshots() {
         .iter()
         .enumerate()
         {
-            state.history.push(crate::history::Entry {
+            state.library.history.push(crate::history::Entry {
                 conn: "dev".into(),
                 sql: sql.to_string(),
                 at: now - 600 * (i as u64 + 1),
@@ -1580,7 +1580,11 @@ fn screenshots() {
             });
         }
         state.open_history();
-        let sel = state.history.last().map(|e| (e.conn.clone(), e.sql.clone()));
+        let sel = state
+            .library
+            .history
+            .last()
+            .map(|e| (e.conn.clone(), e.sql.clone()));
         if let Some(TabKind::History(h)) = state.tabs.last_mut().map(|t| &mut t.kind) {
             h.selected = sel;
             h.focus = false;
@@ -1802,7 +1806,7 @@ fn screenshots() {
         .unwrap();
     harness.state_mut().tabs[1].confirm_run = None;
 
-    harness.state_mut().master = Some(crate::app::MasterPrompt {
+    harness.state_mut().connections.master = Some(crate::app::MasterPrompt {
         mode: crate::app::MasterMode::Create,
         password: "abc".into(),
         confirm: Default::default(),
@@ -1816,7 +1820,7 @@ fn screenshots() {
         .unwrap()
         .save(format!("{dir}/master-create.png"))
         .unwrap();
-    harness.state_mut().master = Some(crate::app::MasterPrompt {
+    harness.state_mut().connections.master = Some(crate::app::MasterPrompt {
         mode: crate::app::MasterMode::Unlock,
         password: Default::default(),
         confirm: Default::default(),
@@ -1830,7 +1834,7 @@ fn screenshots() {
         .unwrap()
         .save(format!("{dir}/master-unlock.png"))
         .unwrap();
-    harness.state_mut().master = None;
+    harness.state_mut().connections.master = None;
 
     // A pinned result against the current one.
     {
@@ -2296,7 +2300,7 @@ fn screenshots() {
     my.name = "shop-production".into();
     my.host = "db.example.com".into();
     my.database = "shop".into();
-    harness.state_mut().saved.push(my);
+    harness.state_mut().connections.saved.push(my);
     harness.run();
     harness
         .render()
@@ -2314,7 +2318,7 @@ fn screenshots() {
         user: "deploy".into(),
         ..Default::default()
     });
-    harness.state_mut().form = Some(crate::app::ConnForm {
+    harness.state_mut().connections.form = Some(crate::app::ConnForm {
         editing: None,
         cfg: remote,
     });
@@ -2323,11 +2327,11 @@ fn screenshots() {
     // Named, and tested: the server's answer under the buttons.
     {
         let app = harness.state_mut();
-        let form = app.form.as_mut().unwrap();
+        let form = app.connections.form.as_mut().unwrap();
         form.cfg.name = "shop-production".into();
         form.cfg.ssh = None;
         let (_tx, rx) = std::sync::mpsc::channel();
-        app.conn_test = Some(crate::app::ConnTest {
+        app.connections.conn_test = Some(crate::app::ConnTest {
             key: form.cfg.test_key(),
             rx,
             result: Some(Err(
@@ -2341,9 +2345,9 @@ fn screenshots() {
         .unwrap()
         .save(format!("{dir}/form-test.png"))
         .unwrap();
-    harness.state_mut().conn_test = None;
+    harness.state_mut().connections.conn_test = None;
     {
-        let form = harness.state_mut().form.as_mut().unwrap();
+        let form = harness.state_mut().connections.form.as_mut().unwrap();
         form.cfg.kind = Kind::Sqlite;
         form.cfg.name = "inventory".into();
         form.cfg.database = r"C:\Users\you\Documents\inventory.db".into();

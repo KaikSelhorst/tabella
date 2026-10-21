@@ -42,7 +42,7 @@ impl App {
             pinned: kept.iter().map(|(t, _)| t.pinned).collect(),
             tabs: kept.into_iter().map(|(_, s)| s).collect(),
             active,
-            window: self.window,
+            window: self.window_state.size,
             split,
         }
     }

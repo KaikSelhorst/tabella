@@ -291,13 +291,8 @@ pub struct App {
     /// The window it runs in, for work started outside a frame (e.g. connecting after an
     /// unlock) and for its title and attention.
     host: Arc<dyn Window>,
-    pub saved: Vec<ConnConfig>,
-    pub secrets: SecretStore,
-    pub master: Option<MasterPrompt>,
+    pub connections: Connections,
     pub session: Option<Session>,
-    pub form: Option<ConnForm>,
-    /// "Test connection" in the form: running, or its outcome for the settings it was run with.
-    pub conn_test: Option<ConnTest>,
     pub dialog: Option<Dialog>,
     pub tabs: Vec<Tab>,
     pub active: usize,
@@ -309,11 +304,41 @@ pub struct App {
     /// once.
     pub schema_focus: Option<String>,
     pub notice: Option<Notice>,
-    /// Redraw every frame at the monitor's rate (for the FPS readout). Off by default: an idle
-    /// app should use no CPU.
-    pub max_fps: bool,
-    /// The FPS readout in the corner (Ctrl+P), off unless asked for.
-    pub show_fps: bool,
+    pub fps: Fps,
+    pub library: Library,
+    /// Foreign keys followed (and other jumps to a filtered table), for "Back".
+    nav_back: Vec<NavStep>,
+    /// Tabs from the last run, reopened once their connection is ready.
+    restore: Option<session::Saved>,
+    /// `.sql` files from the command line, opened once connected.
+    launch_files: Vec<std::path::PathBuf>,
+    pub window_state: WindowState,
+    /// Row detail panel on the right of the grid.
+    pub show_detail: bool,
+    /// Sidebar lists tables by size (biggest first) instead of by name.
+    pub sort_by_size: bool,
+    /// Recently closed tabs, newest last.
+    pub closed: Vec<SavedTab>,
+    /// Ids of the tabs open last frame: a tab gone since gets its UI caches dropped.
+    pub(crate) open_tab_ids: Vec<u64>,
+    pub settings: crate::settings::Settings,
+}
+
+/// Saved connections and what it takes to edit and open them.
+pub struct Connections {
+    pub saved: Vec<ConnConfig>,
+    pub secrets: SecretStore,
+    pub master: Option<MasterPrompt>,
+    pub form: Option<ConnForm>,
+    /// "Test connection" in the form: running, or its outcome for the settings it was run with.
+    pub conn_test: Option<ConnTest>,
+    /// A backup or restore running on its own thread.
+    backup: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+}
+
+/// What the user keeps across runs besides connections: history, favorites, filters and the
+/// per-table memory of widths, recent and starred tables.
+pub struct Library {
     pub history: Vec<Entry>,
     history_writer: history::Writer,
     pub favorites: Vec<Favorite>,
@@ -324,34 +349,31 @@ pub struct App {
     recent: crate::recent::Store,
     /// Tables starred in the sidebar, per connection.
     pub starred: crate::starred::Store,
-    /// Foreign keys followed (and other jumps to a filtered table), for "Back".
-    nav_back: Vec<NavStep>,
-    /// Tabs from the last run, reopened once their connection is ready.
-    restore: Option<session::Saved>,
-    /// `.sql` files from the command line, opened once connected.
-    launch_files: Vec<std::path::PathBuf>,
-    /// A backup or restore running on its own thread.
-    backup: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
-    /// Current window size, saved on exit.
-    pub window: Option<[f32; 2]>,
-    /// Row detail panel on the right of the grid.
-    pub show_detail: bool,
-    /// Sidebar lists tables by size (biggest first) instead of by name.
-    pub sort_by_size: bool,
-    /// The window was asked to close with a transaction open: ask what to do with it.
-    pub quit_prompt: bool,
-    /// Recently closed tabs, newest last.
-    pub closed: Vec<SavedTab>,
-    /// Ids of the tabs open last frame: a tab gone since gets its UI caches dropped.
-    pub(crate) open_tab_ids: Vec<u64>,
-    pub settings: crate::settings::Settings,
-    /// The window title announces a finished job (cleared when the window is focused).
-    title_changed: bool,
-    /// Close the window once the transaction has been ended.
-    pub quit_after_tx: bool,
+}
+
+/// The frames-per-second readout.
+pub struct Fps {
+    /// Redraw every frame at the monitor's rate (for the readout). Off by default: an idle
+    /// app should use no CPU.
+    pub max: bool,
+    /// The readout in the corner (Ctrl+P), off unless asked for.
+    pub show: bool,
+    pub value: f32,
     frames: u32,
-    fps_since: Instant,
-    pub fps: f32,
+    since: Instant,
+}
+
+/// The window's size, title and closing.
+#[derive(Default)]
+pub struct WindowState {
+    /// Current size, saved on exit.
+    pub size: Option<[f32; 2]>,
+    /// The title announces a finished job (cleared when the window is focused).
+    title_changed: bool,
+    /// Asked to close with a transaction open: ask what to do with it.
+    pub quit_prompt: bool,
+    /// Close once the transaction has been ended.
+    pub quit_after_tx: bool,
 }
 
 impl App {
@@ -396,12 +418,15 @@ impl App {
         .collect();
         let mut app = Self {
             host: Arc::new(host),
-            saved: conns.list,
-            secrets,
-            master: None,
+            connections: Connections {
+                saved: conns.list,
+                secrets,
+                master: None,
+                form: None,
+                conn_test: None,
+                backup: None,
+            },
             session: None,
-            form: None,
-            conn_test: None,
             dialog: None,
             tabs: vec![],
             active: 0,
@@ -409,37 +434,39 @@ impl App {
             filter: String::new(),
             schema_focus: None,
             notice: None,
-            max_fps: false,
-            show_fps: false,
-            history: history.value,
-            history_writer: history::Writer::new(),
-            favorites: favorites.value,
-            filters: filters.value,
-            col_widths: col_widths.value,
-            recent: recent.value,
-            starred: starred.value,
+            fps: Fps {
+                max: false,
+                show: false,
+                value: 0.0,
+                frames: 0,
+                since: Instant::now(),
+            },
+            library: Library {
+                history: history.value,
+                history_writer: history::Writer::new(),
+                favorites: favorites.value,
+                filters: filters.value,
+                col_widths: col_widths.value,
+                recent: recent.value,
+                starred: starred.value,
+            },
             nav_back: Vec::new(),
             restore: None,
             launch_files: Vec::new(),
-            backup: None,
-            window: None,
+            window_state: WindowState::default(),
             show_detail: true,
             sort_by_size: false,
-            quit_prompt: false,
             closed: Vec::new(),
             open_tab_ids: Vec::new(),
             split: None,
             settings: settings.value,
-            title_changed: false,
-            quit_after_tx: false,
-            frames: 0,
-            fps_since: Instant::now(),
-            fps: 0.0,
         };
-        let vault_has_any = app
-            .secrets
-            .locked_vault()
-            .is_some_and(|v| app.saved.iter().any(|c| v.has(&c.id) || v.has(&c.name)));
+        let vault_has_any = app.connections.secrets.locked_vault().is_some_and(|v| {
+            app.connections
+                .saved
+                .iter()
+                .any(|c| v.has(&c.id) || v.has(&c.name))
+        });
         if conns.outdated {
             // Plain-text passwords or missing ids from older versions: rewrite the file now.
             app.save_connections();
@@ -451,7 +478,8 @@ impl App {
         // connection, then its tabs (see `poll`).
         let last = last.value;
         let asked = launch.conn.as_deref().map(|name| {
-            app.saved
+            app.connections
+                .saved
                 .iter()
                 .find(|c| c.id == name || c.name.eq_ignore_ascii_case(name))
                 .map(|c| c.id.clone())
@@ -511,20 +539,21 @@ impl App {
         dev_mysql.port = 3307;
         dev_mysql.password = "mysql".into();
         dev_mysql.database = "shop".into();
-        self.saved
+        self.connections
+            .saved
             .retain(|c| c.name != dev.name && c.name != dev_mysql.name);
-        self.saved.insert(0, dev_mysql);
-        self.saved.insert(0, dev);
+        self.connections.saved.insert(0, dev_mysql);
+        self.connections.saved.insert(0, dev);
         self.connect_saved("dev");
     }
 
     pub fn tick_fps(&mut self) {
-        self.frames += 1;
-        let elapsed = self.fps_since.elapsed().as_secs_f32();
+        self.fps.frames += 1;
+        let elapsed = self.fps.since.elapsed().as_secs_f32();
         if elapsed >= 0.5 {
-            self.fps = self.frames as f32 / elapsed;
-            self.frames = 0;
-            self.fps_since = Instant::now();
+            self.fps.value = self.fps.frames as f32 / elapsed;
+            self.fps.frames = 0;
+            self.fps.since = Instant::now();
         }
     }
 
@@ -538,7 +567,7 @@ impl App {
                 .map(|s| s.cfg.id.clone())
                 .unwrap_or_default()
         };
-        self.favorites.push(Favorite {
+        self.library.favorites.push(Favorite {
             id: config::new_id(),
             name: p.name.trim().to_string(),
             sql: p.sql,
@@ -554,9 +583,10 @@ impl App {
             return;
         };
         let name = name.trim();
-        self.filters
+        self.library
+            .filters
             .retain(|f| !(f.conn == conn && f.schema == schema && f.table == table && f.name == name));
-        self.filters.push(SavedFilter {
+        self.library.filters.push(SavedFilter {
             id: config::new_id(),
             name: name.to_string(),
             filter: filter.trim().to_string(),
@@ -568,7 +598,7 @@ impl App {
     }
 
     pub fn delete_filter(&mut self, id: &str) {
-        self.filters.retain(|f| f.id != id);
+        self.library.filters.retain(|f| f.id != id);
         self.store_filters();
     }
 
@@ -583,7 +613,7 @@ impl App {
             .iter()
             .find(|t| t.name == table)
             .map_or("public", |t| t.schema.as_str());
-        crate::widths::for_table(&self.col_widths, &s.cfg.id, schema, table)
+        crate::widths::for_table(&self.library.col_widths, &s.cfg.id, schema, table)
     }
 
     /// Remembers column widths dragged in a table tab.
@@ -591,26 +621,26 @@ impl App {
         let Some(conn) = self.session.as_ref().map(|s| s.cfg.id.clone()) else {
             return;
         };
-        if crate::widths::remember(&mut self.col_widths, &conn, schema, table, widths)
-            && let Err(e) = crate::widths::save(&self.col_widths)
+        if crate::widths::remember(&mut self.library.col_widths, &conn, schema, table, widths)
+            && let Err(e) = crate::widths::save(&self.library.col_widths)
         {
             self.notice = Notice::error(format!("Error saving column widths: {e}"));
         }
     }
 
     fn store_filters(&mut self) {
-        if let Err(e) = filters::save(&self.filters) {
+        if let Err(e) = filters::save(&self.library.filters) {
             self.notice = Notice::error(format!("Error saving filters: {e}"));
         }
     }
 
     pub fn delete_favorite(&mut self, id: &str) {
-        self.favorites.retain(|f| f.id != id);
+        self.library.favorites.retain(|f| f.id != id);
         self.save_favorites();
     }
 
     fn save_favorites(&mut self) {
-        if let Err(e) = favorites::save(&self.favorites) {
+        if let Err(e) = favorites::save(&self.library.favorites) {
             self.notice = Notice::error(format!("Error saving favorites: {e}"));
         }
     }
@@ -631,13 +661,13 @@ impl App {
         self.host.request_attention();
         self.host
             .set_title(&format!("✓ {title} finished ({} s) · tabella", took.as_secs()));
-        self.title_changed = true;
+        self.window_state.title_changed = true;
     }
 
     /// Back in the window: the plain title again.
     pub fn clear_finished_notice(&mut self) {
-        if self.title_changed && self.host.focused() == Some(true) {
-            self.title_changed = false;
+        if self.window_state.title_changed && self.host.focused() == Some(true) {
+            self.window_state.title_changed = false;
             self.host.set_title("tabella");
         }
     }

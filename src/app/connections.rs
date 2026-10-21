@@ -4,13 +4,13 @@ use super::*;
 
 impl App {
     pub fn find_saved(&self, id: &str) -> Option<&ConnConfig> {
-        self.saved.iter().find(|c| c.id == id)
+        self.connections.saved.iter().find(|c| c.id == id)
     }
 
     /// Saves, first asking for the master password if passwords would otherwise be lost.
     pub fn save_connections(&mut self) {
-        let has_passwords = self.saved.iter().any(|c| !c.password.is_empty());
-        if has_passwords && self.secrets.locked_vault().is_some() {
+        let has_passwords = self.connections.saved.iter().any(|c| !c.password.is_empty());
+        if has_passwords && self.connections.secrets.locked_vault().is_some() {
             self.ask_master(AfterMaster::Save);
         } else {
             self.write_connections();
@@ -18,7 +18,7 @@ impl App {
     }
 
     pub(super) fn write_connections(&mut self) {
-        match config::save(&self.saved, &mut self.secrets) {
+        match config::save(&self.connections.saved, &mut self.connections.secrets) {
             Ok(r) if r.not_stored > 0 => {
                 self.notice = Notice::info(format!(
                     "{} password(s) weren't saved to disk (this session only)",
@@ -29,7 +29,7 @@ impl App {
                 self.notice = Notice::error(format!(
                     "{} old password(s) couldn't be deleted from: {}",
                     r.not_removed,
-                    self.secrets.describe()
+                    self.connections.secrets.describe()
                 ))
             }
             Ok(_) => {}
@@ -40,14 +40,15 @@ impl App {
     /// Adds or replaces (by id) a connection from the form and saves the list.
     pub fn store_connection(&mut self, mut cfg: ConnConfig) {
         match self
+            .connections
             .saved
             .iter()
             .position(|c| c.id == cfg.id && !cfg.id.is_empty())
         {
-            Some(i) => self.saved[i] = cfg.clone(),
+            Some(i) => self.connections.saved[i] = cfg.clone(),
             None => {
                 cfg.id = config::new_id();
-                self.saved.push(cfg.clone());
+                self.connections.saved.push(cfg.clone());
             }
         }
         self.save_connections();
@@ -64,20 +65,20 @@ impl App {
     }
 
     pub fn delete_connection(&mut self, id: &str) {
-        let Some(i) = self.saved.iter().position(|c| c.id == id) else {
+        let Some(i) = self.connections.saved.iter().position(|c| c.id == id) else {
             return;
         };
-        let removed = self.saved.remove(i);
+        let removed = self.connections.saved.remove(i);
         if self.session.as_ref().is_some_and(|s| s.cfg.id == removed.id) {
             self.disconnect();
         }
-        let forgot = config::forget(&removed, &mut self.secrets);
+        let forgot = config::forget(&removed, &mut self.connections.secrets);
         self.save_connections();
         if forgot.is_err() {
             self.notice = Notice::error(format!(
                 "The password of “{}” couldn't be deleted from: {}",
                 removed.name,
-                self.secrets.describe()
+                self.connections.secrets.describe()
             ));
         }
     }
@@ -86,13 +87,15 @@ impl App {
     /// (Argon2 is slow on purpose); `finish_master_kdf` applies it.
     pub fn start_master_kdf(&mut self) {
         let wake = self.waker();
-        let Some(p) = &mut self.master else { return };
+        let Some(p) = &mut self.connections.master else {
+            return;
+        };
         let create = p.mode == MasterMode::Create;
         if create && p.password != p.confirm {
             p.error = Some("The passwords don't match".into());
             return;
         }
-        let Some(vault) = self.secrets.vault_mut() else {
+        let Some(vault) = self.connections.secrets.vault_mut() else {
             return;
         };
         match vault.kdf_job(&p.password, create) {
@@ -111,11 +114,13 @@ impl App {
 
     /// Applies a finished key derivation (or shows why it failed).
     pub fn finish_master_kdf(&mut self) {
-        let Some(p) = &mut self.master else { return };
+        let Some(p) = &mut self.connections.master else {
+            return;
+        };
         let Some(rx) = &p.working else { return };
         let Ok(result) = rx.try_recv() else { return };
         p.working = None;
-        let applied = match (result, self.secrets.vault_mut()) {
+        let applied = match (result, self.connections.secrets.vault_mut()) {
             (Ok(derived), Some(vault)) => vault.finish(derived),
             (Err(e), _) => Err(e),
             (Ok(_), None) => Ok(()),
@@ -123,8 +128,11 @@ impl App {
         match applied {
             Ok(()) => {
                 let then = p.then.clone();
-                self.master = None;
-                self.notice = Notice::info(format!("Passwords protected by the {}", self.secrets.describe()));
+                self.connections.master = None;
+                self.notice = Notice::info(format!(
+                    "Passwords protected by the {}",
+                    self.connections.secrets.describe()
+                ));
                 self.after_master(then);
             }
             Err(e) => {
@@ -138,11 +146,13 @@ impl App {
     /// The form's connection test: a finished one arrives, and one run with other settings
     /// than the form has now is dropped once it is done.
     pub fn poll_conn_test(&mut self) {
-        let Some(form) = &self.form else { return };
+        let Some(form) = &self.connections.form else {
+            return;
+        };
         let key = form.cfg.test_key();
-        if let Some(test) = &mut self.conn_test {
+        if let Some(test) = &mut self.connections.conn_test {
             if test.key != key && test.result.is_some() {
-                self.conn_test = None;
+                self.connections.conn_test = None;
             } else if let Ok(r) = test.rx.try_recv() {
                 test.result = Some(r);
             }
@@ -151,8 +161,10 @@ impl App {
 
     /// "Test connection": connects with the form's settings without saving them.
     pub fn start_conn_test(&mut self) {
-        let Some(form) = &self.form else { return };
-        self.conn_test = Some(ConnTest {
+        let Some(form) = &self.connections.form else {
+            return;
+        };
+        self.connections.conn_test = Some(ConnTest {
             key: form.cfg.test_key(),
             rx: worker::test_connection(form.cfg.clone(), self.waker()),
             result: None,
@@ -161,8 +173,8 @@ impl App {
 
     /// Leaves the connection form, saving what it holds or not.
     pub fn close_connection_form(&mut self, save: bool) {
-        self.conn_test = None;
-        if let Some(mut form) = self.form.take()
+        self.connections.conn_test = None;
+        if let Some(mut form) = self.connections.form.take()
             && save
         {
             form.cfg.name = form.cfg.name.trim().to_string();
@@ -171,7 +183,7 @@ impl App {
     }
 
     pub fn ask_master(&mut self, then: AfterMaster) {
-        let Some(v) = self.secrets.locked_vault() else {
+        let Some(v) = self.connections.secrets.locked_vault() else {
             return self.after_master(then);
         };
         let mode = if v.exists() {
@@ -179,7 +191,7 @@ impl App {
         } else {
             MasterMode::Create
         };
-        self.master = Some(MasterPrompt {
+        self.connections.master = Some(MasterPrompt {
             mode,
             password: Secret::default(),
             confirm: Secret::default(),
@@ -191,7 +203,7 @@ impl App {
 
     /// Runs after the vault was opened or the prompt was skipped.
     pub fn after_master(&mut self, then: AfterMaster) {
-        config::fill_passwords(&mut self.saved, &self.secrets);
+        config::fill_passwords(&mut self.connections.saved, &self.connections.secrets);
         match then {
             AfterMaster::Nothing => {}
             AfterMaster::Save => self.write_connections(),
@@ -204,6 +216,7 @@ impl App {
         let Some(c) = self.find_saved(id) else { return };
         let needs_vault = c.password.is_empty()
             && self
+                .connections
                 .secrets
                 .locked_vault()
                 .is_some_and(|v| v.has(&c.id) || v.has(&c.name));
@@ -312,7 +325,7 @@ impl App {
 impl App {
     /// "Export connections": a JSON file without passwords, to share or back up.
     pub fn export_connections_dialog(&mut self) {
-        if self.saved.is_empty() {
+        if self.connections.saved.is_empty() {
             self.notice = Notice::error("There are no saved connections to export");
         } else if crate::files::NATIVE_DIALOGS {
             if let Some(path) = crate::files::pick_connections_save() {
@@ -344,7 +357,7 @@ impl App {
     }
 
     pub fn export_connections(&mut self, path: &std::path::Path) {
-        self.notice = match config::export_to(path, &self.saved) {
+        self.notice = match config::export_to(path, &self.connections.saved) {
             Ok(n) => Notice::info(format!(
                 "{n} connection(s) exported to {} (without passwords)",
                 path.display()
@@ -354,11 +367,11 @@ impl App {
     }
 
     pub fn import_connections(&mut self, path: &std::path::Path) {
-        match config::import_from(path, &self.saved) {
+        match config::import_from(path, &self.connections.saved) {
             Ok(list) if list.is_empty() => self.notice = Notice::error("The file has no connections"),
             Ok(list) => {
                 let n = list.len();
-                self.saved.extend(list);
+                self.connections.saved.extend(list);
                 self.write_connections();
                 self.notice = Notice::info(format!(
                     "{n} connection(s) imported: open each to enter its password"
@@ -409,7 +422,7 @@ impl App {
     /// Runs the tool on a thread; the outcome arrives through `poll_backup`.
     pub fn start_backup(&mut self, file: &std::path::Path, restore: bool) {
         let Some(s) = &self.session else { return };
-        if self.backup.is_some() {
+        if self.connections.backup.is_some() {
             self.notice = Notice::error("A backup or restore is already running");
             return;
         }
@@ -430,12 +443,14 @@ impl App {
             let _ = tx.send(crate::backup::run(&cfg, op, &file));
             wake();
         });
-        self.backup = Some(rx);
+        self.connections.backup = Some(rx);
     }
 
     /// Reports a finished backup or restore. After a restore the tables may be different.
     pub fn poll_backup(&mut self) {
-        let Some(rx) = &self.backup else { return };
+        let Some(rx) = &self.connections.backup else {
+            return;
+        };
         let done = match rx.try_recv() {
             Ok(res) => res,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
@@ -443,7 +458,7 @@ impl App {
                 Err("the backup tool stopped unexpectedly".into())
             }
         };
-        self.backup = None;
+        self.connections.backup = None;
         self.notice = match done {
             Ok(msg) => Notice::info(msg),
             Err(e) => Notice::error(e),
