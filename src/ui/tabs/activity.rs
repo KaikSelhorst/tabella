@@ -10,40 +10,13 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
     let t = theme::tokens();
     let busy = tab.busy();
-    // Session id of the selected row (first column), when it is a number.
-    let target = tab
-        .selected
-        .and_then(|(row, _)| tab.result.as_ref()?.rows.get(row)?.first()??.parse::<i64>().ok());
-    // The statement of the selected row ("slow queries"), to open in the editor.
-    let selected_query = tab.selected.and_then(|(row, _)| {
-        let res = tab.result.as_ref()?;
-        let col = res.columns.iter().position(|c| c == "query")?;
-        res.rows.get(row)?.get(col)?.map(str::to_owned)
-    });
-    // Where its unqualified tables are: the digest's own database (MySQL), else the current one.
-    let selected_schema = tab
-        .selected
-        .and_then(|(row, _)| {
-            let res = tab.result.as_ref()?;
-            let col = res.columns.iter().position(|c| c == "db")?;
-            res.rows
-                .get(row)?
-                .get(col)?
-                .map(str::to_owned)
-                .filter(|d| !d.is_empty())
-        })
-        .unwrap_or_else(|| match s.cfg.kind {
-            crate::db::Kind::MySql => s.current_db.clone(),
-            _ if s.current_schema.is_empty() => "public".into(),
-            _ => s.current_schema.clone(),
-        });
+    let picked = Picked::of(tab, s);
     let TabKind::Activity(st) = &mut tab.kind else {
         return;
     };
     let mut refresh = false;
     let mut switched = false;
-    let mut reset_stats = false;
-    let mut suggest = false;
+    let mut slow = SlowClicks::default();
     egui::Frame::new()
         .fill(t.background)
         .inner_margin(egui::Margin::symmetric(12, 8))
@@ -51,40 +24,7 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::PULSE).size(15.0).color(t.muted_foreground));
                 ui.spacing_mut().item_spacing.x = 0.0;
-                for (view, label, tip) in [
-                    (
-                        ActivityView::Sessions,
-                        "Sessions",
-                        "Who is connected and what they're running",
-                    ),
-                    (
-                        ActivityView::Locks,
-                        "Locks",
-                        "Sessions waiting on another one's locks (the first column is the blocker)",
-                    ),
-                    (
-                        ActivityView::Slow,
-                        "Slow queries",
-                        "What took the most server time since the statistics were last reset",
-                    ),
-                    (
-                        ActivityView::Server,
-                        "Server",
-                        "Version, size, connections, cache, biggest tables and unused indexes",
-                    ),
-                ] {
-                    let on = st.view == view;
-                    let color = if on { t.foreground } else { t.muted_foreground };
-                    if ui
-                        .add(egui::Button::new(egui::RichText::new(label).color(color)).selected(on))
-                        .on_hover_text(tip)
-                        .clicked()
-                        && !on
-                    {
-                        st.view = view;
-                        switched = true;
-                    }
-                }
+                switched = view_buttons(ui, st);
                 ui.spacing_mut().item_spacing.x = 8.0;
                 if busy {
                     ui.spinner();
@@ -106,76 +46,16 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     ui.checkbox(&mut st.auto_refresh, "every 2 s");
                     ui.separator();
                     if view == ActivityView::Slow {
-                        if ui
-                            .add_enabled(
-                                !busy,
-                                egui::Button::new(theme::icon_text(
-                                    icon::ERASER,
-                                    "Reset statistics",
-                                    t.muted_foreground,
-                                    t.foreground,
-                                )),
-                            )
-                            .on_hover_text(
-                                "Restarts the count: useful to measure only what happens from now on",
-                            )
-                            .clicked()
-                        {
-                            reset_stats = true;
-                        }
-                        if ui
-                            .add_enabled(
-                                selected_query.is_some() && !busy,
-                                egui::Button::new(theme::icon_text(
-                                    icon::LIGHTBULB,
-                                    "Suggest index",
-                                    t.muted_foreground,
-                                    t.foreground,
-                                )),
-                            )
-                            .on_hover_text(
-                                "Looks at the selected query's WHERE, JOIN and ORDER BY columns and the table's \
-                                 indexes",
-                            )
-                            .on_disabled_hover_text("Select a query")
-                            .clicked()
-                        {
-                            suggest = true;
-                        }
-                        if ui
-                            .add_enabled(
-                                selected_query.is_some(),
-                                egui::Button::new(theme::icon_text(
-                                    icon::CODE,
-                                    "Open in editor",
-                                    t.muted_foreground,
-                                    t.foreground,
-                                )),
-                            )
-                            .on_disabled_hover_text("Select a query")
-                            .clicked()
-                            && let Some(q) = &selected_query
+                        slow = slow_query_buttons(ui, picked.query.is_some(), busy);
+                        if slow.open
+                            && let Some(q) = &picked.query
                         {
                             cx.request = Some(Request::Sql(q.clone()));
                         }
                         return;
                     }
-                    let end =
-                        theme::icon_text(icon::PLUGS, "Kill connection", t.muted_foreground, t.foreground);
-                    if ui
-                        .add_enabled(target.is_some() && !busy, egui::Button::new(end))
-                        .on_disabled_hover_text("Select a session")
-                        .clicked()
-                    {
-                        st.confirm_kill = target.map(|id| (id, true));
-                    }
-                    let stop = theme::icon_text(icon::STOP, "Cancel query", t.muted_foreground, t.foreground);
-                    if ui
-                        .add_enabled(target.is_some() && !busy, egui::Button::new(stop))
-                        .on_disabled_hover_text("Select a session")
-                        .clicked()
-                    {
-                        st.confirm_kill = target.map(|id| (id, false));
+                    if let Some(kill) = kill_buttons(ui, picked.session.is_some() && !busy) {
+                        st.confirm_kill = picked.session.map(|id| (id, kill));
                     }
                 });
             });
@@ -203,11 +83,14 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         result_area(ui, tab, cx, false);
         return;
     }
+    let reset_stats = slow.reset;
     if reset_stats {
         app::reset_query_stats(tab, s);
     }
-    if suggest && let Some(q) = &selected_query {
-        app::suggest_index(tab, s, q.clone(), selected_schema);
+    if slow.suggest
+        && let Some(q) = &picked.query
+    {
+        app::suggest_index(tab, s, q.clone(), picked.schema);
     }
     let TabKind::Activity(st) = &mut tab.kind else {
         return;
@@ -253,6 +136,182 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         }
     }
     result_area(ui, tab, cx, false);
+}
+
+/// What the selected row is about.
+struct Picked {
+    /// The session id (first column), when it is a number.
+    session: Option<i64>,
+    /// The statement ("slow queries"), to open in the editor.
+    query: Option<String>,
+    /// Where its unqualified tables are: the digest's own database (MySQL), else the current one.
+    schema: String,
+}
+
+impl Picked {
+    fn of(tab: &Tab, s: &Session) -> Self {
+        // Session id of the selected row (first column), when it is a number.
+        let session = tab
+            .selected
+            .and_then(|(row, _)| tab.result.as_ref()?.rows.get(row)?.first()??.parse::<i64>().ok());
+        // The statement of the selected row ("slow queries"), to open in the editor.
+        let query = tab.selected.and_then(|(row, _)| {
+            let res = tab.result.as_ref()?;
+            let col = res.columns.iter().position(|c| c == "query")?;
+            res.rows.get(row)?.get(col)?.map(str::to_owned)
+        });
+        // Where its unqualified tables are: the digest's own database (MySQL), else the current one.
+        let schema = tab
+            .selected
+            .and_then(|(row, _)| {
+                let res = tab.result.as_ref()?;
+                let col = res.columns.iter().position(|c| c == "db")?;
+                res.rows
+                    .get(row)?
+                    .get(col)?
+                    .map(str::to_owned)
+                    .filter(|d| !d.is_empty())
+            })
+            .unwrap_or_else(|| match s.cfg.kind {
+                crate::db::Kind::MySql => s.current_db.clone(),
+                _ if s.current_schema.is_empty() => "public".into(),
+                _ => s.current_schema.clone(),
+            });
+        Picked {
+            session,
+            query,
+            schema,
+        }
+    }
+}
+
+/// Sessions, Locks, Slow queries, Server. Returns whether the view changed.
+fn view_buttons(ui: &mut egui::Ui, st: &mut app::ActivityState) -> bool {
+    let t = theme::tokens();
+    let mut switched = false;
+    for (view, label, tip) in [
+        (
+            ActivityView::Sessions,
+            "Sessions",
+            "Who is connected and what they're running",
+        ),
+        (
+            ActivityView::Locks,
+            "Locks",
+            "Sessions waiting on another one's locks (the first column is the blocker)",
+        ),
+        (
+            ActivityView::Slow,
+            "Slow queries",
+            "What took the most server time since the statistics were last reset",
+        ),
+        (
+            ActivityView::Server,
+            "Server",
+            "Version, size, connections, cache, biggest tables and unused indexes",
+        ),
+    ] {
+        let on = st.view == view;
+        let color = if on { t.foreground } else { t.muted_foreground };
+        if ui
+            .add(egui::Button::new(egui::RichText::new(label).color(color)).selected(on))
+            .on_hover_text(tip)
+            .clicked()
+            && !on
+        {
+            st.view = view;
+            switched = true;
+        }
+    }
+    switched
+}
+
+/// What the slow-query buttons were clicked for.
+#[derive(Default)]
+struct SlowClicks {
+    reset: bool,
+    suggest: bool,
+    open: bool,
+}
+
+/// Reset statistics, Suggest index and Open in editor (the last two for the selected query).
+fn slow_query_buttons(ui: &mut egui::Ui, has_query: bool, busy: bool) -> SlowClicks {
+    let t = theme::tokens();
+    let mut c = SlowClicks::default();
+    if ui
+        .add_enabled(
+            !busy,
+            egui::Button::new(theme::icon_text(
+                icon::ERASER,
+                "Reset statistics",
+                t.muted_foreground,
+                t.foreground,
+            )),
+        )
+        .on_hover_text("Restarts the count: useful to measure only what happens from now on")
+        .clicked()
+    {
+        c.reset = true;
+    }
+    if ui
+        .add_enabled(
+            has_query && !busy,
+            egui::Button::new(theme::icon_text(
+                icon::LIGHTBULB,
+                "Suggest index",
+                t.muted_foreground,
+                t.foreground,
+            )),
+        )
+        .on_hover_text(
+            "Looks at the selected query's WHERE, JOIN and ORDER BY columns and the table's \
+             indexes",
+        )
+        .on_disabled_hover_text("Select a query")
+        .clicked()
+    {
+        c.suggest = true;
+    }
+    if ui
+        .add_enabled(
+            has_query,
+            egui::Button::new(theme::icon_text(
+                icon::CODE,
+                "Open in editor",
+                t.muted_foreground,
+                t.foreground,
+            )),
+        )
+        .on_disabled_hover_text("Select a query")
+        .clicked()
+    {
+        c.open = true;
+    }
+    c
+}
+
+/// Kill connection and Cancel query for the selected session: `Some(true)` to close it,
+/// `Some(false)` to cancel its query.
+fn kill_buttons(ui: &mut egui::Ui, enabled: bool) -> Option<bool> {
+    let t = theme::tokens();
+    let mut kill = None;
+    let end = theme::icon_text(icon::PLUGS, "Kill connection", t.muted_foreground, t.foreground);
+    if ui
+        .add_enabled(enabled, egui::Button::new(end))
+        .on_disabled_hover_text("Select a session")
+        .clicked()
+    {
+        kill = Some(true);
+    }
+    let stop = theme::icon_text(icon::STOP, "Cancel query", t.muted_foreground, t.foreground);
+    if ui
+        .add_enabled(enabled, egui::Button::new(stop))
+        .on_disabled_hover_text("Select a session")
+        .clicked()
+    {
+        kill = Some(false);
+    }
+    kill
 }
 
 enum AdviceAction {

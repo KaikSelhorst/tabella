@@ -123,6 +123,17 @@ pub fn compact_count(n: i64) -> String {
 impl App {
     fn palette_items(&self) -> Vec<Item> {
         let mut items = Vec::new();
+        self.session_items(&mut items);
+        self.connection_items(&mut items);
+        self.theme_items(&mut items);
+        self.file_items(&mut items);
+        self.view_items(&mut items);
+        self.tool_items(&mut items);
+        items
+    }
+
+    /// The open connection's tables, a new editor, its favorites and recent queries.
+    fn session_items(&self, items: &mut Vec<Item>) {
         if let Some(s) = self.session.as_ref().filter(|s| s.ready) {
             for t in &s.tables {
                 let rows = t
@@ -181,6 +192,10 @@ impl App {
                 });
             }
         }
+    }
+
+    /// A "Connect" entry per saved connection.
+    fn connection_items(&self, items: &mut Vec<Item>) {
         for c in &self.connections.saved {
             items.push(Item {
                 icon: icon::DATABASE,
@@ -198,6 +213,10 @@ impl App {
                 cmd: Cmd::Connect(c.id.clone()),
             });
         }
+    }
+
+    /// Light or dark, and following the system.
+    fn theme_items(&self, items: &mut Vec<Item>) {
         let (theme_icon, theme_label) = if self.settings.light {
             (icon::MOON, "Dark theme")
         } else {
@@ -220,6 +239,10 @@ impl App {
             detail: "light or dark with the operating system".into(),
             cmd: Cmd::SystemTheme,
         });
+    }
+
+    /// Backups, connection files and "Go back".
+    fn file_items(&self, items: &mut Vec<Item>) {
         if self
             .session
             .as_ref()
@@ -258,6 +281,10 @@ impl App {
                 cmd: Cmd::Back,
             });
         }
+    }
+
+    /// Row limit, zoom, FPS counter, shortcuts and a new connection.
+    fn view_items(&self, items: &mut Vec<Item>) {
         items.push(Item {
             icon: icon::LIST_NUMBERS,
             label: "Row limit".into(),
@@ -303,6 +330,10 @@ impl App {
             detail: String::new(),
             cmd: Cmd::NewConnection,
         });
+    }
+
+    /// What needs a connection: history, diagram, search, scripts, compare, dump.
+    fn tool_items(&self, items: &mut Vec<Item>) {
         if self.session.is_some() {
             items.push(Item {
                 icon: icon::CLOCK_COUNTER_CLOCKWISE,
@@ -363,7 +394,6 @@ impl App {
                 cmd: Cmd::Disconnect,
             });
         }
-        items
     }
 
     pub fn palette_ui(&mut self, ctx: &egui::Context) {

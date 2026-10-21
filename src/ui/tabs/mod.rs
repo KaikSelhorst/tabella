@@ -109,6 +109,134 @@ pub(super) enum TabAction {
     CloseSplit,
 }
 
+/// The icon of a tab's kind (a view opens like a table, with the sidebar's eye).
+fn tab_glyph(tab: &Tab, is_view: impl Fn(&str, &str) -> bool) -> &'static str {
+    match &tab.kind {
+        // A view opens like a table; its tab shows the sidebar's eye.
+        TabKind::Table(ts) if is_view(&ts.schema, &ts.table) => icon::EYE,
+        TabKind::Table(_) => icon::TABLE,
+        TabKind::Sql(_) => icon::CODE,
+        TabKind::Structure(_) => icon::TREE_STRUCTURE,
+        TabKind::Activity(_) => icon::PULSE,
+        TabKind::Design(_) => icon::PENCIL_SIMPLE,
+        TabKind::Search(_) => icon::MAGNIFYING_GLASS,
+        TabKind::History(_) => icon::CLOCK_COUNTER_CLOCKWISE,
+        TabKind::Diagram(_) => icon::GRAPH,
+        TabKind::Script(_) => icon::PLAY,
+        TabKind::Dump(_) => icon::DOWNLOAD_SIMPLE,
+        TabKind::Compare(_) => icon::GIT_DIFF,
+    }
+}
+
+/// What the tab's context menu needs to know about the others.
+struct TabMenu {
+    index: usize,
+    tabs: usize,
+    closed: bool,
+    split_on: bool,
+}
+
+/// A tab's context menu: rename, pin, duplicate, close others, split, reopen.
+fn tab_menu(ui: &mut egui::Ui, tab: &Tab, m: &TabMenu) -> Option<TabAction> {
+    let t = theme::tokens();
+    let (i, n, closed, split_on) = (m.index, m.tabs, m.closed, m.split_on);
+    let is_sql = matches!(tab.kind, TabKind::Sql(_));
+    let can_split = is_sql || n > 1;
+    let mut return_action = None;
+    // Rename in place: type and press Enter.
+    let name_id = egui::Id::new(("tab_name", tab.id));
+    let mut name = ui
+        .data(|d| d.get_temp::<String>(name_id))
+        .unwrap_or_else(|| tab.title.clone());
+    ui.label(egui::RichText::new("Tab name").size(11.0).color(t.subtle));
+    let r = ui.add(TextEdit::singleline(&mut name).desired_width(200.0));
+    if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !name.trim().is_empty() {
+        return_action = Some(TabAction::Rename(i, name.trim().to_string()));
+        ui.data_mut(|d| d.remove::<String>(name_id));
+        ui.close();
+    } else {
+        ui.data_mut(|d| d.insert_temp(name_id, name));
+    }
+    ui.separator();
+    let pin_label = if tab.pinned { "Unpin tab" } else { "Pin tab" };
+    if ui.button(pin_label).clicked() {
+        return_action = Some(TabAction::TogglePin(i));
+        ui.close();
+    }
+    if is_sql && ui.button("Duplicate").clicked() {
+        return_action = Some(TabAction::Duplicate(i));
+        ui.close();
+    }
+    if ui.add_enabled(n > 1, egui::Button::new("Close others")).clicked() {
+        return_action = Some(TabAction::CloseOthers(i, false));
+        ui.close();
+    }
+    if ui
+        .add_enabled(i + 1 < n, egui::Button::new("Close tabs to the right"))
+        .clicked()
+    {
+        return_action = Some(TabAction::CloseOthers(i, true));
+        ui.close();
+    }
+    let split_label = if split_on {
+        "Move to the other pane"
+    } else {
+        "Split right"
+    };
+    if ui
+        .add_enabled(
+            split_on || can_split,
+            egui::Button::new(split_label).shortcut_text("Ctrl+\\"),
+        )
+        .clicked()
+    {
+        return_action = Some(TabAction::Split(i));
+        ui.close();
+    }
+    if split_on && ui.button("Close split view").clicked() {
+        return_action = Some(TabAction::CloseSplit);
+        ui.close();
+    }
+    if ui
+        .add_enabled(
+            closed,
+            egui::Button::new("Reopen closed tab").shortcut_text("Ctrl+Shift+T"),
+        )
+        .clicked()
+    {
+        return_action = Some(TabAction::Reopen);
+        ui.close();
+    }
+    return_action
+}
+
+/// The list at the end of an overflowing strip: every tab of the pane, to pick one.
+fn all_tabs_menu(ui: &mut egui::Ui, tabs: &[Tab], side: Option<bool>, sel: Option<usize>) -> Option<usize> {
+    let t = theme::tokens();
+    let mut pick = None;
+    let list = theme::icon(icon::CARET_DOWN).color(t.muted_foreground);
+    ui.menu_button(list, |ui| {
+        egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
+            for (i, tab) in tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| side.is_none_or(|r| t.right == r))
+            {
+                if ui.selectable_label(Some(i) == sel, &tab.title).clicked() {
+                    pick = Some(i);
+                    ui.close();
+                }
+            }
+        });
+    })
+    .response
+    .on_hover_text(format!(
+        "All {} tabs",
+        tabs.iter().filter(|t| side.is_none_or(|r| t.right == r)).count()
+    ));
+    pick
+}
+
 pub(super) enum Request {
     Structure(String, String),
     Data(String, String),
@@ -273,21 +401,7 @@ impl App {
                                     .enumerate()
                                     .filter(|(_, t)| side.is_none_or(|r| t.right == r))
                                 {
-                                    let glyph = match &tab.kind {
-                                        // A view opens like a table; its tab shows the sidebar's eye.
-                                        TabKind::Table(ts) if is_view(&ts.schema, &ts.table) => icon::EYE,
-                                        TabKind::Table(_) => icon::TABLE,
-                                        TabKind::Sql(_) => icon::CODE,
-                                        TabKind::Structure(_) => icon::TREE_STRUCTURE,
-                                        TabKind::Activity(_) => icon::PULSE,
-                                        TabKind::Design(_) => icon::PENCIL_SIMPLE,
-                                        TabKind::Search(_) => icon::MAGNIFYING_GLASS,
-                                        TabKind::History(_) => icon::CLOCK_COUNTER_CLOCKWISE,
-                                        TabKind::Diagram(_) => icon::GRAPH,
-                                        TabKind::Script(_) => icon::PLAY,
-                                        TabKind::Dump(_) => icon::DOWNLOAD_SIMPLE,
-                                        TabKind::Compare(_) => icon::GIT_DIFF,
-                                    };
+                                    let glyph = tab_glyph(tab, is_view);
                                     let shown = if app::file_dirty(tab) {
                                         format!("{} •", tab.title)
                                     } else {
@@ -308,83 +422,15 @@ impl App {
                                     if follow && Some(i) == sel {
                                         label.scroll_to_me(None);
                                     }
-                                    let is_sql = matches!(tab.kind, TabKind::Sql(_));
-                                    let closed = !self.closed.is_empty();
-                                    let split_on = self.split.is_some();
-                                    let n = self.tabs.len();
-                                    let can_split = is_sql || n > 1;
+                                    let menu = TabMenu {
+                                        index: i,
+                                        tabs: self.tabs.len(),
+                                        closed: !self.closed.is_empty(),
+                                        split_on: self.split.is_some(),
+                                    };
                                     label.context_menu(|ui| {
-                                        // Rename in place: type and press Enter.
-                                        let name_id = egui::Id::new(("tab_name", tab.id));
-                                        let mut name = ui
-                                            .data(|d| d.get_temp::<String>(name_id))
-                                            .unwrap_or_else(|| tab.title.clone());
-                                        ui.label(egui::RichText::new("Tab name").size(11.0).color(t.subtle));
-                                        let r = ui.add(TextEdit::singleline(&mut name).desired_width(200.0));
-                                        if r.lost_focus()
-                                            && ui.input(|i| i.key_pressed(Key::Enter))
-                                            && !name.trim().is_empty()
-                                        {
-                                            action = Some(TabAction::Rename(i, name.trim().to_string()));
-                                            ui.data_mut(|d| d.remove::<String>(name_id));
-                                            ui.close();
-                                        } else {
-                                            ui.data_mut(|d| d.insert_temp(name_id, name));
-                                        }
-                                        ui.separator();
-                                        let pin_label = if tab.pinned { "Unpin tab" } else { "Pin tab" };
-                                        if ui.button(pin_label).clicked() {
-                                            action = Some(TabAction::TogglePin(i));
-                                            ui.close();
-                                        }
-                                        if is_sql && ui.button("Duplicate").clicked() {
-                                            action = Some(TabAction::Duplicate(i));
-                                            ui.close();
-                                        }
-                                        if ui.add_enabled(n > 1, egui::Button::new("Close others")).clicked()
-                                        {
-                                            action = Some(TabAction::CloseOthers(i, false));
-                                            ui.close();
-                                        }
-                                        if ui
-                                            .add_enabled(
-                                                i + 1 < n,
-                                                egui::Button::new("Close tabs to the right"),
-                                            )
-                                            .clicked()
-                                        {
-                                            action = Some(TabAction::CloseOthers(i, true));
-                                            ui.close();
-                                        }
-                                        let split_label = if split_on {
-                                            "Move to the other pane"
-                                        } else {
-                                            "Split right"
-                                        };
-                                        if ui
-                                            .add_enabled(
-                                                split_on || can_split,
-                                                egui::Button::new(split_label).shortcut_text("Ctrl+\\"),
-                                            )
-                                            .clicked()
-                                        {
-                                            action = Some(TabAction::Split(i));
-                                            ui.close();
-                                        }
-                                        if split_on && ui.button("Close split view").clicked() {
-                                            action = Some(TabAction::CloseSplit);
-                                            ui.close();
-                                        }
-                                        if ui
-                                            .add_enabled(
-                                                closed,
-                                                egui::Button::new("Reopen closed tab")
-                                                    .shortcut_text("Ctrl+Shift+T"),
-                                            )
-                                            .clicked()
-                                        {
-                                            action = Some(TabAction::Reopen);
-                                            ui.close();
+                                        if let Some(a) = tab_menu(ui, tab, &menu) {
+                                            action = Some(a);
                                         }
                                     });
                                     // A pinned tab has a pin where the close button would be; clicking
@@ -422,30 +468,7 @@ impl App {
                         ui.ctx().request_repaint();
                     }
                     if hidden {
-                        let list = theme::icon(icon::CARET_DOWN).color(t.muted_foreground);
-                        ui.menu_button(list, |ui| {
-                            egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
-                                for (i, tab) in self
-                                    .tabs
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(_, t)| side.is_none_or(|r| t.right == r))
-                                {
-                                    if ui.selectable_label(Some(i) == sel, &tab.title).clicked() {
-                                        pick = Some(i);
-                                        ui.close();
-                                    }
-                                }
-                            });
-                        })
-                        .response
-                        .on_hover_text(format!(
-                            "All {} tabs",
-                            self.tabs
-                                .iter()
-                                .filter(|t| side.is_none_or(|r| t.right == r))
-                                .count()
-                        ));
+                        pick = all_tabs_menu(ui, &self.tabs, side, sel);
                     }
                 });
                 if let Some(i) = pick {
@@ -492,26 +515,32 @@ impl App {
             let before = pointer_x.and_then(before);
             self.reorder_tab(id, before, side);
         }
+        if let Some(a) = action {
+            self.apply_tab_action(a);
+        }
+        true
+    }
+
+    /// Carries out what a tab's menu or pin asked for.
+    fn apply_tab_action(&mut self, action: TabAction) {
         match action {
-            Some(TabAction::Rename(i, name)) => {
+            TabAction::Rename(i, name) => {
                 if let Some(tab) = self.tabs.get_mut(i) {
                     tab.title = name;
                     tab.renamed = true;
                 }
             }
-            Some(TabAction::Duplicate(i)) => self.duplicate_tab(i),
-            Some(TabAction::CloseOthers(i, right)) => self.close_others(i, right),
-            Some(TabAction::TogglePin(i)) => {
+            TabAction::Duplicate(i) => self.duplicate_tab(i),
+            TabAction::CloseOthers(i, right) => self.close_others(i, right),
+            TabAction::TogglePin(i) => {
                 if let Some(pinned) = self.tabs.get(i).map(|t| t.pinned) {
                     self.set_pinned(i, !pinned);
                 }
             }
-            Some(TabAction::Reopen) => self.reopen_closed_tab(),
-            Some(TabAction::Split(i)) => self.split_tab(i),
-            Some(TabAction::CloseSplit) => self.close_split(),
-            None => {}
+            TabAction::Reopen => self.reopen_closed_tab(),
+            TabAction::Split(i) => self.split_tab(i),
+            TabAction::CloseSplit => self.close_split(),
         }
-        true
     }
 
     /// Both panes of the split view, each with its own tab strip; returns the request of the one

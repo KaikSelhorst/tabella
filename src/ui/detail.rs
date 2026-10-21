@@ -200,13 +200,84 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
         cols,
         kinds,
         row,
-        row_number,
         can_edit,
+        ..
     } = *d;
     let t = theme::tokens();
-    let mut action = None;
+    let mut action = detail_header(ui, d.row_number);
+    ui.add_space(4.0);
     let info = column_info(res, cols);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            // The scroll bar floats over the content: keep the fields clear of it.
+            ui.add_space(0.0);
+            ui.set_width(ui.available_width() - SCROLL_BAR_ROOM);
+            for (ci, name) in res.columns.iter().enumerate() {
+                let value = res.rows.cell(row, ci);
+                let c = info[ci];
+                // JSON objects and arrays can be read as a tree (the default) or as text.
+                let json = value.and_then(|v| parsed_json(ui.ctx(), tab_id, ci, v));
+                let tree_id = egui::Id::new(("json_tree", tab_id, ci));
+                let as_text = ui.data(|d| d.get_temp::<bool>(tree_id)).unwrap_or(false);
+                ui.add_space(6.0);
+                let field = Field {
+                    ci,
+                    name,
+                    value,
+                    column: c,
+                };
+                if let Some(a) = field_header(ui, d, &field, json.is_some().then_some(as_text)) {
+                    action = Some(a);
+                }
+                if let Some(v) = json.filter(|_| !as_text) {
+                    egui::Frame::new()
+                        .fill(t.sidebar)
+                        .inner_margin(egui::Margin::symmetric(6, 4))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            json_tree(ui, egui::Id::new(("json", tab_id, row, ci)), None, "$", &v, 0);
+                        });
+                    continue;
+                }
+                let picked = if can_edit && kinds[ci] == ValueKind::Bool {
+                    bool_field(ui, &field)
+                } else if can_edit && let Some(c) = c.filter(|c| !c.enum_values.is_empty()) {
+                    enum_field(ui, d, &field, c)
+                } else if can_edit {
+                    text_field(ui, d, &field)
+                } else {
+                    read_only_field(ui, kinds[ci], value);
+                    None
+                };
+                if picked.is_some() {
+                    action = picked;
+                }
+            }
+            ui.add_space(8.0);
+            if can_edit {
+                ui.label(
+                    RichText::new("Edit and leave the field to save")
+                        .size(11.0)
+                        .color(t.subtle),
+                );
+            }
+        });
+    action
+}
 
+/// One column of the row, as the panel shows it.
+struct Field<'a> {
+    ci: usize,
+    name: &'a str,
+    value: Option<&'a str>,
+    column: Option<&'a ColumnInfo>,
+}
+
+/// "Row N", and the buttons to copy it or close the panel.
+fn detail_header(ui: &mut egui::Ui, row_number: usize) -> Option<DetailAction> {
+    let t = theme::tokens();
+    let mut action = None;
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("Row {row_number}")).color(t.foreground));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -227,219 +298,209 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
             }
         });
     });
-    ui.add_space(4.0);
+    action
+}
 
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            // The scroll bar floats over the content: keep the fields clear of it.
-            ui.add_space(0.0);
-            ui.set_width(ui.available_width() - SCROLL_BAR_ROOM);
-            for (ci, name) in res.columns.iter().enumerate() {
-                let value = res.rows.cell(row, ci);
-                let c = info[ci];
-                // JSON objects and arrays can be read as a tree (the default) or as text.
-                let json = value.and_then(|v| parsed_json(ui.ctx(), tab_id, ci, v));
-                let tree_id = egui::Id::new(("json_tree", tab_id, ci));
-                let as_text = ui.data(|d| d.get_temp::<bool>(tree_id)).unwrap_or(false);
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if c.is_some_and(|c| c.pk) {
-                        ui.label(theme::icon(icon::KEY).size(11.0).color(t.warning));
-                    }
-                    ui.label(RichText::new(name).size(11.0).color(t.muted_foreground));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if can_edit && let Some(fk) = c.and_then(|c| c.references.as_ref()) {
-                            let pick = egui::Button::new(
-                                theme::icon(icon::MAGNIFYING_GLASS)
-                                    .size(11.0)
-                                    .color(t.muted_foreground),
-                            )
-                            .frame(false);
-                            if ui
-                                .add(pick)
-                                .on_hover_text(format!("Pick from {}", fk.table))
-                                .clicked()
-                            {
-                                action = Some(DetailAction::PickFk(ci));
-                            }
-                        }
-                        let open = egui::Button::new(
-                            theme::icon(icon::ARROWS_OUT_SIMPLE)
-                                .size(11.0)
-                                .color(t.muted_foreground),
-                        )
-                        .frame(false);
-                        // Only where a bigger editor helps: text (JSON, long values), not numbers,
-                        // booleans or dates (Shift+Enter in the grid still opens any of them).
-                        if kinds[ci] == ValueKind::Text
-                            && ui
-                                .add(open)
-                                .on_hover_text("Open in the large editor (Shift+Enter in the grid)")
-                                .clicked()
-                        {
-                            action = Some(DetailAction::Open(ci));
-                        }
-                        // Booleans and ENUMs have NULL inside their own selector below.
-                        let nullable = c.is_none_or(|c| c.nullable);
-                        if can_edit
-                            && nullable
-                            && value.is_some()
-                            && kinds[ci] != ValueKind::Bool
-                            && c.is_none_or(|c| c.enum_values.is_empty())
-                        {
-                            let null = egui::Button::new(RichText::new("NULL").size(10.0).color(t.subtle))
-                                .frame(false);
-                            if ui.add(null).on_hover_text("Set NULL").clicked() {
-                                action = Some(DetailAction::Commit(ci, None));
-                            }
-                        }
-                        if json.is_some() {
-                            let (glyph, tip) = if as_text {
-                                (icon::TREE_VIEW, "View as tree")
-                            } else {
-                                (icon::TEXT_T, "View as text (to edit)")
-                            };
-                            let b =
-                                egui::Button::new(theme::icon(glyph).size(11.0).color(t.muted_foreground))
-                                    .frame(false);
-                            if ui.add(b).on_hover_text(tip).clicked() {
-                                ui.data_mut(|d| d.insert_temp(tree_id, !as_text));
-                            }
-                        }
-                        if let Some(c) = c {
-                            ui.label(RichText::new(&c.data_type).size(10.0).color(t.subtle));
-                        }
-                    });
-                });
-                if let Some(v) = json.filter(|_| !as_text) {
-                    egui::Frame::new()
-                        .fill(t.sidebar)
-                        .inner_margin(egui::Margin::symmetric(6, 4))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            json_tree(ui, egui::Id::new(("json", tab_id, row, ci)), None, "$", &v, 0);
-                        });
-                    continue;
-                }
-                if can_edit && kinds[ci] == ValueKind::Bool {
-                    // Segmented true | false | NULL (NULL only when the column allows it).
-                    let now = value.and_then(crate::sql::parse_bool);
-                    let nullable = c.is_none_or(|c| c.nullable);
-                    let mut options: Vec<(Option<bool>, &str)> =
-                        vec![(Some(true), "true"), (Some(false), "false")];
-                    if nullable {
-                        options.push((None, "NULL"));
-                    }
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        for (v, label) in options {
-                            let on = now == v && (v.is_some() || value.is_none());
-                            let color = match (on, v) {
-                                (false, _) => t.subtle,
-                                (true, Some(true)) => t.boolean,
-                                (true, Some(false)) => t.foreground,
-                                (true, None) => t.muted_foreground,
-                            };
-                            let mut text = RichText::new(label).monospace().size(12.0).color(color);
-                            if v.is_none() {
-                                text = text.italics();
-                            }
-                            let button = egui::Button::new(text)
-                                .selected(on)
-                                .min_size(egui::vec2(64.0, 24.0));
-                            if ui.add(button).clicked() && !on {
-                                action = Some(DetailAction::Commit(ci, v.map(|b| b.to_string())));
-                            }
-                        }
-                    });
-                } else if can_edit && let Some(c) = c.filter(|c| !c.enum_values.is_empty()) {
-                    // An ENUM: pick one of its values (NULL when the column allows it).
-                    let mut chosen: Option<Option<String>> = None;
-                    let shown = value.unwrap_or("NULL");
-                    egui::ComboBox::from_id_salt(("enum", tab_id, row, ci))
-                        .selected_text(RichText::new(shown).monospace().size(12.0))
-                        .width(ui.available_width())
-                        .show_ui(ui, |ui| {
-                            for v in &c.enum_values {
-                                let on = value == Some(v.as_str());
-                                if ui.selectable_label(on, RichText::new(v).monospace()).clicked() && !on {
-                                    chosen = Some(Some(v.clone()));
-                                }
-                            }
-                            if c.nullable {
-                                let on = value.is_none();
-                                let null = RichText::new("NULL").monospace().italics().color(t.subtle);
-                                if ui.selectable_label(on, null).clicked() && !on {
-                                    chosen = Some(None);
-                                }
-                            }
-                        });
-                    if let Some(v) = chosen {
-                        action = Some(DetailAction::Commit(ci, v));
-                    }
-                } else if can_edit {
-                    // The buffer is keyed by the row and current value, so it resets after the row
-                    // is refreshed or another one is shown.
-                    let key = egui::Id::new((row, value));
-                    let original = value.unwrap_or_default().to_owned();
-                    let mut text = ui
-                        .data_mut(|d| {
-                            let c = d.get_temp_mut_or_default::<DetailCache>(cache_id(tab_id));
-                            c.text.get(&ci).filter(|(k, _)| *k == key).map(|(_, t)| t.clone())
-                        })
-                        .unwrap_or_else(|| original.clone());
-                    let long = original.len() > LONG_VALUE || original.contains('\n');
-                    let edit = if long {
-                        TextEdit::multiline(&mut text).desired_rows(3)
-                    } else {
-                        TextEdit::singleline(&mut text)
-                    };
-                    let r = ui.add(
-                        edit.font(FontId::monospace(12.0))
-                            .hint_text(if value.is_none() { "NULL" } else { "" })
-                            .desired_width(f32::INFINITY),
-                    );
-                    if r.lost_focus() && text != original {
-                        action = Some(DetailAction::Commit(ci, Some(text.clone())));
-                    }
-                    ui.data_mut(|d| {
-                        let c = d.get_temp_mut_or_default::<DetailCache>(cache_id(tab_id));
-                        c.text.insert(ci, (key, text));
-                    });
-                } else {
-                    let shown = match value {
-                        Some(v) => RichText::new(display_value(kinds[ci], v))
-                            .monospace()
-                            .size(12.0)
-                            .color(if kinds[ci] == ValueKind::Number {
-                                t.number
-                            } else {
-                                t.foreground
-                            }),
-                        None => RichText::new("NULL")
-                            .monospace()
-                            .size(12.0)
-                            .italics()
-                            .color(t.subtle),
-                    };
-                    egui::Frame::new()
-                        .fill(t.sidebar)
-                        .inner_margin(egui::Margin::symmetric(6, 3))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.add(egui::Label::new(shown).wrap().selectable(true));
-                        });
+/// A field's name, key icon and type, with its buttons: pick a foreign key, open in the large
+/// editor, set NULL, tree or text (`json`: whether it shows as text, for JSON values).
+fn field_header(ui: &mut egui::Ui, d: &DetailRow, f: &Field, json: Option<bool>) -> Option<DetailAction> {
+    let t = theme::tokens();
+    let (ci, value, c, can_edit, kinds) = (f.ci, f.value, f.column, d.can_edit, d.kinds);
+    let name = f.name;
+    let tree_id = egui::Id::new(("json_tree", d.tab_id, ci));
+    let as_text = json.unwrap_or(false);
+    let mut action = None;
+    ui.horizontal(|ui| {
+        if c.is_some_and(|c| c.pk) {
+            ui.label(theme::icon(icon::KEY).size(11.0).color(t.warning));
+        }
+        ui.label(RichText::new(name).size(11.0).color(t.muted_foreground));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if can_edit && let Some(fk) = c.and_then(|c| c.references.as_ref()) {
+                let pick = egui::Button::new(
+                    theme::icon(icon::MAGNIFYING_GLASS)
+                        .size(11.0)
+                        .color(t.muted_foreground),
+                )
+                .frame(false);
+                if ui
+                    .add(pick)
+                    .on_hover_text(format!("Pick from {}", fk.table))
+                    .clicked()
+                {
+                    action = Some(DetailAction::PickFk(ci));
                 }
             }
-            ui.add_space(8.0);
-            if can_edit {
-                ui.label(
-                    RichText::new("Edit and leave the field to save")
-                        .size(11.0)
-                        .color(t.subtle),
-                );
+            let open = egui::Button::new(
+                theme::icon(icon::ARROWS_OUT_SIMPLE)
+                    .size(11.0)
+                    .color(t.muted_foreground),
+            )
+            .frame(false);
+            // Only where a bigger editor helps: text (JSON, long values), not numbers,
+            // booleans or dates (Shift+Enter in the grid still opens any of them).
+            if kinds[ci] == ValueKind::Text
+                && ui
+                    .add(open)
+                    .on_hover_text("Open in the large editor (Shift+Enter in the grid)")
+                    .clicked()
+            {
+                action = Some(DetailAction::Open(ci));
+            }
+            // Booleans and ENUMs have NULL inside their own selector below.
+            let nullable = c.is_none_or(|c| c.nullable);
+            if can_edit
+                && nullable
+                && value.is_some()
+                && kinds[ci] != ValueKind::Bool
+                && c.is_none_or(|c| c.enum_values.is_empty())
+            {
+                let null = egui::Button::new(RichText::new("NULL").size(10.0).color(t.subtle)).frame(false);
+                if ui.add(null).on_hover_text("Set NULL").clicked() {
+                    action = Some(DetailAction::Commit(ci, None));
+                }
+            }
+            if json.is_some() {
+                let (glyph, tip) = if as_text {
+                    (icon::TREE_VIEW, "View as tree")
+                } else {
+                    (icon::TEXT_T, "View as text (to edit)")
+                };
+                let b =
+                    egui::Button::new(theme::icon(glyph).size(11.0).color(t.muted_foreground)).frame(false);
+                if ui.add(b).on_hover_text(tip).clicked() {
+                    ui.data_mut(|d| d.insert_temp(tree_id, !as_text));
+                }
+            }
+            if let Some(c) = c {
+                ui.label(RichText::new(&c.data_type).size(10.0).color(t.subtle));
             }
         });
+    });
     action
+}
+
+/// Segmented true | false | NULL (NULL only when the column allows it).
+fn bool_field(ui: &mut egui::Ui, f: &Field) -> Option<DetailAction> {
+    let t = theme::tokens();
+    let (ci, value, c) = (f.ci, f.value, f.column);
+    let mut action = None;
+    let now = value.and_then(crate::sql::parse_bool);
+    let nullable = c.is_none_or(|c| c.nullable);
+    let mut options: Vec<(Option<bool>, &str)> = vec![(Some(true), "true"), (Some(false), "false")];
+    if nullable {
+        options.push((None, "NULL"));
+    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (v, label) in options {
+            let on = now == v && (v.is_some() || value.is_none());
+            let color = match (on, v) {
+                (false, _) => t.subtle,
+                (true, Some(true)) => t.boolean,
+                (true, Some(false)) => t.foreground,
+                (true, None) => t.muted_foreground,
+            };
+            let mut text = RichText::new(label).monospace().size(12.0).color(color);
+            if v.is_none() {
+                text = text.italics();
+            }
+            let button = egui::Button::new(text)
+                .selected(on)
+                .min_size(egui::vec2(64.0, 24.0));
+            if ui.add(button).clicked() && !on {
+                action = Some(DetailAction::Commit(ci, v.map(|b| b.to_string())));
+            }
+        }
+    });
+    action
+}
+
+/// An ENUM: pick one of its values (NULL when the column allows it).
+fn enum_field(ui: &mut egui::Ui, d: &DetailRow, f: &Field, c: &ColumnInfo) -> Option<DetailAction> {
+    let t = theme::tokens();
+    let (ci, value, tab_id, row) = (f.ci, f.value, d.tab_id, d.row);
+    let mut chosen: Option<Option<String>> = None;
+    let shown = value.unwrap_or("NULL");
+    egui::ComboBox::from_id_salt(("enum", tab_id, row, ci))
+        .selected_text(RichText::new(shown).monospace().size(12.0))
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for v in &c.enum_values {
+                let on = value == Some(v.as_str());
+                if ui.selectable_label(on, RichText::new(v).monospace()).clicked() && !on {
+                    chosen = Some(Some(v.clone()));
+                }
+            }
+            if c.nullable {
+                let on = value.is_none();
+                let null = RichText::new("NULL").monospace().italics().color(t.subtle);
+                if ui.selectable_label(on, null).clicked() && !on {
+                    chosen = Some(None);
+                }
+            }
+        });
+    chosen.map(|v| DetailAction::Commit(ci, v))
+}
+
+/// Free text, saved when the field loses focus with another value.
+fn text_field(ui: &mut egui::Ui, d: &DetailRow, f: &Field) -> Option<DetailAction> {
+    let (ci, value, tab_id, row) = (f.ci, f.value, d.tab_id, d.row);
+    let mut action = None;
+    // The buffer is keyed by the row and current value, so it resets after the row
+    // is refreshed or another one is shown.
+    let key = egui::Id::new((row, value));
+    let original = value.unwrap_or_default().to_owned();
+    let mut text = ui
+        .data_mut(|d| {
+            let c = d.get_temp_mut_or_default::<DetailCache>(cache_id(tab_id));
+            c.text.get(&ci).filter(|(k, _)| *k == key).map(|(_, t)| t.clone())
+        })
+        .unwrap_or_else(|| original.clone());
+    let long = original.len() > LONG_VALUE || original.contains('\n');
+    let edit = if long {
+        TextEdit::multiline(&mut text).desired_rows(3)
+    } else {
+        TextEdit::singleline(&mut text)
+    };
+    let r = ui.add(
+        edit.font(FontId::monospace(12.0))
+            .hint_text(if value.is_none() { "NULL" } else { "" })
+            .desired_width(f32::INFINITY),
+    );
+    if r.lost_focus() && text != original {
+        action = Some(DetailAction::Commit(ci, Some(text.clone())));
+    }
+    ui.data_mut(|d| {
+        let c = d.get_temp_mut_or_default::<DetailCache>(cache_id(tab_id));
+        c.text.insert(ci, (key, text));
+    });
+    action
+}
+
+/// A value that can't be edited here, selectable for copying.
+fn read_only_field(ui: &mut egui::Ui, kind: ValueKind, value: Option<&str>) {
+    let t = theme::tokens();
+    let shown = match value {
+        Some(v) => RichText::new(display_value(kind, v))
+            .monospace()
+            .size(12.0)
+            .color(if kind == ValueKind::Number {
+                t.number
+            } else {
+                t.foreground
+            }),
+        None => RichText::new("NULL")
+            .monospace()
+            .size(12.0)
+            .italics()
+            .color(t.subtle),
+    };
+    egui::Frame::new()
+        .fill(t.sidebar)
+        .inner_margin(egui::Margin::symmetric(6, 3))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(egui::Label::new(shown).wrap().selectable(true));
+        });
 }

@@ -31,7 +31,6 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let status = status_text(tab, s.cfg.read_only);
     let busy = tab.busy();
     let rows = tab.result.as_ref().map_or(0, |r| r.rows.len());
-    let full = rows >= page_size();
     let can_export = !busy && tab.result.as_ref().is_some_and(|r| !r.columns.is_empty());
     let mut export = None;
     let mut show_structure = false;
@@ -44,51 +43,9 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let mut view_source = false;
 
     let t = theme::tokens();
-    let bar = egui::Frame::new()
-        .fill(t.sidebar)
-        .inner_margin(egui::Margin::symmetric(8, 2));
-    egui::Panel::bottom(egui::Id::new(("pager", tab.id)))
-        .frame(bar)
-        .show(ui, |ui| {
-            ui.spacing_mut().interact_size.y = 20.0;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(status).small().color(t.muted_foreground));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let next = egui::Button::new(theme::icon(icon::CARET_RIGHT)).frame(false);
-                    if ui.add_enabled(full, next).clicked() {
-                        ts.page += 1;
-                        reload_now = true;
-                    }
-                    let first = ts.page * page_size() + 1;
-                    let range = if rows == 0 {
-                        "0".to_string()
-                    } else {
-                        format!("{first}–{}", first + rows - 1)
-                    };
-                    // Exact total when we have it, the planner's estimate otherwise.
-                    let of = match (ts.total, ts.estimate) {
-                        (Some(n), _) => format!(" of {}", palette::format_count(n)),
-                        (None, Some(n)) if ts.filter.trim().is_empty() => {
-                            format!(" of ~{}", palette::format_count(n))
-                        }
-                        _ => String::new(),
-                    };
-                    ui.label(
-                        egui::RichText::new(format!("{range}{of}"))
-                            .small()
-                            .color(t.muted_foreground),
-                    );
-                    let prev = egui::Button::new(theme::icon(icon::CARET_LEFT)).frame(false);
-                    if ui.add_enabled(ts.page > 0, prev).clicked() {
-                        ts.page -= 1;
-                        reload_now = true;
-                    }
-                    if busy {
-                        busy_indicator(ui, s, tab_id);
-                    }
-                });
-            });
-        });
+    if pager(ui, ts, status, rows, busy, s, tab_id) {
+        reload_now = true;
+    }
 
     let toolbar = egui::Frame::new()
         .fill(t.background)
@@ -160,60 +117,21 @@ pub(super) fn table_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     ts.page = 0;
                     reload_now = true;
                 }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let start = ui.cursor().right();
-                    if is_view {
-                        let code =
-                            theme::tool(icon::CODE, "View code", compact, t.muted_foreground, t.foreground);
-                        view_source = ui
-                            .button(code)
-                            .on_hover_text("The view's definition, in the editor")
-                            .clicked();
-                    } else {
-                        add_record = ui
-                            .add_enabled(
-                                !s.cfg.read_only,
-                                theme::primary_button(Some(icon::PLUS), if compact { "" } else { "Record" }),
-                            )
-                            .on_hover_text("New record")
-                            .on_disabled_hover_text("Read-only connection")
-                            .clicked();
-                    }
-                    if ui
-                        .button(theme::icon(icon::ARROWS_CLOCKWISE))
-                        .on_hover_text("Reload (F5)")
-                        .clicked()
-                    {
-                        reload_now = true;
-                    }
-                    detail_toggle(ui, cx.show_detail);
-                    export = export_menu(ui, true, can_export, compact);
-                    import_csv = !is_view
-                        && ui
-                            .add_enabled(
-                                !s.cfg.read_only,
-                                egui::Button::new(theme::icon(icon::UPLOAD_SIMPLE).color(t.muted_foreground)),
-                            )
-                            .on_hover_text("Import CSV or Excel (or drag the file onto the window)")
-                            .on_disabled_hover_text("Read-only connection")
-                            .clicked();
-                    let structure = theme::tool(
-                        icon::TREE_STRUCTURE,
-                        "Structure",
-                        compact,
-                        t.muted_foreground,
-                        t.foreground,
-                    );
-                    show_structure = ui
-                        .button(structure)
-                        .on_hover_text("Structure · columns, indexes and DDL")
-                        .clicked();
-                    let used = start - ui.cursor().right();
-                    ui.data_mut(|d| d.insert_temp(right_id, used));
-                    if !compact {
-                        ui.data_mut(|d| d.insert_temp(full_id, used));
-                    }
-                });
+                let b = toolbar_buttons(
+                    ui,
+                    is_view,
+                    s.cfg.read_only,
+                    compact,
+                    can_export,
+                    cx.show_detail,
+                    tab_id,
+                );
+                view_source = b.view_source;
+                add_record = b.add_record;
+                reload_now |= b.reload;
+                export = b.export;
+                import_csv = b.import;
+                show_structure = b.structure;
             })
         });
     if show_structure {
@@ -498,4 +416,148 @@ pub(super) fn filters_menu(
     .response
     .on_hover_text("Saved filters");
     action
+}
+
+/// The pager at the bottom: status, the page's rows of the total, previous and next. Returns
+/// whether the page changed (to reload).
+fn pager(
+    ui: &mut egui::Ui,
+    ts: &mut app::TableState,
+    status: String,
+    rows: usize,
+    busy: bool,
+    s: &Session,
+    tab_id: u64,
+) -> bool {
+    let t = theme::tokens();
+    let full = rows >= page_size();
+    let mut reload_now = false;
+    let bar = egui::Frame::new()
+        .fill(t.sidebar)
+        .inner_margin(egui::Margin::symmetric(8, 2));
+    egui::Panel::bottom(egui::Id::new(("pager", tab_id)))
+        .frame(bar)
+        .show(ui, |ui| {
+            ui.spacing_mut().interact_size.y = 20.0;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(status).small().color(t.muted_foreground));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let next = egui::Button::new(theme::icon(icon::CARET_RIGHT)).frame(false);
+                    if ui.add_enabled(full, next).clicked() {
+                        ts.page += 1;
+                        reload_now = true;
+                    }
+                    let first = ts.page * page_size() + 1;
+                    let range = if rows == 0 {
+                        "0".to_string()
+                    } else {
+                        format!("{first}–{}", first + rows - 1)
+                    };
+                    // Exact total when we have it, the planner's estimate otherwise.
+                    let of = match (ts.total, ts.estimate) {
+                        (Some(n), _) => format!(" of {}", palette::format_count(n)),
+                        (None, Some(n)) if ts.filter.trim().is_empty() => {
+                            format!(" of ~{}", palette::format_count(n))
+                        }
+                        _ => String::new(),
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{range}{of}"))
+                            .small()
+                            .color(t.muted_foreground),
+                    );
+                    let prev = egui::Button::new(theme::icon(icon::CARET_LEFT)).frame(false);
+                    if ui.add_enabled(ts.page > 0, prev).clicked() {
+                        ts.page -= 1;
+                        reload_now = true;
+                    }
+                    if busy {
+                        busy_indicator(ui, s, tab_id);
+                    }
+                });
+            });
+        });
+    reload_now
+}
+
+/// What the table toolbar's buttons were clicked for.
+#[derive(Default)]
+struct ToolbarButtons {
+    add_record: bool,
+    view_source: bool,
+    reload: bool,
+    export: Option<ExportChoice>,
+    import: bool,
+    structure: bool,
+}
+
+/// The right end of the table toolbar: Record (or View code), reload, detail panel, export,
+/// import and structure. Remembers the width it took, for the filter to fit next frame.
+fn toolbar_buttons(
+    ui: &mut egui::Ui,
+    is_view: bool,
+    read_only: bool,
+    compact: bool,
+    can_export: bool,
+    show_detail: &mut bool,
+    tab_id: u64,
+) -> ToolbarButtons {
+    let t = theme::tokens();
+    let right_id = egui::Id::new(("toolbar_right", tab_id));
+    let full_id = egui::Id::new(("toolbar_right_full", tab_id));
+    let mut b = ToolbarButtons::default();
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        let start = ui.cursor().right();
+        if is_view {
+            let code = theme::tool(icon::CODE, "View code", compact, t.muted_foreground, t.foreground);
+            b.view_source = ui
+                .button(code)
+                .on_hover_text("The view's definition, in the editor")
+                .clicked();
+        } else {
+            b.add_record = ui
+                .add_enabled(
+                    !read_only,
+                    theme::primary_button(Some(icon::PLUS), if compact { "" } else { "Record" }),
+                )
+                .on_hover_text("New record")
+                .on_disabled_hover_text("Read-only connection")
+                .clicked();
+        }
+        if ui
+            .button(theme::icon(icon::ARROWS_CLOCKWISE))
+            .on_hover_text("Reload (F5)")
+            .clicked()
+        {
+            b.reload = true;
+        }
+        detail_toggle(ui, show_detail);
+        b.export = export_menu(ui, true, can_export, compact);
+        b.import = !is_view
+            && ui
+                .add_enabled(
+                    !read_only,
+                    egui::Button::new(theme::icon(icon::UPLOAD_SIMPLE).color(t.muted_foreground)),
+                )
+                .on_hover_text("Import CSV or Excel (or drag the file onto the window)")
+                .on_disabled_hover_text("Read-only connection")
+                .clicked();
+        let structure = theme::tool(
+            icon::TREE_STRUCTURE,
+            "Structure",
+            compact,
+            t.muted_foreground,
+            t.foreground,
+        );
+        b.structure = ui
+            .button(structure)
+            .on_hover_text("Structure · columns, indexes and DDL")
+            .clicked();
+        let used = start - ui.cursor().right();
+        ui.data_mut(|d| d.insert_temp(right_id, used));
+        if !compact {
+            ui.data_mut(|d| d.insert_temp(full_id, used));
+        }
+    });
+    b
 }
