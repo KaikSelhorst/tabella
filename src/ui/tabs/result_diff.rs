@@ -164,7 +164,7 @@ fn cached_diff(
 
 /// Wide enough for the name and the first values (a changed cell shows both sides).
 fn column_widths(d: &ResultDiff, a: &QueryResult, b: &QueryResult) -> Vec<f32> {
-    let len = |v: Option<&Option<String>>| v.and_then(|v| v.as_deref()).map_or(4, |s| s.chars().count());
+    let len = |v: Option<Option<&str>>| v.flatten().map_or(4, |s| s.chars().count());
     d.columns
         .iter()
         .enumerate()
@@ -217,7 +217,7 @@ fn row_ui(ui: &mut egui::Ui, d: &ResultDiff, a: &QueryResult, b: &QueryResult, r
     );
     let font = egui::FontId::monospace(12.0);
     let piece =
-        |job: &mut egui::text::LayoutJob, v: Option<&Option<String>>, color: egui::Color32, strike: bool| {
+        |job: &mut egui::text::LayoutJob, v: Option<Option<&str>>, color: egui::Color32, strike: bool| {
             let (text, color, italics) = match v {
                 None => ("—".to_string(), t.subtle, false),
                 Some(None) => ("NULL".to_string(), t.subtle, true),

@@ -49,7 +49,7 @@ pub(super) fn table_tab() -> Tab {
     let mut tab = Tab::new(1, "t".into(), TabKind::Table(Box::new(ts)));
     tab.result = Some(QueryResult {
         columns: vec!["id".into(), "active".into(), "name".into()],
-        rows: vec![vec![Some("7".into()), Some("f".into()), Some("anna".into())]],
+        rows: vec![vec![Some("7".into()), Some("f".into()), Some("anna".into())]].into(),
         ..Default::default()
     });
     tab
@@ -198,8 +198,7 @@ fn paste_fills_cells_from_the_selection_and_copy_takes_the_range() {
     let (s, _jobs, _replies) = fake_session(Kind::Postgres);
     let mut tab = table_tab();
     if let Some(r) = &mut tab.result {
-        r.rows
-            .push(vec![Some("8".into()), Some("t".into()), Some("beth".into())]);
+        r.rows.push([Some("8"), Some("t"), Some("beth")]);
     }
     handle_grid_event(&mut tab, &s, GridEvent::Select(0, 1), true);
     // Two rows of (active, name) from a spreadsheet; the third column overflows the page.
@@ -287,10 +286,8 @@ fn bulk_edits_on_a_selection() {
     let (s, _jobs, _replies) = fake_session(Kind::Postgres);
     let mut tab = table_tab();
     if let Some(r) = &mut tab.result {
-        r.rows
-            .push(vec![Some("8".into()), Some("t".into()), Some("beth".into())]);
-        r.rows
-            .push(vec![Some("9".into()), Some("f".into()), Some("cole".into())]);
+        r.rows.push([Some("8"), Some("t"), Some("beth")]);
+        r.rows.push([Some("9"), Some("f"), Some("cole")]);
     }
     let sets = |tab: &Tab| -> Vec<(Vec<Option<String>>, String, Option<String>)> {
         let TabKind::Table(ts) = &tab.kind else { panic!() };

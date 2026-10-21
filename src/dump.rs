@@ -153,7 +153,7 @@ fn write_dump(
                 let q = k.qualified(&o.schema, &o.name);
                 let r = conn.query(&format!("SELECT last_value, is_called FROM {q}"))?;
                 if let Some(row) = r.rows.first()
-                    && let (Some(v), Some(called)) = (&row[0], &row[1])
+                    && let (Some(v), Some(called)) = (row.cell(0), row.cell(1))
                 {
                     let called = if called == "t" { "true" } else { "false" };
                     out.line(&format!("SELECT setval({}, {v}, {called});", k.quote_str(&q)))?;
@@ -215,12 +215,12 @@ fn write_dump(
                         k.quote_str(name)
                     );
                     let seq = conn.query(&format!("SELECT {target}"))?;
-                    let Some(Some(seq)) = seq.rows.first().map(|r| r[0].clone()) else {
+                    let Some(Some(seq)) = seq.rows.first().map(|r| r.cell(0).map(str::to_owned)) else {
                         continue;
                     };
                     let now = conn.query(&format!("SELECT last_value, is_called FROM {seq}"))?;
                     if let Some(row) = now.rows.first()
-                        && let (Some(v), Some(called)) = (&row[0], &row[1])
+                        && let (Some(v), Some(called)) = (row.cell(0), row.cell(1))
                     {
                         let called = if called == "t" { "true" } else { "false" };
                         tail.push(format!("SELECT setval({target}, {v}, {called});"));
@@ -389,13 +389,14 @@ fn table_rows(
         if keyset && let Some(last) = chunk.rows.last() {
             let key: Vec<String> = pk_at
                 .iter()
-                .map(|&i| last[i].as_deref().map_or("NULL".into(), |v| k.quote_str(v)))
+                .map(|&i| last.cell(i).map_or("NULL".into(), |v| k.quote_str(v)))
                 .collect();
             after = Some(key.join(", "));
         }
         for rows in chunk.rows.chunks(ROWS_PER_INSERT) {
             out.line(&format!("INSERT INTO {qualified} ({names}){overriding} VALUES"))?;
-            for (i, row) in rows.iter().enumerate() {
+            let n = rows.len();
+            for (i, row) in rows.enumerate() {
                 let vals: Vec<String> = row
                     .iter()
                     .zip(&binary)
@@ -405,7 +406,7 @@ fn table_rows(
                         Some(v) => k.quote_str(v),
                     })
                     .collect();
-                let end = if i + 1 == rows.len() { ";" } else { "," };
+                let end = if i + 1 == n { ";" } else { "," };
                 out.line(&format!("  ({}){end}", vals.join(", ")))?;
             }
         }
@@ -554,7 +555,7 @@ mod tests {
         .into();
         let mut c = Conn::connect(&cfg, None).expect("connect");
         let q = |c: &mut Conn, sql: &str| c.query(sql).unwrap_or_else(|e| panic!("{kind:?}: {sql}: {e}"));
-        let one = |c: &mut Conn, sql: &str| q(c, sql).rows[0][0].clone().unwrap_or_default();
+        let one = |c: &mut Conn, sql: &str| q(c, sql).rows.cell(0, 0).map(str::to_owned).unwrap_or_default();
         let schema = "dbl_dump";
         let setup = match kind {
             Kind::Postgres => vec![
@@ -797,7 +798,7 @@ mod tests {
             let a = src.query(&check).unwrap().rows;
             let b = dst.query(&check).unwrap().rows;
             assert_eq!(a, b, "{q}");
-            eprintln!("{q}: {:?} ok", a[0][0]);
+            eprintln!("{q}: {:?} ok", a.cell(0, 0));
         }
         drop(dst);
         src.query("DROP DATABASE dbl_restore").unwrap();
@@ -810,7 +811,14 @@ mod tests {
     fn round_trip_sqlite() {
         let cfg = crate::sqlite::tests::sample_db("dump-src");
         let mut c = Conn::connect(&cfg, None).unwrap();
-        let one = |c: &mut Conn, sql: &str| c.query(sql).unwrap().rows[0][0].clone().unwrap_or_default();
+        let one = |c: &mut Conn, sql: &str| {
+            c.query(sql)
+                .unwrap()
+                .rows
+                .cell(0, 0)
+                .map(str::to_owned)
+                .unwrap_or_default()
+        };
         let fingerprint = |c: &mut Conn| {
             vec![
                 one(

@@ -421,7 +421,8 @@ fn index_advice_shot() {
             ["8120", "91234.5", "11.23", "162400", q]
                 .map(|v| Some(v.to_string()))
                 .to_vec(),
-        ],
+        ]
+        .into(),
         ..Default::default()
     };
     let plans = crate::advisor::parse(q).unwrap();
@@ -531,7 +532,8 @@ fn detail_panel_shot() {
             Some(format!(
                 r#"{{"key_with_long_name_here":"{long}","items":[1,2,3]}}"#
             )),
-        ]],
+        ]]
+        .into(),
         ..Default::default()
     });
     state.tabs[0].selected = Some((0, 0));
@@ -776,7 +778,8 @@ fn screenshots() {
                     "UPDATE customers SET balance = 0 WHERE id = 7",
                 ),
                 row("4203", "idle", "00:12:55", "SELECT 1"),
-            ],
+            ]
+            .into(),
             affected: None,
             truncated: false,
             elapsed: Duration::from_millis(2),
@@ -1019,7 +1022,7 @@ fn screenshots() {
             rows: vec![vec![
                 Some("7".into()),
                 Some(r#"{"page": "/product/42", "browser": "firefox", "items": [{"sku": "A-1", "price": 19.9}, {"sku": "B-2", "price": 5}], "coupon": null, "new": true}"#.into()),
-            ]],
+            ]].into(),
             ..Default::default()
         });
         state.tabs[1].selected = Some((0, 1));
@@ -1842,17 +1845,24 @@ fn screenshots() {
         ed.pin(&before, None);
         ed.comparing = true;
         let mut now = before.clone();
-        now.rows[2][4] = Some("150.00".into());
-        now.rows[6][3] = Some("f".into());
-        now.rows[9][1] = Some("Customer Ten".into());
-        now.rows.remove(4);
-        now.rows.push(vec![
-            Some("41".into()),
-            Some("Customer 41".into()),
-            Some("new@example.com".into()),
-            Some("t".into()),
+        now.rows.set(2, 4, Some("150.00"));
+        now.rows.set(6, 3, Some("f"));
+        now.rows.set(9, 1, Some("Customer Ten"));
+        // Row 4 gone.
+        now.rows = now
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 4)
+            .map(|(_, r)| r.to_vec())
+            .collect();
+        now.rows.push([
+            Some("41"),
+            Some("Customer 41"),
+            Some("new@example.com"),
+            Some("t"),
             None,
-            Some("2026-10-14 09:00:00".into()),
+            Some("2026-10-14 09:00:00"),
         ]);
         now.elapsed = std::time::Duration::from_millis(4);
         tab.result = Some(now);

@@ -405,12 +405,18 @@ fn big_value_editor_round_trip() {
         });
     }
     let res = tab.result.as_mut().unwrap();
-    res.rows
-        .push(vec![Some("8".into()), Some("t".into()), Some("beth".into())]);
+    res.rows.push([Some("8"), Some("t"), Some("beth")]);
     res.columns.push("data".into());
-    for (i, row) in res.rows.iter_mut().enumerate() {
-        row.push((i == 0).then(|| r#"{"price":1520.30,"tags":["a"]}"#.to_string()));
-    }
+    res.rows = res
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let mut row = row.to_vec();
+            row.push((i == 0).then(|| r#"{"price":1520.30,"tags":["a"]}"#.to_string()));
+            row
+        })
+        .collect();
     let col = res.columns.len() - 1;
     handle_grid_event(&mut tab, &s, GridEvent::OpenValue(0, col), true);
     let ve = tab.value_editor.as_mut().unwrap();
@@ -499,7 +505,7 @@ fn foreign_key_cells_open_the_picker() {
     }
     app.tabs[0].result = Some(QueryResult {
         columns: vec!["id".into(), "customer_id".into(), "status_id".into()],
-        rows: vec![vec![Some("1".into()), Some("42".into()), Some("2".into())]],
+        rows: vec![vec![Some("1".into()), Some("42".into()), Some("2".into())]].into(),
         ..Default::default()
     });
     let tab = app.tabs[0].id;
@@ -539,7 +545,7 @@ fn foreign_key_cells_open_the_picker() {
                 tab,
                 search: search.into(),
                 res: Ok(QueryResult {
-                    rows,
+                    rows: rows.into(),
                     ..Default::default()
                 }),
             })
@@ -618,7 +624,8 @@ fn overlay_cache_never_shows_stale_edits() {
         rows: vec![
             vec![Some("1".into()), Some("a".into())],
             vec![Some("2".into()), Some("b".into())],
-        ],
+        ]
+        .into(),
         ..Default::default()
     };
     let set = |row: &str, v: &str| Change::Set {
@@ -629,20 +636,20 @@ fn overlay_cache_never_shows_stale_edits() {
     };
     assert!(ts.overlay(&res).is_none());
     ts.changes.push(set("1", "x"));
-    assert_eq!(ts.overlay(&res).unwrap().result.rows[0][1].as_deref(), Some("x"));
+    assert_eq!(ts.overlay(&res).unwrap().result.rows.cell(0, 1), Some("x"));
     // Same number of changes, different value.
     ts.changes[0] = set("1", "y");
-    assert_eq!(ts.overlay(&res).unwrap().result.rows[0][1].as_deref(), Some("y"));
+    assert_eq!(ts.overlay(&res).unwrap().result.rows.cell(0, 1), Some("y"));
     ts.changes.push(Change::Delete {
         key: vec![Some("2".into())],
     });
     assert!(ts.overlay(&res).unwrap().deleted.contains(&1));
     // A new result (same shape) is overlaid again.
     let mut other = res;
-    other.rows[0][1] = Some("z".into());
+    other.rows.set(0, 1, Some("z"));
     other.elapsed = std::time::Duration::from_millis(9);
     let o = ts.overlay(&other).unwrap();
-    assert_eq!(o.result.rows[0][1].as_deref(), Some("y"));
+    assert_eq!(o.result.rows.cell(0, 1), Some("y"));
     assert!(o.changed.contains(&(0, 1)));
 }
 
@@ -699,7 +706,7 @@ fn editor_results_of_one_table_become_editable() {
     let tab = app.tabs[0].id;
     let rows = QueryResult {
         columns: vec!["id".into(), "name".into(), "shout".into()],
-        rows: vec![vec![Some("7".into()), Some("anna".into()), Some("ANNA".into())]],
+        rows: vec![vec![Some("7".into()), Some("anna".into()), Some("ANNA".into())]].into(),
         ..Default::default()
     };
     replies
@@ -773,7 +780,7 @@ fn value_filter_round_trip() {
             .send(Reply::Distinct {
                 tab,
                 res: Ok(QueryResult {
-                    rows: vec![row(Some("NY"), "50"), row(Some("CA"), "30"), row(None, "2")],
+                    rows: vec![row(Some("NY"), "50"), row(Some("CA"), "30"), row(None, "2")].into(),
                     ..Default::default()
                 }),
             })

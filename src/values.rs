@@ -61,7 +61,7 @@ pub fn column_info<'a>(res: &QueryResult, cols: &'a [ColumnInfo]) -> Vec<Option<
 
 pub fn column_kinds(res: &QueryResult, cols: &[ColumnInfo]) -> Vec<ValueKind> {
     let info = column_info(res, cols);
-    let sample = &res.rows[..res.rows.len().min(SAMPLE_ROWS)];
+    let sample = res.rows.range(..res.rows.len().min(SAMPLE_ROWS));
     (0..res.columns.len())
         .map(|ci| {
             // An enum's type name says nothing about its values (`time_off_status` isn't a time).
@@ -70,7 +70,7 @@ pub fn column_kinds(res: &QueryResult, cols: &[ColumnInfo]) -> Vec<ValueKind> {
             }
             value_kind(
                 info[ci].map(|c| c.data_type.as_str()),
-                sample.iter().map(|r| r[ci].as_deref()),
+                sample.clone().map(|r| r.cell(ci)),
             )
         })
         .collect()
@@ -79,7 +79,7 @@ pub fn column_kinds(res: &QueryResult, cols: &[ColumnInfo]) -> Vec<ValueKind> {
 /// The row as a JSON object; numbers and booleans keep their JSON types.
 pub fn row_json(res: &QueryResult, cols: &[ColumnInfo], row: usize) -> String {
     let kinds = column_kinds(res, cols);
-    let obj = json_object(&res.columns, &kinds, &res.rows[row]);
+    let obj = json_object(&res.columns, &kinds, res.rows.row(row));
     serde_json::to_string_pretty(&obj).unwrap_or_default()
 }
 
@@ -87,17 +87,17 @@ pub fn row_json(res: &QueryResult, cols: &[ColumnInfo], row: usize) -> String {
 pub fn json_object(
     columns: &[String],
     kinds: &[ValueKind],
-    row: &[Option<String>],
+    row: crate::db::Row,
 ) -> serde_json::Map<String, serde_json::Value> {
     use serde_json::Value;
     let mut map = serde_json::Map::new();
     for (ci, name) in columns.iter().enumerate() {
-        let v = match (&row[ci], kinds[ci]) {
+        let v = match (row.cell(ci), kinds[ci]) {
             (None, _) => Value::Null,
-            (Some(v), ValueKind::Bool) => Value::Bool(matches!(v.as_str(), "t" | "1" | "true")),
+            (Some(v), ValueKind::Bool) => Value::Bool(matches!(v, "t" | "1" | "true")),
             (Some(v), ValueKind::Number) => serde_json::from_str::<serde_json::Number>(v)
-                .map_or_else(|_| Value::String(v.clone()), Value::Number),
-            (Some(v), _) => Value::String(v.clone()),
+                .map_or_else(|_| Value::String(v.to_owned()), Value::Number),
+            (Some(v), _) => Value::String(v.to_owned()),
         };
         map.insert(name.clone(), v);
     }
@@ -144,11 +144,11 @@ pub fn to_tsv(res: &QueryResult, range: &CellRange, headers: bool) -> String {
         out.push_str(&names.join("\t"));
         out.push('\n');
     }
-    for row in &res.rows[r0..=r1] {
+    for row in res.rows.range(r0..=r1) {
         let cells: Vec<String> = range
             .cols
             .iter()
-            .map(|&c| row[c].as_deref().map(field).unwrap_or_default())
+            .map(|&c| row.cell(c).map(field).unwrap_or_default())
             .collect();
         out.push_str(&cells.join("\t"));
         out.push('\n');
@@ -170,9 +170,10 @@ pub fn to_in_list(
     value_kind: ValueKind,
 ) -> (String, usize) {
     let mut seen = std::collections::HashSet::new();
-    let items: Vec<String> = res.rows[rows]
-        .iter()
-        .filter_map(|r| r[col].as_deref())
+    let items: Vec<String> = res
+        .rows
+        .range(rows)
+        .filter_map(|r| r.cell(col))
         .filter(|v| seen.insert(*v))
         .map(|v| {
             let plain_number = value_kind == ValueKind::Number
@@ -209,11 +210,11 @@ pub fn to_markdown(res: &QueryResult, range: &CellRange, kinds: &[ValueKind]) ->
         })
         .collect();
     let _ = writeln!(out, "| {} |", align.join(" | "));
-    for row in &res.rows[range.r0..=range.r1] {
+    for row in res.rows.range(range.r0..=range.r1) {
         let cells: Vec<String> = range
             .cols
             .iter()
-            .map(|&c| row[c].as_deref().map(cell).unwrap_or_default())
+            .map(|&c| row.cell(c).map(cell).unwrap_or_default())
             .collect();
         let _ = writeln!(out, "| {} |", cells.join(" | "));
     }
@@ -282,9 +283,9 @@ pub fn stats(res: &QueryResult, kinds: &[ValueKind], range: &CellRange) -> Stats
         values: 0,
         numbers: None,
     };
-    for row in &res.rows[range.r0..=range.r1] {
+    for row in res.rows.range(range.r0..=range.r1) {
         for &ci in &range.cols {
-            let v = &row[ci];
+            let v = row.cell(ci);
             st.cells += 1;
             let Some(v) = v else { continue };
             st.values += 1;
@@ -320,9 +321,9 @@ pub const TOP_VALUES: usize = 10;
 pub fn local_column_stats(res: &QueryResult, ci: usize, kind: ValueKind) -> ColumnStats {
     let mut counts: std::collections::HashMap<Option<&str>, i64> = std::collections::HashMap::new();
     for row in &res.rows {
-        *counts.entry(row[ci].as_deref()).or_default() += 1;
+        *counts.entry(row.cell(ci)).or_default() += 1;
     }
-    let present = || res.rows.iter().filter_map(|r| r[ci].as_deref());
+    let present = || res.rows.iter().filter_map(|r| r.cell(ci));
     let (min, max) = match kind {
         ValueKind::Number => {
             let nums = || present().filter_map(|v| v.parse::<f64>().ok().map(|n| (n, v)));
@@ -362,29 +363,21 @@ pub fn local_column_stats(res: &QueryResult, ci: usize, kind: ValueKind) -> Colu
 /// Reads the answers to `sql::column_stats` (summary row, then the top values).
 pub fn stats_from_queries(summary: &QueryResult, top: &QueryResult) -> Result<ColumnStats, String> {
     let row = summary.rows.first().ok_or("empty response")?;
-    let num = |i: usize| -> i64 {
-        row.get(i)
-            .and_then(|v| v.as_deref())
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
-    };
+    let num = |i: usize| -> i64 { row.get(i).flatten().and_then(|v| v.parse().ok()).unwrap_or(0) };
     let total = num(0);
     Ok(ColumnStats {
         total,
         nulls: total - num(1),
         distinct: num(2),
-        min: row.get(3).cloned().flatten(),
-        max: row.get(4).cloned().flatten(),
+        min: row.get(3).flatten().map(str::to_owned),
+        max: row.get(4).flatten().map(str::to_owned),
         top: top
             .rows
             .iter()
             .map(|r| {
                 (
-                    r[0].clone(),
-                    r.get(1)
-                        .and_then(|v| v.as_deref())
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0),
+                    r.cell(0).map(str::to_owned),
+                    r.get(1).flatten().and_then(|v| v.parse().ok()).unwrap_or(0),
                 )
             })
             .collect(),
@@ -535,8 +528,8 @@ impl ResultDiff {
         b: &'a QueryResult,
         row: &RowDiff,
         col: usize,
-    ) -> (Option<&'a Option<String>>, Option<&'a Option<String>>) {
-        let at = |res: &'a QueryResult, idx: Option<usize>, r: Option<usize>| Some(&res.rows[r?][idx?]);
+    ) -> (Option<Option<&'a str>>, Option<Option<&'a str>>) {
+        let at = |res: &'a QueryResult, idx: Option<usize>, r: Option<usize>| Some(res.rows.cell(r?, idx?));
         let (ra, rb) = match row {
             RowDiff::Removed(r) => (Some(*r), None),
             RowDiff::Added(r) => (None, Some(*r)),
@@ -567,23 +560,23 @@ pub fn diff_results(a: &QueryResult, b: &QueryResult, key: Option<&str>) -> Resu
     let compare = |ra: usize, rb: usize| -> Vec<usize> {
         shared
             .iter()
-            .filter(|(_, ia, ib)| a.rows[ra][*ia] != b.rows[rb][*ib])
+            .filter(|(_, ia, ib)| a.rows.cell(ra, *ia) != b.rows.cell(rb, *ib))
             .map(|(c, _, _)| *c)
             .collect()
     };
     // Pinned rows by key (several with the same key pair up in order).
     let key_cols = key.and_then(|k| Some((pos(a, &k.to_string())?, pos(b, &k.to_string())?)));
     let mut matched_a = vec![false; a.rows.len()];
-    let mut by_key: std::collections::HashMap<&Option<String>, std::collections::VecDeque<usize>> =
+    let mut by_key: std::collections::HashMap<Option<&str>, std::collections::VecDeque<usize>> =
         Default::default();
     if let Some((ka, _)) = key_cols {
         for (r, row) in a.rows.iter().enumerate() {
-            by_key.entry(&row[ka]).or_default().push_back(r);
+            by_key.entry(row.cell(ka)).or_default().push_back(r);
         }
     }
     for (rb, row) in b.rows.iter().enumerate() {
         let ra = match key_cols {
-            Some((_, kb)) => by_key.get_mut(&row[kb]).and_then(|q| q.pop_front()),
+            Some((_, kb)) => by_key.get_mut(&row.cell(kb)).and_then(|q| q.pop_front()),
             None => (rb < a.rows.len()).then_some(rb),
         };
         let Some(ra) = ra else {
@@ -621,7 +614,8 @@ mod tests {
                 vec![Some("1".into()), Some("O'Neil".into())],
                 vec![Some("2".into()), None],
                 vec![Some("1".into()), Some("a\\b".into())],
-            ],
+            ]
+            .into(),
             ..Default::default()
         };
         let (ids, n) = to_in_list(Kind::Postgres, &res, 0, 0..=2, ValueKind::Number);
@@ -646,7 +640,8 @@ mod tests {
             rows: vec![
                 vec![Some("1".into()), Some("a\tb \"c\"".into())],
                 vec![Some("2".into()), None],
-            ],
+            ]
+            .into(),
             ..Default::default()
         };
         let all = to_tsv(
@@ -706,7 +701,8 @@ mod tests {
             rows: vec![
                 vec![Some("1".into()), Some("a|b\nc".into())],
                 vec![Some("2".into()), None],
-            ],
+            ]
+            .into(),
             ..Default::default()
         };
         let all = CellRange {
@@ -728,7 +724,8 @@ mod tests {
                 vec![Some("1.5".into()), Some("a".into())],
                 vec![Some("4".into()), None],
                 vec![None, Some("b".into())],
-            ],
+            ]
+            .into(),
             ..Default::default()
         };
         let st = stats(
@@ -784,7 +781,7 @@ mod tests {
     fn json_keeps_types() {
         let res = QueryResult {
             columns: vec!["id".into(), "active".into(), "name".into()],
-            rows: vec![vec![Some("7".into()), Some("t".into()), None]],
+            rows: vec![vec![Some("7".into()), Some("t".into()), None]].into(),
             ..Default::default()
         };
         let cols = [
@@ -867,10 +864,7 @@ mod tests {
         assert_eq!(d.rows[2], RowDiff::Added(2));
         assert_eq!(d.rows[3], RowDiff::Removed(1));
         let (old, new) = d.cell(&a, &b, &d.rows[1], 1);
-        assert_eq!(
-            (old, new),
-            (Some(&Some("anna".into())), Some(&Some("ANNA".into())))
-        );
+        assert_eq!((old, new), (Some(Some("anna")), Some(Some("ANNA"))));
         // By position: row 0 against row 0, and so on.
         let p = diff_results(&a, &b, None);
         assert_eq!((p.removed, p.added, p.changed, p.same), (0, 0, 3, 0));

@@ -1308,7 +1308,11 @@ fn export(conn: &mut Conn, spec: ExportSpec) -> DbResult<(PathBuf, u64)> {
                 let chunk = conn.query(&sql)?;
                 if by_key && let Some(last) = chunk.rows.last() {
                     let at = |p: &String| chunk.columns.iter().position(|c| c == p);
-                    after = Some(pk.iter().map(|p| at(p).and_then(|i| last[i].clone())).collect());
+                    after = Some(
+                        pk.iter()
+                            .map(|p| at(p).and_then(|i| last.cell(i).map(str::to_owned)))
+                            .collect(),
+                    );
                 }
                 let w = match &mut writer {
                     Some(w) => w,
@@ -1399,7 +1403,7 @@ mod tests {
         let stmt = crate::sql::insert_values(kind, schema, "dbl_export", &values);
         assert_eq!(c.execute(&stmt).unwrap().affected, Some(1));
         let r = c.query("SELECT v FROM dbl_export WHERE id = 20000").unwrap();
-        assert_eq!(r.rows[0][0].as_deref(), Some("it's"));
+        assert_eq!(r.rows.cell(0, 0), Some("it's"));
         c.query("DROP TABLE dbl_export").unwrap();
     }
 
@@ -1420,9 +1424,13 @@ mod tests {
             .unwrap();
         other.query("INSERT INTO dbl_tx VALUES (1, 'a')").unwrap();
         let seen = |other: &mut Conn| {
-            other.query("SELECT v FROM dbl_tx WHERE id = 1").unwrap().rows[0][0]
-                .clone()
+            other
+                .query("SELECT v FROM dbl_tx WHERE id = 1")
                 .unwrap()
+                .rows
+                .cell(0, 0)
+                .unwrap()
+                .to_owned()
         };
 
         cfg.manual_commit = true;
@@ -1628,7 +1636,11 @@ mod tests {
         assert!(here.starts_with("tabella-worker"), "{here}");
         let rows = |r: Reply| match r {
             Reply::Rows { res, .. } => Some(match *res {
-                Ok(r) => r.rows.first().and_then(|row| row[0].clone()).unwrap_or_default(),
+                Ok(r) => r
+                    .rows
+                    .first()
+                    .and_then(|row| row.cell(0).map(str::to_owned))
+                    .unwrap_or_default(),
                 Err(e) => e.to_string(),
             }),
             _ => None,
@@ -1689,7 +1701,7 @@ mod tests {
         } else {
             "SELECT CONNECTION_ID()"
         };
-        let id = rows(id_sql).unwrap().rows[0][0].clone().unwrap();
+        let id = rows(id_sql).unwrap().rows.cell(0, 0).map(str::to_owned).unwrap();
         other
             .query(&if kind == Kind::Postgres {
                 format!("SELECT pg_terminate_backend({id})")
@@ -1714,7 +1726,7 @@ mod tests {
                 }
                 Reply::Rows { res, .. } => {
                     if let Ok(r) = *res {
-                        let new_id = r.rows[0][0].clone().unwrap();
+                        let new_id = r.rows.cell(0, 0).map(str::to_owned).unwrap();
                         assert!(seen && new_id != id, "{kind:?}: a new session after Reconnected");
                         return;
                     }
@@ -1902,11 +1914,7 @@ mod tests {
         assert!(bad[at..].contains("missing_tbl"), "{kind:?}: {}", &bad[at..]);
         let n = conn.query("SELECT count(*) FROM dbl_timed WHERE n = 3").unwrap();
         if pg {
-            assert_eq!(
-                n.rows[0][0].as_deref(),
-                Some("0"),
-                "Postgres rolls the whole text back"
-            );
+            assert_eq!(n.rows.cell(0, 0), Some("0"), "Postgres rolls the whole text back");
         }
         conn.query("DROP TABLE dbl_timed").unwrap();
     }
@@ -1948,7 +1956,7 @@ mod tests {
         let count = |c: &mut Conn| {
             c.query("SELECT count(*) FROM dbl_script")
                 .ok()
-                .and_then(|r| r.rows[0][0].clone())
+                .and_then(|r| r.rows.cell(0, 0).map(str::to_owned))
         };
         let run = |c: &mut Conn, text: &str, transaction: bool| {
             std::fs::write(&path, text).unwrap();
@@ -2029,7 +2037,13 @@ mod tests {
         cfg.password = "pw".into();
         cfg.database = "postgres".into();
         let mut c = Conn::connect(&cfg, None).expect("connect");
-        let timeout = |c: &mut Conn| c.query("SHOW statement_timeout").unwrap().rows[0][0].clone();
+        let timeout = |c: &mut Conn| {
+            c.query("SHOW statement_timeout")
+                .unwrap()
+                .rows
+                .cell(0, 0)
+                .map(str::to_owned)
+        };
         let before = timeout(&mut c);
         assert!(capped_read(&mut c, true, false, "SELECT 1").is_ok());
         let err = capped_read(&mut c, true, false, "SELECT pg_sleep(3)")
@@ -2044,7 +2058,7 @@ mod tests {
         c.query("INSERT INTO dbl_cap VALUES (1)").unwrap();
         c.query("COMMIT").unwrap();
         assert_eq!(
-            c.query("SELECT count(*) FROM dbl_cap").unwrap().rows[0][0].as_deref(),
+            c.query("SELECT count(*) FROM dbl_cap").unwrap().rows.cell(0, 0),
             Some("1")
         );
         assert_eq!(timeout(&mut c), before);

@@ -293,7 +293,7 @@ impl TableState {
                 res.columns
                     .iter()
                     .position(|c| c == p)
-                    .and_then(|i| res.rows[row][i].clone())
+                    .and_then(|i| res.rows.cell(row, i).map(str::to_owned))
             })
             .collect()
     }
@@ -318,13 +318,7 @@ impl TableState {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.changes.hash(&mut h);
         // The result itself: a new one has its own rows (and timing).
-        (
-            res.rows.as_ptr() as usize,
-            res.rows.len(),
-            res.columns.len(),
-            res.elapsed,
-        )
-            .hash(&mut h);
+        (res.rows.addr(), res.rows.len(), res.columns.len(), res.elapsed).hash(&mut h);
         let fingerprint = h.finish();
         if let Some((f, o)) = &*self.overlay_cache.borrow()
             && *f == fingerprint
@@ -338,10 +332,20 @@ impl TableState {
 
     fn build_overlay(&self, res: &QueryResult) -> Overlay {
         let mut out = Overlay {
-            result: res.clone(),
+            // Rows come below, with the edits in (copied once, not cell by cell).
+            result: QueryResult {
+                columns: res.columns.clone(),
+                rows: Default::default(),
+                affected: res.affected,
+                truncated: res.truncated,
+                elapsed: res.elapsed,
+                previous: Vec::new(),
+                timings: Vec::new(),
+            },
             changed: HashSet::new(),
             deleted: HashSet::new(),
         };
+        let mut edits: std::collections::HashMap<(usize, usize), Option<&str>> = Default::default();
         // Changes by row key, and where the key columns are: one pass over the rows.
         let mut by_key: std::collections::HashMap<&[Option<String>], Vec<&Change>> = Default::default();
         for c in &self.changes {
@@ -355,7 +359,11 @@ impl TableState {
         let mut key: Vec<Option<String>> = Vec::with_capacity(key_at.len());
         for row in 0..res.rows.len() {
             key.clear();
-            key.extend(key_at.iter().map(|i| i.and_then(|i| res.rows[row][i].clone())));
+            key.extend(
+                key_at
+                    .iter()
+                    .map(|i| i.and_then(|i| res.rows.cell(row, i).map(str::to_owned))),
+            );
             let Some(changes) = by_key.get(key.as_slice()) else {
                 continue;
             };
@@ -366,13 +374,14 @@ impl TableState {
                     }
                     Change::Set { col, value, .. } => {
                         if let Some(ci) = res.columns.iter().position(|n| n == col) {
-                            out.result.rows[row][ci] = value.clone();
+                            edits.insert((row, ci), value.as_deref());
                             out.changed.insert((row, ci));
                         }
                     }
                 }
             }
         }
+        out.result.rows = res.rows.map(|r, c, v| edits.get(&(r, c)).copied().unwrap_or(v));
         out
     }
 
@@ -3117,7 +3126,7 @@ pub fn open_duplicate_form(tab: &mut Tab, row: usize) {
         let Some(ci) = shown.columns.iter().position(|c| *c == f.name) else {
             continue;
         };
-        match &values[ci] {
+        match values.cell(ci) {
             Some(v) => {
                 f.mode = FieldMode::Value;
                 f.text = values::display_bool_or(f.kind, v);
@@ -3920,7 +3929,7 @@ fn set_cell(
     };
     let key = ts.row_key(res, row);
     let col_name = res.columns[col].clone();
-    let before = res.rows[row][col].clone();
+    let before = res.rows.cell(row, col).map(str::to_owned);
     ts.changes
         .retain(|c| !matches!(c, Change::Set { key: k2, col: c2, .. } if *k2 == key && *c2 == col_name));
     let same = match kinds[col] {

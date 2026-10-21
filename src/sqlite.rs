@@ -95,8 +95,7 @@ fn collect(
             out.truncated = true;
             break;
         }
-        out.rows
-            .push((0..width).map(|i| text(row.get_ref(i).ok()?)).collect());
+        out.rows.push((0..width).map(|i| text(row.get_ref(i).ok()?)));
     }
     Ok(())
 }
@@ -212,10 +211,10 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(r.previous.len(), 1);
-        assert_eq!(r.previous[0].rows, vec![vec![Some("2".into())]]);
+        assert_eq!(r.previous[0].rows, vec![vec![Some("2".into())]].into());
         assert_eq!(r.columns, ["id", "name", "price", "photo"]);
         assert_eq!(
-            r.rows[0],
+            r.rows.row(0).to_vec(),
             vec![
                 Some("1".into()),
                 Some("anna".into()),
@@ -223,7 +222,7 @@ pub(crate) mod tests {
                 Some("\\x00ff".into())
             ]
         );
-        assert_eq!(r.rows[1][2].as_deref(), Some("2.0"));
+        assert_eq!(r.rows.cell(1, 2), Some("2.0"));
         let r = query(&c, "SELECT * FROM t", 1).unwrap();
         assert!(r.truncated && r.rows.len() == 1);
         let r = exec(
@@ -332,8 +331,11 @@ pub(crate) mod tests {
         assert!(st.indexes.iter().any(|(n, _)| n == "purchase_customer"));
         // Values as the grid shows them.
         let r = c.query("SELECT total, photo FROM purchase ORDER BY id").unwrap();
-        assert_eq!(r.rows[0], vec![Some("10.5".into()), Some("\\x00ff".into())]);
-        assert_eq!(r.rows[1][0].as_deref(), Some("20.0"), "REAL stays a real number");
+        assert_eq!(
+            r.rows.row(0).to_vec(),
+            [Some("10.5".into()), Some("\\x00ff".into())]
+        );
+        assert_eq!(r.rows.cell(1, 0), Some("20.0"), "REAL stays a real number");
         // Generated SQL runs here: a page, the count, search, stats, value filter, FK picker.
         let pk = vec!["id".to_string()];
         let q = sql::PageQuery {
@@ -353,15 +355,15 @@ pub(crate) mod tests {
         assert_eq!(
             c.query(&format!("SELECT count(*) FROM purchase WHERE {found}"))
                 .unwrap()
-                .rows[0][0]
-                .as_deref(),
+                .rows
+                .cell(0, 0),
             Some("3")
         );
         let (summary, top) = sql::column_stats(k, "main", "purchase", "customer_id", "", true);
         c.query(&summary).unwrap();
         assert_eq!(
-            c.query(&top).unwrap().rows[0],
-            vec![Some("1".into()), Some("2".into())]
+            c.query(&top).unwrap().rows.row(0).to_vec(),
+            [Some("1".into()), Some("2".into())]
         );
         let expr = sql::value_expr(k, "customer_id", "INTEGER");
         assert_eq!(
@@ -374,7 +376,7 @@ pub(crate) mod tests {
         let opts = sql::fk_options(k, &fk, Some("name"), true, false, "be");
         assert_eq!(
             c.query(&opts).unwrap().rows,
-            vec![vec![Some("2".into()), Some("Beth".into())]]
+            vec![vec![Some("2".into()), Some("Beth".into())]].into()
         );
         // Grid edits: values stored verbatim, the batch all or nothing.
         for v in [r"a\", "it's", r"x\'; DROP TABLE purchase; --", "café 🚀"] {
@@ -385,7 +387,10 @@ pub(crate) mod tests {
             )
             .unwrap();
             assert_eq!(
-                c.query("SELECT name FROM customer WHERE id = 1").unwrap().rows[0][0].as_deref(),
+                c.query("SELECT name FROM customer WHERE id = 1")
+                    .unwrap()
+                    .rows
+                    .cell(0, 0),
                 Some(v)
             );
         }
@@ -396,7 +401,10 @@ pub(crate) mod tests {
         ];
         assert!(c.run_batch(&batch, false).is_err());
         assert_eq!(
-            c.query("SELECT name FROM customer WHERE id = 2").unwrap().rows[0][0].as_deref(),
+            c.query("SELECT name FROM customer WHERE id = 2")
+                .unwrap()
+                .rows
+                .cell(0, 0),
             Some("Beth")
         );
         // Foreign keys are enforced; the trigger ran.
@@ -405,7 +413,10 @@ pub(crate) mod tests {
                 .is_err()
         );
         assert_eq!(
-            c.query("SELECT note FROM purchase WHERE id = 3").unwrap().rows[0][0].as_deref(),
+            c.query("SELECT note FROM purchase WHERE id = 3")
+                .unwrap()
+                .rows
+                .cell(0, 0),
             Some("auto")
         );
         // Table actions.
@@ -452,7 +463,7 @@ pub(crate) mod tests {
                 .is_err()
         );
         assert_eq!(
-            c.query("PRAGMA trusted_schema").unwrap().rows[0][0].as_deref(),
+            c.query("PRAGMA trusted_schema").unwrap().rows.cell(0, 0),
             Some("0")
         );
         // Read-only: the file opens, writes are refused.

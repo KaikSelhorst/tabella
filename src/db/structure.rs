@@ -14,7 +14,7 @@ impl Conn {
     /// SQLite keeps each table's CREATE as written: that is the DDL. Foreign keys can't be added
     /// afterwards there, so they stay inside it (a dump turns their checks off instead).
     fn lite_structure(&mut self, table: &str) -> DbResult<TableStructure> {
-        let cell = |r: &Vec<Option<String>>, i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+        let cell = |r: Row, i: usize| r.cell(i).unwrap_or_default().to_owned();
         let cols = self.execute(
             &Stmt::new(
                 "SELECT name, type, \"notnull\" = 0 AND pk = 0, dflt_value, pk > 0, hidden \
@@ -30,14 +30,14 @@ impl Conn {
                 name: cell(r, 0),
                 data_type: cell(r, 1),
                 nullable: cell(r, 2) == "1",
-                default: r[3].clone(),
+                default: r.cell(3).map(str::to_owned),
                 pk: cell(r, 4) == "1",
             })
             .collect();
         let generated = cols
             .rows
             .iter()
-            .filter(|r| matches!(cell(r, 5).as_str(), "2" | "3"))
+            .filter(|r| matches!(cell(*r, 5).as_str(), "2" | "3"))
             .map(|r| cell(r, 0))
             .collect();
         // Indexes made by PRIMARY KEY / UNIQUE have no SQL of their own: described by columns.
@@ -133,7 +133,7 @@ impl Conn {
             .rows
             .iter()
             .map(|r| {
-                let f = |i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+                let f = |i: usize| r.cell(i).unwrap_or_default().to_owned();
                 (f(5), f(6))
             })
             .collect();
@@ -157,7 +157,7 @@ impl Conn {
              FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = ")
             .sql(" ORDER BY 1"),
         )?;
-        let cell = |r: &Vec<Option<String>>, i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+        let cell = |r: Row, i: usize| r.cell(i).unwrap_or_default().to_owned();
 
         let qualified = k.qualified(schema, table);
         let (mut generated, mut sequences, mut serial_columns) = (Vec::new(), Vec::new(), Vec::new());
@@ -196,9 +196,8 @@ impl Conn {
                 l
             })
             .collect();
-        let constraint =
-            |r: &Vec<Option<String>>| format!("CONSTRAINT {} {}", k.quote_ident(&cell(r, 0)), cell(r, 2));
-        let is_fk = |r: &&Vec<Option<String>>| r[1].as_deref() == Some("f");
+        let constraint = |r: Row| format!("CONSTRAINT {} {}", k.quote_ident(&cell(r, 0)), cell(r, 2));
+        let is_fk = |r: &Row| r.cell(1) == Some("f");
         let create = |with_fks: bool| {
             let mut all = lines.clone();
             all.extend(
@@ -209,7 +208,7 @@ impl Conn {
             );
             let mut ddl = format!("CREATE TABLE {qualified} (\n{}\n);", all.join(",\n"));
             // Indexes backing a constraint are created by it; the rest need their own statement.
-            for r in idx.rows.iter().filter(|r| r[2].as_deref() != Some("t")) {
+            for r in idx.rows.iter().filter(|r| r.cell(2) != Some("t")) {
                 let _ = write!(ddl, "\n{};", cell(r, 1));
             }
             ddl
@@ -232,7 +231,7 @@ impl Conn {
             foreign_keys: cons
                 .rows
                 .iter()
-                .filter(|r| r[1].as_deref() == Some("f"))
+                .filter(|r| r.cell(1) == Some("f"))
                 .map(|r| (cell(r, 0), cell(r, 2)))
                 .collect(),
             ddl,
@@ -253,8 +252,8 @@ impl Conn {
         let generated = cols
             .rows
             .iter()
-            .filter(|r| r[5].as_deref().is_some_and(|e| e.contains("GENERATED")))
-            .filter_map(|r| r[0].clone())
+            .filter(|r| r.cell(5).is_some_and(|e| e.contains("GENERATED")))
+            .filter_map(|r| r.cell(0).map(str::to_owned))
             .collect();
         let columns = cols
             .rows
@@ -289,7 +288,7 @@ impl Conn {
             "SHOW CREATE TABLE {}",
             Kind::MySql.qualified(schema, table)
         ))?;
-        let cell = |r: &Vec<Option<String>>, i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+        let cell = |r: Row, i: usize| r.cell(i).unwrap_or_default().to_owned();
         let ddl = create
             .rows
             .first()

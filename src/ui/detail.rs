@@ -214,11 +214,11 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
             ui.add_space(0.0);
             ui.set_width(ui.available_width() - SCROLL_BAR_ROOM);
             for (ci, name) in res.columns.iter().enumerate() {
-                let value = &res.rows[row][ci];
+                let value = res.rows.cell(row, ci);
                 let c = info[ci];
                 // JSON objects and arrays can be read as a tree (the default) or as text.
                 let slot = egui::Id::new(("json_parsed", tab_id, ci));
-                let json = value.as_deref().and_then(|v| parsed_json(ui.ctx(), slot, v));
+                let json = value.and_then(|v| parsed_json(ui.ctx(), slot, v));
                 let tree_id = egui::Id::new(("json_tree", tab_id, ci));
                 let as_text = ui.data(|d| d.get_temp::<bool>(tree_id)).unwrap_or(false);
                 ui.add_space(6.0);
@@ -303,7 +303,7 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                 }
                 if can_edit && kinds[ci] == ValueKind::Bool {
                     // Segmented true | false | NULL (NULL only when the column allows it).
-                    let now = value.as_deref().and_then(crate::sql::parse_bool);
+                    let now = value.and_then(crate::sql::parse_bool);
                     let nullable = c.is_none_or(|c| c.nullable);
                     let mut options: Vec<(Option<bool>, &str)> =
                         vec![(Some(true), "true"), (Some(false), "false")];
@@ -335,13 +335,13 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                 } else if can_edit && let Some(c) = c.filter(|c| !c.enum_values.is_empty()) {
                     // An ENUM: pick one of its values (NULL when the column allows it).
                     let mut chosen: Option<Option<String>> = None;
-                    let shown = value.as_deref().unwrap_or("NULL");
+                    let shown = value.unwrap_or("NULL");
                     egui::ComboBox::from_id_salt(("enum", tab_id, row, ci))
                         .selected_text(RichText::new(shown).monospace().size(12.0))
                         .width(ui.available_width())
                         .show_ui(ui, |ui| {
                             for v in &c.enum_values {
-                                let on = value.as_deref() == Some(v.as_str());
+                                let on = value == Some(v.as_str());
                                 if ui.selectable_label(on, RichText::new(v).monospace()).clicked() && !on {
                                     chosen = Some(Some(v.clone()));
                                 }
@@ -360,7 +360,7 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
                 } else if can_edit {
                     // The buffer is keyed by the current value, so it resets after the row is refreshed.
                     let id = egui::Id::new(("detail", tab_id, row, ci, value));
-                    let original = value.clone().unwrap_or_default();
+                    let original = value.unwrap_or_default().to_owned();
                     let mut text = ui
                         .data_mut(|d| d.get_temp::<String>(id))
                         .unwrap_or_else(|| original.clone());

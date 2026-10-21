@@ -147,7 +147,7 @@ fn frame_times() {
         let src = ed.source.as_mut().unwrap();
         for r in 0..300 {
             src.changes.push(Change::Set {
-                key: vec![res.rows[r * 10][0].clone()],
+                key: vec![res.rows.cell(r * 10, 0).map(str::to_owned)],
                 col: "column_1".into(),
                 value: Some(format!("new {r}")),
                 before: None,
@@ -180,7 +180,7 @@ fn frame_times() {
         ed.hide_equal = false;
         let mut now = before.clone();
         for r in (0..5000).step_by(7) {
-            now.rows[r][1] = Some(format!("changed {r}"));
+            now.rows.set(r, 1, Some(&format!("changed {r}")));
         }
         now.elapsed = Duration::from_millis(1);
         tab.result = Some(now);

@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use crate::db::{ColumnInfo, Kind, QueryResult};
+use crate::db::{ColumnInfo, Kind, QueryResult, Row};
 use crate::values::{self, ValueKind};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -118,7 +118,7 @@ impl Writer {
         })
     }
 
-    pub fn rows(&mut self, rows: &[Vec<Option<String>>]) -> std::io::Result<()> {
+    pub fn rows<'a>(&mut self, rows: impl IntoIterator<Item = Row<'a>>) -> std::io::Result<()> {
         for row in rows {
             match &mut self.out {
                 Sink::Xlsx { sheet, .. } => {
@@ -130,7 +130,7 @@ impl Writer {
                     xlsx_row(sheet, (self.written + 1) as u32, &self.kinds, row)?;
                 }
                 Sink::Text(out) => match self.format {
-                    Format::Csv => writeln!(out, "{}", csv_line(row.iter().map(|v| v.as_deref())))?,
+                    Format::Csv => writeln!(out, "{}", csv_line(row.iter()))?,
                     Format::Json => {
                         let sep = if self.written == 0 { "\n  " } else { ",\n  " };
                         let obj = values::json_object(&self.columns, &self.kinds, row);
@@ -184,7 +184,7 @@ pub fn render(
             out.push_str(&csv_line(res.columns.iter().map(|c| Some(c.as_str()))));
             out.push('\n');
             for row in &res.rows {
-                out.push_str(&csv_line(row.iter().map(|v| v.as_deref())));
+                out.push_str(&csv_line(row.iter()));
                 out.push('\n');
             }
         }
@@ -215,7 +215,7 @@ fn xlsx_row(
     sheet: &mut rust_xlsxwriter::Worksheet,
     r: u32,
     kinds: &[ValueKind],
-    row: &[Option<String>],
+    row: Row,
 ) -> std::io::Result<()> {
     for (c, v) in row.iter().enumerate() {
         let Some(v) = v else { continue };
@@ -316,7 +316,8 @@ mod tests {
             rows: vec![
                 vec![Some("1".into()), Some("a, \"b\"\nc".into()), Some("t".into())],
                 vec![Some("2".into()), None, Some("f".into())],
-            ],
+            ]
+            .into(),
             ..Default::default()
         }
     }
@@ -383,8 +384,8 @@ mod tests {
             },
         ];
         let mut w = Writer::create(&path, format, Kind::Postgres, "\"t\"", &res, &cols).unwrap();
-        w.rows(&res.rows[..1]).unwrap();
-        w.rows(&res.rows[1..]).unwrap();
+        w.rows(res.rows.range(..1)).unwrap();
+        w.rows(res.rows.range(1..)).unwrap();
         assert_eq!(w.finish().unwrap(), 2);
         let bytes = std::fs::read(&path).unwrap();
         let _ = std::fs::remove_file(&path);

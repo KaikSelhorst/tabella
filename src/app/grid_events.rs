@@ -47,7 +47,7 @@ fn any_result_event(
             };
             Some(Effect::Copy(match how {
                 CopyAs::Json => values::row_json(res, cols, *row),
-                CopyAs::Insert => sql::insert_row(k, &table, &res.columns, &res.rows[*row]),
+                CopyAs::Insert => sql::insert_row(k, &table, &res.columns, res.rows.row(*row)),
             }))
         }
         // A foreign key is chosen from the referenced rows instead of typed.
@@ -60,7 +60,7 @@ fn any_result_event(
         {
             let (row, col) = (*row, *col);
             let column = res.columns[col].clone();
-            let current = res.rows[row][col].clone();
+            let current = res.rows.cell(row, col).map(str::to_owned);
             tab.selected = Some((row, col));
             open_fk_picker(tab, s, PickFor::Cell(row, col), &column, fk, current);
             None
@@ -163,7 +163,7 @@ fn any_result_event(
         GridEvent::FollowFk(row, col) => {
             let info = cols.iter().find(|c| c.name == res.columns[*col]);
             let target = info.and_then(|c| c.references.as_ref());
-            let value = res.rows[*row][*col].as_deref();
+            let value = res.rows.cell(*row, *col);
             target.zip(value).map(|(target, value)| Effect::OpenFiltered {
                 schema: target.schema.clone(),
                 table: target.table.clone(),
@@ -185,7 +185,7 @@ fn any_result_event(
         }
         // Filtering doesn't change data, so read-only tables get it too.
         GridEvent::Filter(row, col, op) => {
-            let cond = sql::filter_condition(k, &res.columns[*col], *op, res.rows[*row][*col].as_deref());
+            let cond = sql::filter_condition(k, &res.columns[*col], *op, res.rows.cell(*row, *col));
             if let TabKind::Table(ts) = &mut tab.kind {
                 ts.filter = sql::and(&ts.filter, &cond);
                 ts.page = 0;
@@ -203,7 +203,7 @@ fn open_value_editor(tab: &mut Tab, row: usize, col: usize, editable: bool) {
     let Some(res) = &tab.result else { return };
     let column = res.columns[col].clone();
     let info = editable_ref(&tab.kind).and_then(|ts| ts.cols.iter().find(|c| c.name == column));
-    let original = res.rows[row][col].clone();
+    let original = res.rows.cell(row, col).map(str::to_owned);
     let text = original.clone().unwrap_or_default();
     let data_type = info.map_or(String::new(), |c| c.data_type.clone());
     let json_column = data_type.starts_with("json");
@@ -274,7 +274,7 @@ fn follow_incoming(tab: &Tab, k: Kind, row: usize, i: usize) -> Option<Effect> {
     };
     let fk = ts.incoming.get(i)?;
     let col = res.columns.iter().position(|c| *c == fk.target)?;
-    let value = res.rows[row][col].as_deref()?;
+    let value = res.rows.cell(row, col)?;
     Some(Effect::OpenFiltered {
         schema: fk.schema.clone(),
         table: fk.table.clone(),
@@ -334,7 +334,7 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
             ts.option_pick = Some((row, col));
         }
         GridEvent::StartEdit(row, col) => {
-            let text = res.rows[row][col].clone().unwrap_or_default();
+            let text = res.rows.cell(row, col).map(str::to_owned).unwrap_or_default();
             tab.selected = Some((row, col));
             ts.edit = Some(Edit {
                 row,
@@ -410,7 +410,11 @@ fn edit_event(tab: &mut Tab, s: &Session, event: GridEvent) {
             // The first row as the grid shows it, pending edits included.
             let overlay = ts.overlay(res);
             let shown = overlay.as_ref().map_or(res, |o| &o.result);
-            let top: Vec<Option<String>> = sel.cols.iter().map(|&c| shown.rows[sel.r0][c].clone()).collect();
+            let top: Vec<Option<String>> = sel
+                .cols
+                .iter()
+                .map(|&c| shown.rows.cell(sel.r0, c).map(str::to_owned))
+                .collect();
             let cells = (sel.r0 + 1..=sel.r1).flat_map(|row| {
                 sel.cols
                     .iter()

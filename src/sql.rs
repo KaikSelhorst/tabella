@@ -264,15 +264,20 @@ pub fn check_filter(filter: &str) -> Result<(), String> {
 }
 
 /// `INSERT` reproducing one row, for "copy as INSERT".
-pub fn insert_row(kind: Kind, table: &str, columns: &[String], row: &[Option<String>]) -> String {
+pub fn insert_row<'a>(
+    kind: Kind,
+    table: &str,
+    columns: &[String],
+    row: impl IntoIterator<Item = Option<&'a str>>,
+) -> String {
     let cols = columns
         .iter()
         .map(|c| kind.quote_ident(c))
         .collect::<Vec<_>>()
         .join(", ");
     let vals = row
-        .iter()
-        .map(|v| v.as_deref().map_or("NULL".to_string(), |v| kind.quote_str(v)))
+        .into_iter()
+        .map(|v| v.map_or("NULL".to_string(), |v| kind.quote_str(v)))
         .collect::<Vec<_>>()
         .join(", ");
     format!("INSERT INTO {table} ({cols}) VALUES ({vals});")
@@ -1665,9 +1670,8 @@ mod tests {
     #[test]
     fn insert_copy() {
         let cols = vec!["id".to_string(), "name".to_string()];
-        let row = vec![Some("1".to_string()), None];
         assert_eq!(
-            insert_row(Kind::Postgres, "\"public\".\"t\"", &cols, &row),
+            insert_row(Kind::Postgres, "\"public\".\"t\"", &cols, [Some("1"), None]),
             "INSERT INTO \"public\".\"t\" (\"id\", \"name\") VALUES ('1', NULL);"
         );
     }

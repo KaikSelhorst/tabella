@@ -634,7 +634,7 @@ pub(super) fn found_cells(
     if !needle.is_empty() {
         for (ri, row) in res.rows.iter().enumerate() {
             for &ci in view {
-                if let Some(v) = &row[ci]
+                if let Some(v) = row.cell(ci)
                     && grid::display_value(kinds[ci], v).to_lowercase().contains(&needle)
                 {
                     out.push((ri, ci));

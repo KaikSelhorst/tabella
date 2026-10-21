@@ -315,7 +315,7 @@ pub fn grid(
     // column is lit, to spot repeats. Not while a range is selected.
     let same: Option<(usize, &str)> = selected
         .filter(|_| range.is_none())
-        .and_then(|(r, c)| Some((c, res.rows.get(r)?.get(c)?.as_deref()?)))
+        .and_then(|(r, c)| Some((c, res.rows.get(r)?.get(c)??)))
         .filter(|(_, v)| !v.is_empty());
     // Dragging across cells selects a range: set when a drag starts on a cell, until release.
     let drag_id = egui::Id::new(("grid_drag", id));
@@ -328,7 +328,7 @@ pub fn grid(
     let cell_font = FontId::monospace(cell_font_size());
 
     let info = column_info(res, cols);
-    let sample = &res.rows[..res.rows.len().min(SAMPLE_ROWS)];
+    let sample = res.rows.range(..res.rows.len().min(SAMPLE_ROWS));
 
     ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
     // The last column takes what's left, but the table adds a column gap on top: without this
@@ -367,7 +367,7 @@ pub fn grid(
             column_width(
                 name,
                 ty,
-                sample.iter().map(|r| r[ci].as_ref().map(|v| v.chars().count())),
+                sample.clone().map(|r| r.cell(ci).map(|v| v.chars().count())),
             )
         });
         table = table.column(if vi == last {
@@ -563,9 +563,7 @@ pub fn grid(
                                 changed: changed.is_some_and(|c| c.contains(&(ri, ci))),
                                 uncommitted: uncommitted.is_some_and(|c| c.contains(&(ri, ci))),
                                 same_value: same.is_some_and(|(c, v)| {
-                                    c == ci
-                                        && selected != Some((ri, ci))
-                                        && res.rows[ri][ci].as_deref() == Some(v)
+                                    c == ci && selected != Some((ri, ci)) && res.rows.cell(ri, ci) == Some(v)
                                 }),
                             },
                         );
@@ -582,7 +580,7 @@ pub fn grid(
                                 );
                             }
                         }
-                        let val = &res.rows[ri][ci];
+                        let val = res.rows.cell(ri, ci);
                         // Foreign keys read as links: Ctrl+click opens the referenced row.
                         let fk = info[ci]
                             .and_then(|c| c.references.as_ref())
@@ -670,7 +668,7 @@ pub fn grid(
                                 .size()
                                 .x;
                             if width > cell.width() - 8.0 {
-                                r = r.on_hover_text(egui::RichText::new(v.as_str()).monospace());
+                                r = r.on_hover_text(egui::RichText::new(v).monospace());
                             }
                         }
                         if option_pick == Some((ri, ci)) {
@@ -678,12 +676,11 @@ pub fn grid(
                             let cell = full_cell(ui);
                             let (options, current) = match info[ci] {
                                 Some(c) if !c.enum_values.is_empty() => {
-                                    (enum_options(&c.enum_values, nullable), val.as_deref())
+                                    (enum_options(&c.enum_values, nullable), val)
                                 }
                                 _ => (
                                     bool_options(nullable),
-                                    val.as_deref()
-                                        .and_then(crate::sql::parse_bool)
+                                    val.and_then(crate::sql::parse_bool)
                                         .map(|b| if b { "true" } else { "false" }),
                                 ),
                             };
@@ -875,7 +872,7 @@ fn cell_menu(
         incoming,
         ..
     } = *opts;
-    let val = &res.rows[ri][ci];
+    let val = res.rows.cell(ri, ci);
     let mut event = None;
     let open = if can_edit {
         "Open value to edit…"
@@ -907,7 +904,7 @@ fn cell_menu(
             res.columns
                 .iter()
                 .position(|c| *c == f.target)
-                .is_some_and(|i| res.rows[ri][i].is_some())
+                .is_some_and(|i| res.rows.cell(ri, i).is_some())
         })
         .collect();
     if !pointing.is_empty() {
@@ -1010,7 +1007,7 @@ fn cell_menu(
         ui.close();
     }
     if ui.button("Copy value").clicked() {
-        ui.ctx().copy_text(val.clone().unwrap_or_default());
+        ui.ctx().copy_text(val.unwrap_or_default().to_owned());
         ui.close();
     }
     if ui.button("Copy row as JSON").clicked() {
@@ -1138,7 +1135,8 @@ mod tests {
             rows: vec![
                 vec![Some("1".into()), Some("anna".into())],
                 vec![Some("2".into()), None],
-            ],
+            ]
+            .into(),
             ..Default::default()
         }
     }

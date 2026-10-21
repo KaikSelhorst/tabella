@@ -115,7 +115,7 @@ pub fn search_table(
         .filter(|c| {
             res.columns.iter().position(|rc| rc == *c).is_some_and(|i| {
                 res.rows.iter().any(|r| {
-                    r[i].as_deref().is_some_and(|v| {
+                    r.cell(i).is_some_and(|v| {
                         let v = v.to_lowercase();
                         if exact { v == needle } else { v.contains(&needle) }
                     })

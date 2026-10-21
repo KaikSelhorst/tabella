@@ -226,7 +226,7 @@ mod tests {
         let tunnel = Tunnel::open(&ssh, &cfg.host, cfg.port).expect("tunnel");
         let mut c = Conn::connect(&cfg, Some(tunnel.local_port)).expect("connect through tunnel");
         let r = c.query("SELECT inet_server_addr() IS NOT NULL").unwrap();
-        assert_eq!(r.rows[0][0].as_deref(), Some("t"));
+        assert_eq!(r.rows.cell(0, 0), Some("t"));
         drop(c);
         let port = tunnel.local_port;
         drop(tunnel);

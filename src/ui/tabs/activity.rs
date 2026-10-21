@@ -11,21 +11,14 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let t = theme::tokens();
     let busy = tab.busy();
     // Session id of the selected row (first column), when it is a number.
-    let target = tab.selected.and_then(|(row, _)| {
-        tab.result
-            .as_ref()?
-            .rows
-            .get(row)?
-            .first()?
-            .as_deref()?
-            .parse::<i64>()
-            .ok()
-    });
+    let target = tab
+        .selected
+        .and_then(|(row, _)| tab.result.as_ref()?.rows.get(row)?.first()??.parse::<i64>().ok());
     // The statement of the selected row ("slow queries"), to open in the editor.
     let selected_query = tab.selected.and_then(|(row, _)| {
         let res = tab.result.as_ref()?;
         let col = res.columns.iter().position(|c| c == "query")?;
-        res.rows.get(row)?.get(col)?.clone()
+        res.rows.get(row)?.get(col)?.map(str::to_owned)
     });
     // Where its unqualified tables are: the digest's own database (MySQL), else the current one.
     let selected_schema = tab
@@ -33,7 +26,11 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         .and_then(|(row, _)| {
             let res = tab.result.as_ref()?;
             let col = res.columns.iter().position(|c| c == "db")?;
-            res.rows.get(row)?.get(col)?.clone().filter(|d| !d.is_empty())
+            res.rows
+                .get(row)?
+                .get(col)?
+                .map(str::to_owned)
+                .filter(|d| !d.is_empty())
         })
         .unwrap_or_else(|| match s.cfg.kind {
             crate::db::Kind::MySql => s.current_db.clone(),

@@ -12,8 +12,11 @@ use crate::sql::Stmt;
 use crate::tls;
 
 mod catalog;
+mod rows;
 mod server;
 mod structure;
+
+pub use rows::{Row, Rows};
 
 /// Default for the most rows kept from one query; protects against `SELECT *` on huge tables.
 pub const DEFAULT_MAX_ROWS: usize = 5000;
@@ -356,7 +359,7 @@ pub struct PreviewData {
 #[derive(Default, Clone, Debug)]
 pub struct QueryResult {
     pub columns: Vec<String>,
-    pub rows: Vec<Vec<Option<String>>>,
+    pub rows: Rows,
     pub affected: Option<u64>,
     pub truncated: bool,
     pub elapsed: Duration,
@@ -383,6 +386,14 @@ pub struct StatementTime {
 const MAX_SETS: usize = 20;
 
 impl QueryResult {
+    /// Trims the cell buffers once every row is in (they grow by doubling).
+    fn shrink_to_fit(&mut self) {
+        self.rows.shrink_to_fit();
+        for set in &mut self.previous {
+            set.rows.shrink_to_fit();
+        }
+    }
+
     /// Called when another result set starts: files the current one under `previous`.
     pub(crate) fn next_set(&mut self) {
         if self.columns.is_empty() {
@@ -662,6 +673,7 @@ impl Conn {
             }
         };
         out.elapsed = start.elapsed();
+        out.shrink_to_fit();
         Ok(out)
     }
 
@@ -678,6 +690,7 @@ impl Conn {
             Conn::Lite(c) => crate::sqlite::query(c, sql, limit)?,
         };
         out.elapsed = start.elapsed();
+        out.shrink_to_fit();
         Ok(out)
     }
 
@@ -745,7 +758,7 @@ impl Conn {
                 .rows
                 .first()
                 .and_then(|r| r.first())
-                .and_then(|v| v.as_deref())
+                .flatten()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0);
             return Ok(PreviewData {
@@ -837,8 +850,7 @@ fn pg_query(c: &mut postgres::Client, sql: &str, limit: usize) -> DbResult<Query
                     out.columns = row.columns().iter().map(|c| c.name().to_string()).collect();
                 }
                 if out.rows.len() < limit {
-                    out.rows
-                        .push((0..row.len()).map(|i| row.get(i).map(str::to_string)).collect());
+                    out.rows.push((0..row.len()).map(|i| row.get(i)));
                 } else {
                     out.truncated = true;
                 }
@@ -887,7 +899,7 @@ fn my_collect<P: mysql::prelude::Protocol>(
         for row in set {
             let row = row?;
             if out.rows.len() < limit {
-                out.rows.push(row.unwrap().into_iter().map(my_value).collect());
+                out.rows.push(row.unwrap().into_iter().map(my_value));
             } else {
                 out.truncated = true;
             }

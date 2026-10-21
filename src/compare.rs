@@ -718,7 +718,7 @@ mod tests {
             let d = c
                 .query("SELECT string_agg(column_default, ' ') FROM information_schema.columns WHERE table_schema = 'cmp_b'")
                 .unwrap();
-            let defaults = d.rows[0][0].clone().unwrap_or_default();
+            let defaults = d.rows.cell(0, 0).map(str::to_owned).unwrap_or_default();
             assert!(
                 defaults.contains("cmp_b.customer_id_seq") && !defaults.contains("cmp_a"),
                 "{defaults}"

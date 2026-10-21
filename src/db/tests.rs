@@ -43,9 +43,9 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
     assert_eq!(r.affected, Some(2));
     let r = c.query("SELECT * FROM dbl_t ORDER BY id").unwrap();
     assert_eq!(r.columns, ["id", "name", "at"]);
-    assert_eq!(r.rows[0][1].as_deref(), Some("o'neil"));
-    assert_eq!(r.rows[0][2], None);
-    assert_eq!(r.rows[1][2].as_deref(), Some("2024-01-02 03:04:05"));
+    assert_eq!(r.rows.cell(0, 1), Some("o'neil"));
+    assert_eq!(r.rows.cell(0, 2), None);
+    assert_eq!(r.rows.cell(1, 2), Some("2024-01-02 03:04:05"));
     let cols = c
         .columns(if kind == Kind::MySql { db } else { "public" }, "dbl_t")
         .unwrap();
@@ -78,7 +78,7 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
                 hit.filter
             ))
             .unwrap();
-        assert_eq!(r.rows[0][0].as_deref(), Some("1"), "{kind:?}");
+        assert_eq!(r.rows.cell(0, 0), Some("1"), "{kind:?}");
         assert!(
             search_table(&mut c, kind, t, "o'neil", true).unwrap().is_some(),
             "{kind:?}: exact"
@@ -91,7 +91,7 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
     }
     let lit = kind.quote_str("x'y");
     let r = c.query(&format!("SELECT {lit}")).unwrap();
-    assert_eq!(r.rows[0][0].as_deref(), Some("x'y"));
+    assert_eq!(r.rows.cell(0, 0), Some("x'y"));
     assert!(c.query("SELEC 1").is_err());
     // Booleans written the way the grid writes them, for both engines.
     c.query("DROP TABLE IF EXISTS dbl_b").unwrap();
@@ -105,7 +105,7 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
         c.execute(&crate::sql::update_cell(kind, s, "dbl_b", "ok", Some(v), wh))
             .unwrap();
         let r = c.query("SELECT ok FROM dbl_b").unwrap();
-        assert_eq!(r.rows[0][0].as_deref().and_then(crate::sql::parse_bool), Some(b));
+        assert_eq!(r.rows.cell(0, 0).and_then(crate::sql::parse_bool), Some(b));
     }
     let cols = c.columns(s, "dbl_b").unwrap();
     assert!(
@@ -147,7 +147,7 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
         c.execute(&crate::sql::update_cell(kind, s, "dbl_e", "mood", Some(v), wh))
             .unwrap();
         let r = c.query("SELECT mood FROM dbl_e").unwrap();
-        assert_eq!(r.rows[0][0].as_deref(), Some(v.as_str()), "{kind:?}");
+        assert_eq!(r.rows.cell(0, 0), Some(v.as_str()), "{kind:?}");
     }
     if kind == Kind::Postgres {
         // The real type names, not information_schema's "USER-DEFINED" / "ARRAY".
@@ -183,7 +183,7 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
         c.execute(&crate::sql::update_cell(kind, s, "dbl_t", "name", Some(v), wh))
             .unwrap();
         let r = c.query("SELECT name FROM dbl_t WHERE id = 1").unwrap();
-        assert_eq!(r.rows[0][0].as_deref(), Some(v), "{kind:?}");
+        assert_eq!(r.rows.cell(0, 0), Some(v), "{kind:?}");
     }
     // The table survived the injection attempt.
     assert_eq!(c.count("SELECT COUNT(*) FROM dbl_t").unwrap(), 2);
@@ -192,7 +192,12 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
     // CLIENT_FOUND_ROWS for an unchanged value to still count).
     let one =
         |id: &str| crate::sql::pk_where(kind, &["id".to_string()], &["id".to_string()], &[Some(id.into())]);
-    let same = c.query("SELECT name FROM dbl_t WHERE id = 1").unwrap().rows[0][0].clone();
+    let same = c
+        .query("SELECT name FROM dbl_t WHERE id = 1")
+        .unwrap()
+        .rows
+        .cell(0, 0)
+        .map(str::to_owned);
     let r = c
         .execute(&crate::sql::update_cell(
             kind,
@@ -361,12 +366,9 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
     let sleeper = act
         .rows
         .iter()
-        .find(|r| {
-            r[q].as_deref()
-                .is_some_and(|t| t.to_lowercase().contains("sleep(20)"))
-        })
+        .find(|r| r.cell(q).is_some_and(|t| t.to_lowercase().contains("sleep(20)")))
         .unwrap_or_else(|| panic!("{kind:?}: sleeping session not listed: {act:?}"));
-    let id: i64 = sleeper[0].as_deref().unwrap().parse().unwrap();
+    let id: i64 = sleeper.cell(0).unwrap().parse().unwrap();
     c.kill(id, false).unwrap();
     // A session that doesn't exist is reported, not silently ignored.
     assert!(
@@ -392,7 +394,7 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
         std::thread::sleep(std::time::Duration::from_millis(800));
         let locks = c.activity_view(ActivityView::Locks).unwrap();
         assert_eq!(locks.rows.len(), 1, "{kind:?}: {locks:?}");
-        let blocker: i64 = locks.rows[0][0].as_deref().unwrap().parse().unwrap();
+        let blocker: i64 = locks.rows.cell(0, 0).unwrap().parse().unwrap();
         c.kill(blocker, true).unwrap();
         blocked.join().unwrap();
         drop(holder);
@@ -454,7 +456,7 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
             let call = crate::sql::call_template(kind, &f.schema, &f.name, &args, false);
             let sql = crate::sql::bind_params(kind, &call, |_| "41".into());
             let r = c.query(&sql).unwrap_or_else(|e| panic!("{kind:?}: {e}\n{sql}"));
-            assert_eq!(r.rows[0][0].as_deref(), Some("42"), "{kind:?}: {sql}");
+            assert_eq!(r.rows.cell(0, 0), Some("42"), "{kind:?}: {sql}");
         }
         assert!(
             c.object_source(find("dbl_tr")).unwrap().contains("dbl_t"),
@@ -502,8 +504,11 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
         c.query("DROP TABLE IF EXISTS dbl_copy").unwrap();
         c.query("DROP TABLE IF EXISTS dbl_copy2").unwrap();
         let count = |c: &mut Conn, t: &str| {
-            c.query(&format!("SELECT count(*) FROM {t}")).unwrap().rows[0][0]
-                .clone()
+            c.query(&format!("SELECT count(*) FROM {t}"))
+                .unwrap()
+                .rows
+                .cell(0, 0)
+                .map(str::to_owned)
                 .unwrap()
         };
         let n = count(&mut c, "dbl_t");
@@ -623,7 +628,7 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
         names
             .rows
             .iter()
-            .map(|r| r[0].clone().unwrap())
+            .map(|r| r.cell(0).unwrap().to_owned())
             .collect::<Vec<_>>(),
         ["batch-1", "batch-2"]
     );
@@ -633,7 +638,7 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
     assert!(err.to_string().contains("Nothing was saved"), "{err}");
     let r = c.query("SELECT name FROM dbl_t WHERE id = 1").unwrap();
     assert_eq!(
-        r.rows[0][0].as_deref(),
+        r.rows.cell(0, 0),
         Some("batch-1"),
         "{kind:?}: first edit rolled back"
     );
@@ -663,12 +668,12 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
             let p = c.preview(joined, false).unwrap();
             assert_eq!((p.count, p.after), (1, true));
             assert_eq!(
-                p.sample.rows[0][1].as_deref(),
+                p.sample.rows.cell(0, 1),
                 Some("changed"),
                 "shows the values after"
             );
             let r = c.query("SELECT name FROM dbl_t WHERE id = 1").unwrap();
-            assert_ne!(r.rows[0][0].as_deref(), Some("changed"), "and undoes it");
+            assert_ne!(r.rows.cell(0, 0), Some("changed"), "and undoes it");
         } else {
             assert!(
                 c.preview(
@@ -767,12 +772,12 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
         };
         assert_eq!(run(&mut c, &spec, false).unwrap(), 2, "{kind:?}");
         let r = c.query("SELECT name FROM dbl_t WHERE id = 11").unwrap();
-        assert_eq!(r.rows[0][0], None, "{kind:?}: empty cell is NULL");
+        assert_eq!(r.rows.cell(0, 0), None, "{kind:?}: empty cell is NULL");
         std::fs::write(&path, "code;name\n12;twelve\n10;repeated\n").unwrap();
         let err = run(&mut c, &spec, false).unwrap_err().to_string();
         assert!(err.contains("Nothing was imported"), "{kind:?}: {err}");
         let r = c.query("SELECT count(*) FROM dbl_t WHERE id = 12").unwrap();
-        assert_eq!(r.rows[0][0].as_deref(), Some("0"), "{kind:?}: rolled back");
+        assert_eq!(r.rows.cell(0, 0), Some("0"), "{kind:?}: rolled back");
         spec.mapping = vec![None, None];
         assert!(run(&mut c, &spec, false).is_err());
         let _ = std::fs::remove_file(path);
@@ -796,15 +801,15 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
         let r = c
             .query("SELECT name, at FROM dbl_t WHERE id IN (20, 21) ORDER BY id")
             .unwrap();
-        assert_eq!(r.rows[0][0].as_deref(), Some("Zoë Brontë"), "{kind:?}");
+        assert_eq!(r.rows.cell(0, 0), Some("Zoë Brontë"), "{kind:?}");
         assert!(
-            r.rows[0][1]
-                .as_deref()
+            r.rows
+                .cell(0, 1)
                 .is_some_and(|v| v.starts_with("2026-10-14 13:05:00")),
             "{kind:?}: {:?}",
             r.rows
         );
-        assert_eq!(r.rows[1], vec![None, None], "{kind:?}");
+        assert_eq!(r.rows.row(1).to_vec(), [None, None], "{kind:?}");
         let _ = std::fs::remove_file(path);
     }
     // "Filter values": the list and the condition it builds run as they are.
@@ -814,14 +819,14 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
         let list = c
             .query(&crate::sql::distinct_values(kind, schema, "dbl_t", &expr, "", ""))
             .unwrap();
-        let values: Vec<Option<String>> = list.rows.iter().map(|r| r[0].clone()).collect();
+        let values: Vec<Option<String>> = list.rows.iter().map(|r| r.cell(0).map(str::to_owned)).collect();
         assert!(values.len() >= 2, "{kind:?}: {values:?}");
         let (kept, dropped) = values.split_at(1);
         let cond = crate::sql::values_condition(kind, &expr, kept, dropped, true).unwrap();
         let n = c
             .query(&format!("SELECT count(*) FROM dbl_t WHERE {cond}"))
             .unwrap();
-        assert_eq!(n.rows[0][0], list.rows[0][1], "{kind:?}: {cond}");
+        assert_eq!(n.rows.cell(0, 0), list.rows.cell(0, 1), "{kind:?}: {cond}");
     }
     // The foreign-key picker's queries run as they are (the MySQL time-limit hint too).
     {
@@ -886,7 +891,7 @@ fn postgres_tls() {
     let r = c
         .query("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
         .unwrap();
-    assert_eq!(r.rows[0][0].as_deref(), Some("t"));
+    assert_eq!(r.rows.cell(0, 0), Some("t"));
 
     // With TLS not required, a TLS-capable server is still used encrypted (sslmode=prefer).
     cfg.ssl = false;
@@ -894,7 +899,7 @@ fn postgres_tls() {
     let r = c
         .query("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
         .unwrap();
-    assert_eq!(r.rows[0][0].as_deref(), Some("t"));
+    assert_eq!(r.rows.cell(0, 0), Some("t"));
 }
 
 #[test]
@@ -908,5 +913,5 @@ fn mysql_tls() {
     cfg.ssl_insecure = true;
     let mut c = Conn::connect(&cfg, None).expect("insecure tls connect");
     let r = c.query("SHOW STATUS LIKE 'Ssl_cipher'").unwrap();
-    assert!(!r.rows[0][1].as_deref().unwrap_or("").is_empty());
+    assert!(!r.rows.cell(0, 1).unwrap_or("").is_empty());
 }

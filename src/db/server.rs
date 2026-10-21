@@ -202,7 +202,7 @@ impl Conn {
         };
         let r = self.query(&q)?;
         // Postgres returns one JSON cell; MySQL one text cell (or one line per row on old servers).
-        let text: Vec<&str> = r.rows.iter().filter_map(|row| row.first()?.as_deref()).collect();
+        let text: Vec<&str> = r.rows.iter().filter_map(|row| row.first()?).collect();
         let text = text.join("\n");
         match kind {
             Kind::Postgres => plan::from_pg_json(&text),
@@ -228,7 +228,7 @@ impl Conn {
         if r.rows
             .first()
             .and_then(|row| row.first())
-            .is_some_and(|v| v.as_deref() == Some("f"))
+            .is_some_and(|v| v == Some("f"))
         {
             return Err(DbError::Other(format!(
                 "session {id} wasn't {} (it already ended, or permission is missing: you must be the same \
