@@ -862,20 +862,20 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
 fn postgres() {
     roundtrip(Kind::Postgres, 55432, "postgres", "pw", "postgres");
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
 fn mysql() {
     roundtrip(Kind::MySql, 53306, "root", "pw", "test");
 }
 
 /// Needs a TLS-enabled Postgres with a self-signed certificate on port 55433.
 #[test]
-#[ignore]
+#[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
 fn postgres_tls() {
     let mut cfg = ConnConfig::new(Kind::Postgres);
     cfg.host = "localhost".into();
@@ -903,7 +903,7 @@ fn postgres_tls() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
 fn mysql_tls() {
     let mut cfg = ConnConfig::new(Kind::MySql);
     cfg.host = "127.0.0.1".into();

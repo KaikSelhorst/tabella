@@ -595,7 +595,7 @@ mod ux_sweep {
     use crate::app::TabKind;
 
     #[test]
-    #[ignore]
+    #[ignore = "renders with wgpu (needs a Vulkan driver) and writes PNGs to TABELLA_SHOTS"]
     fn ux_sweep() {
         let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
         let out = format!("{dir}/sweep");
@@ -787,7 +787,7 @@ mod icon_asset {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "rewrites assets/icon.png and icon.ico"]
     fn make_icon() {
         let big = draw(256);
         big.save("assets/icon.png").unwrap();

@@ -275,8 +275,12 @@ pub fn sheet_rows(path: &Path) -> Result<(String, Vec<Vec<String>>), String> {
     Ok((name, rows))
 }
 
-/// An Excel serial date (days since 1899-12-30, time as the fraction) as ISO text.
+/// An Excel serial date (days since 1899-12-30, time as the fraction) as ISO text. One past
+/// what Excel can show (9999-12-31) stays a number, so the arithmetic below can't overflow.
 fn excel_date(serial: f64) -> String {
+    if !(0.0..2_958_466.0).contains(&serial) {
+        return serial.to_string();
+    }
     let secs = (serial * 86_400.0).round() as i64 - 25_569 * 86_400;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Civil-from-days (Howard Hinnant's algorithm).
@@ -326,6 +330,16 @@ pub(crate) mod tests {
         let p = std::env::temp_dir().join(format!("tabella-import-{}-{name}", std::process::id()));
         std::fs::write(&p, body).unwrap();
         p
+    }
+
+    #[test]
+    fn excel_dates_and_ones_out_of_range() {
+        assert_eq!(excel_date(45_000.0), "2023-03-15");
+        assert_eq!(excel_date(45_000.5), "2023-03-15 12:00:00");
+        assert_eq!(excel_date(2_958_465.0), "9999-12-31");
+        assert_eq!(excel_date(-1.0), "-1");
+        assert!(excel_date(1e300).starts_with("1000"));
+        assert_eq!(excel_date(f64::NAN), "NaN");
     }
 
     #[test]

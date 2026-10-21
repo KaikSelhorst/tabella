@@ -1855,49 +1855,49 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn bulk_expression_postgres() {
         bulk_expression_update(Kind::Postgres, 55432, "postgres");
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn bulk_expression_mysql() {
         bulk_expression_update(Kind::MySql, 53306, "test");
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn index_advice_postgres() {
         suggests_an_index(Kind::Postgres, 55432, "postgres", "public");
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn index_advice_mysql() {
         suggests_an_index(Kind::MySql, 53306, "test", "test");
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn reconnect_postgres() {
         reconnects_after_the_session_is_killed(Kind::Postgres, 55432, "postgres");
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn reconnect_mysql() {
         reconnects_after_the_session_is_killed(Kind::MySql, 53306, "test");
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn manual_commit_postgres() {
         manual_commit(Kind::Postgres, 55432, "postgres");
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn manual_commit_mysql() {
         manual_commit(Kind::MySql, 53306, "test");
     }
@@ -1940,7 +1940,7 @@ mod tests {
 
     /// A database with nothing in `public` opens in its first schema with tables.
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn starts_in_a_schema_with_tables() {
         let mut cfg = ConnConfig::new(Kind::Postgres);
         cfg.host = "127.0.0.1".into();
@@ -1972,13 +1972,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn timed_script_postgres() {
         timed_script(Kind::Postgres, 55432, "postgres");
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn timed_script_mysql() {
         timed_script(Kind::MySql, 53306, "test");
     }
@@ -2081,7 +2081,7 @@ mod tests {
     /// A search that runs too long stops at 2 s, says so, and leaves an open transaction (and
     /// the session's timeout) as they were.
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn capped_reads_never_break_the_transaction() {
         let mut cfg = ConnConfig::new(Kind::Postgres);
         cfg.host = "127.0.0.1".into();
@@ -2117,7 +2117,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn connection_test_says_who_answered() {
         let mut cfg = ConnConfig::new(Kind::Postgres);
         cfg.host = "127.0.0.1".into();
@@ -2147,7 +2147,7 @@ mod tests {
 
     /// Same connection (two schemas) and a separate one to the same server: same differences.
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn compare_here_and_elsewhere() {
         let mut cfg = ConnConfig::new(Kind::Postgres);
         cfg.host = "127.0.0.1".into();
@@ -2178,13 +2178,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn script_file_postgres() {
         script_file(Kind::Postgres, 55432, "postgres");
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn script_file_mysql() {
         script_file(Kind::MySql, 53306, "test");
     }
@@ -2192,7 +2192,7 @@ mod tests {
     /// A real table, by hand: `TABELLA_EXPORT_CHECK=host:port:user:password:database:schema.table`
     /// (Postgres). Exports it whole as CSV and reports the time.
     #[test]
-    #[ignore]
+    #[ignore = "by hand against a real database: set TABELLA_EXPORT_CHECK"]
     fn export_real_table() {
         let Ok(spec) = std::env::var("TABELLA_EXPORT_CHECK") else {
             return;
@@ -2237,13 +2237,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn export_postgres() {
         export_whole_table(Kind::Postgres, 55432, "postgres");
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn export_mysql() {
         export_whole_table(Kind::MySql, 53306, "test");
     }

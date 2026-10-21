@@ -34,15 +34,15 @@ mod script;
 mod search;
 mod table;
 
-use activity::*;
-use compare::*;
-use dump::*;
-use editor::*;
-use query_history::*;
-use results::*;
-use script::*;
-use search::*;
-use table::*;
+use activity::activity_tab;
+use compare::compare_tab;
+use dump::dump_tab;
+use editor::{confirm_run, preview_rows, sql_tab};
+use query_history::history_tab;
+use results::{fk_dialog, result_area, status_text};
+use script::script_tab;
+use search::search_tab;
+use table::{changes_bar, confirm_save, table_tab};
 
 /// What a tab body needs from the app besides the tab itself.
 pub(super) struct Cx<'a> {

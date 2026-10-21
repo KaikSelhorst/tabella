@@ -735,13 +735,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn converges_postgres() {
         converges(Kind::Postgres, 55432);
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn converges_mysql() {
         converges(Kind::MySql, 53306);
     }

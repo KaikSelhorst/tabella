@@ -708,13 +708,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn round_trip_postgres() {
         round_trip(Kind::Postgres, 55432);
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn round_trip_mysql() {
         round_trip(Kind::MySql, 53306);
     }
@@ -723,7 +723,7 @@ mod tests {
     /// (Postgres). Exports the schema, restores it into a new database `dbl_restore` on the
     /// same server, compares row counts and a checksum per table, then drops `dbl_restore`.
     #[test]
-    #[ignore]
+    #[ignore = "by hand against a real database: set TABELLA_DUMP_CHECK"]
     fn round_trip_real_database() {
         use crate::db::ConnConfig;
         let Ok(spec) = std::env::var("TABELLA_DUMP_CHECK") else {

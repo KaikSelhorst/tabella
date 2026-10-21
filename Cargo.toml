@@ -38,6 +38,7 @@ redundant_clone = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
+ignore_without_reason = "warn"
 
 [profile.release]
 opt-level = "s"

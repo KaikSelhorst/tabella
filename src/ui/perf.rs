@@ -119,7 +119,7 @@ fn big_result(rows: usize, cols: usize) -> (QueryResult, Vec<ColumnInfo>) {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a benchmark: renders with wgpu and prints frame times"]
 fn frame_times() {
     let mut harness = Driver::new();
     let report = |name: &str, d: Duration| eprintln!("{name:<58} {:>8.2} ms/frame", d.as_secs_f64() * 1000.0);
@@ -304,7 +304,7 @@ fn frame_times() {
 /// `TABELLA_SHOTS=<dir> cargo test contact_sheets -- --ignored` writes `<dir>/sheets/NN.png`
 /// (2 x 3 screens each, half size) and lists what is on each.
 #[test]
-#[ignore]
+#[ignore = "reads and writes PNGs under TABELLA_SHOTS"]
 fn contact_sheets() {
     use image::{GenericImage, RgbaImage, imageops};
     let Ok(dir) = std::env::var("TABELLA_SHOTS") else {
@@ -340,7 +340,7 @@ fn contact_sheets() {
 /// A zoomed piece of a screenshot, to look at details:
 /// `TABELLA_CROP=<in.png>:<x>,<y>,<w>,<h>:<scale>:<out.png> cargo test crop_shot -- --ignored`.
 #[test]
-#[ignore]
+#[ignore = "by hand: set TABELLA_CROP"]
 fn crop_shot() {
     use image::imageops;
     let Ok(spec) = std::env::var("TABELLA_CROP") else {

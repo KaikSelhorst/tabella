@@ -197,7 +197,7 @@ mod tests {
 
     /// Needs `docker compose --profile test up -d --wait` (test-ssh forwards to test-pg).
     #[test]
-    #[ignore]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
     fn connects_through_a_real_ssh_server() {
         use crate::db::{Conn, ConnConfig, Kind};
         let dir = std::env::temp_dir().join(format!("tabella-ssh-{}", std::process::id()));

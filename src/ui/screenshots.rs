@@ -272,7 +272,7 @@ fn dragging_a_column_edge_is_remembered_for_the_table() {
 
 /// `TABELLA_SHOTS=<dir> cargo test copy_menu_shot -- --ignored`: the Export menu and the copied note.
 #[test]
-#[ignore]
+#[ignore = "renders with wgpu (needs a Vulkan driver) and writes PNGs to TABELLA_SHOTS"]
 fn copy_menu_shot() {
     let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
     std::fs::create_dir_all(&dir).unwrap();
@@ -307,7 +307,7 @@ fn copy_menu_shot() {
 
 /// `TABELLA_SHOTS=<dir> cargo test bulk_dialog_shot -- --ignored`: "Set with an expression".
 #[test]
-#[ignore]
+#[ignore = "renders with wgpu (needs a Vulkan driver) and writes PNGs to TABELLA_SHOTS"]
 fn bulk_dialog_shot() {
     let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
     std::fs::create_dir_all(&dir).unwrap();
@@ -340,7 +340,7 @@ fn bulk_dialog_shot() {
 
 /// `TABELLA_SHOTS=<dir> cargo test plan_compare_shot -- --ignored`: a plan against the pinned one.
 #[test]
-#[ignore]
+#[ignore = "renders with wgpu (needs a Vulkan driver) and writes PNGs to TABELLA_SHOTS"]
 fn plan_compare_shot() {
     let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
     std::fs::create_dir_all(&dir).unwrap();
@@ -370,7 +370,7 @@ fn plan_compare_shot() {
 
 /// `TABELLA_SHOTS=<dir> cargo test sort_pin_shot -- --ignored`: two sort columns and a pinned tab.
 #[test]
-#[ignore]
+#[ignore = "renders with wgpu (needs a Vulkan driver) and writes PNGs to TABELLA_SHOTS"]
 fn sort_pin_shot() {
     let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
     std::fs::create_dir_all(&dir).unwrap();
@@ -399,7 +399,7 @@ fn sort_pin_shot() {
 
 /// `TABELLA_SHOTS=<dir> cargo test index_advice_shot -- --ignored`: the "Suggest index" dialog.
 #[test]
-#[ignore]
+#[ignore = "renders with wgpu (needs a Vulkan driver) and writes PNGs to TABELLA_SHOTS"]
 fn index_advice_shot() {
     let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
     std::fs::create_dir_all(&dir).unwrap();
@@ -469,7 +469,7 @@ fn index_advice_shot() {
 
 /// `TABELLA_SHOTS=<dir> cargo test tab_drag_shot -- --ignored`: a tab in the middle of a drag.
 #[test]
-#[ignore]
+#[ignore = "renders with wgpu (needs a Vulkan driver) and writes PNGs to TABELLA_SHOTS"]
 fn tab_drag_shot() {
     let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
     std::fs::create_dir_all(&dir).unwrap();
@@ -500,7 +500,7 @@ fn tab_drag_shot() {
 
 /// `TABELLA_SHOTS=<dir> cargo test detail_panel_shot -- --ignored`: awkward values in the row panel.
 #[test]
-#[ignore]
+#[ignore = "renders with wgpu (needs a Vulkan driver) and writes PNGs to TABELLA_SHOTS"]
 fn detail_panel_shot() {
     let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
     std::fs::create_dir_all(&dir).unwrap();
@@ -554,7 +554,7 @@ fn detail_panel_shot() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "renders with wgpu (needs a Vulkan driver) and writes PNGs to TABELLA_SHOTS"]
 fn screenshots() {
     let dir = std::env::var("TABELLA_SHOTS").unwrap_or_else(|_| "target/shots".into());
     std::fs::create_dir_all(&dir).unwrap();
