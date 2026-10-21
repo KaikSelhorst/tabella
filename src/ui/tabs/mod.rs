@@ -306,7 +306,7 @@ impl App {
     }
 
     /// A tab dragged onto the right edge of the content opens the split view with it there.
-    fn edge_drop(&mut self, ui: &mut egui::Ui, body: egui::Rect) {
+    fn edge_drop(&mut self, ui: &egui::Ui, body: egui::Rect) {
         let ctx = ui.ctx().clone();
         let Some(id) = egui::DragAndDrop::payload::<u64>(&ctx).map(|p| *p) else {
             return;

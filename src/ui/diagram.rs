@@ -202,7 +202,7 @@ fn fit(d: &mut DiagramState, rect: Rect) {
     let margin = 48.0;
     let zoom = ((rect.width() - margin) / (x1 - x0)).min((rect.height() - margin) / (y1 - y0));
     d.zoom = zoom.clamp(0.2, 1.0);
-    let center = vec2((x0 + x1) / 2.0, (y0 + y1) / 2.0) * d.zoom;
+    let center = vec2(f32::midpoint(x0, x1), f32::midpoint(y0, y1)) * d.zoom;
     let pan = rect.size() / 2.0 - center;
     d.pan = (pan.x, pan.y);
 }
@@ -210,7 +210,7 @@ fn fit(d: &mut DiagramState, rect: Rect) {
 /// Dragging a title moves that box; dragging anywhere else moves the view; the wheel zooms
 /// around the pointer.
 fn move_and_zoom(
-    ui: &mut egui::Ui,
+    ui: &egui::Ui,
     tab_id: u64,
     d: &mut DiagramState,
     v: &View,

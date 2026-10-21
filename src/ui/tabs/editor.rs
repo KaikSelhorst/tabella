@@ -483,7 +483,7 @@ fn editor_body(
 /// column belongs to. A name with several matches (overloads, a column in two tables) lists
 /// them to pick from.
 fn definition_hover(
-    ui: &mut egui::Ui,
+    ui: &egui::Ui,
     s: &Session,
     tab_id: u64,
     text: &str,
@@ -609,7 +609,7 @@ fn carry_out(ui: &mut egui::Ui, tab: &mut Tab, s: &Session, asked: &mut Asked, b
 
 /// Ctrl+S saves the result's pending edits when there are any, the file otherwise;
 /// Ctrl+Shift+S always asks where to save the file (checked first: Ctrl+S would match it).
-fn save_keys(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
+fn save_keys(ui: &egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let (save_as, save) = ui.input_mut(|i| {
         (
             i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::S),
@@ -1152,7 +1152,7 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                     ui.label(
                         egui::RichText::new(format!(
                             "{} {} would be {verb}",
-                            palette::format_count(d.count as i64),
+                            palette::format_count(i64::try_from(d.count).unwrap_or(i64::MAX)),
                             crate::values::noun(d.count, "row")
                         ))
                         .size(18.0)

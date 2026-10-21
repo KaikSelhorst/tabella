@@ -862,7 +862,7 @@ fn pg_read(c: &mut postgres::Client, sql: &str, limit: usize) -> DbResult<QueryR
         &sql[byte(a)..byte(b)],
         limit.saturating_add(1)
     );
-    let shift = head.chars().count() as isize - a as isize;
+    let shift = head.chars().count().cast_signed() - a.cast_signed();
     let mut out = pg_query(c, &text, limit).map_err(|e| match e {
         DbError::Postgres(e, _) => DbError::Postgres(e, shift),
         e => e,

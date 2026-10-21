@@ -90,8 +90,8 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             "{} of {} tables · {} rows · {} · {:.1}s",
                             p.tables,
                             p.total,
-                            palette::format_count(p.rows as i64),
-                            palette::format_bytes(p.bytes as i64),
+                            palette::format_count(i64::try_from(p.rows).unwrap_or(i64::MAX)),
+                            palette::format_bytes(i64::try_from(p.bytes).unwrap_or(i64::MAX)),
                             took.as_secs_f32()
                         );
                         ui.label(egui::RichText::new(text).size(12.0).color(t.muted_foreground));

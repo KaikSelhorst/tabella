@@ -240,7 +240,7 @@ impl App {
     }
 
     /// Confirms or undoes the open transaction (manual-commit mode).
-    pub fn end_tx(&mut self, commit: bool) {
+    pub fn end_tx(&self, commit: bool) {
         if let Some(s) = &self.session {
             s.send(Job::EndTx { commit });
         }

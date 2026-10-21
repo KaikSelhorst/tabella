@@ -85,9 +85,9 @@ fn lex(sql: &str) -> Vec<Tok> {
             '<' | '>' | '!' | '=' => {
                 let two = c.get(i + 1).copied();
                 let op = match (ch, two) {
-                    ('<', Some('=')) | ('>', Some('=')) | ('<', Some('>')) | ('!', Some('=')) => {
+                    ('<' | '>' | '!', Some(next @ '=')) | ('<', Some(next @ '>')) => {
                         i += 1;
-                        format!("{ch}{}", two.unwrap())
+                        format!("{ch}{next}")
                     }
                     ('!', _) => {
                         i += 1;

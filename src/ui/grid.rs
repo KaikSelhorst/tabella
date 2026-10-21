@@ -456,7 +456,7 @@ fn table_with_columns<'a>(ui: &'a mut egui::Ui, g: &Paint) -> TableBuilder<'a> {
 }
 
 /// The empty header over the row numbers.
-fn gutter_header(ui: &mut egui::Ui, g: &Paint, frozen: &mut Vec<Frozen>) {
+fn gutter_header(ui: &egui::Ui, g: &Paint, frozen: &mut Vec<Frozen>) {
     let t = g.t;
     cell_chrome(ui, g.table_rect, t);
     if g.opts.pinned > 0 {

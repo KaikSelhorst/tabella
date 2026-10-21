@@ -184,7 +184,7 @@ impl App {
     }
 
     /// "Open transaction" across the window while a manual transaction has uncommitted work.
-    fn tx_band(&mut self, ui: &mut egui::Ui) {
+    fn tx_band(&self, ui: &mut egui::Ui) {
         let Some(txn) = self.session.as_ref().map(|s| s.txn).filter(|t| t.open) else {
             return;
         };

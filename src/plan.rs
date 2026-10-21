@@ -276,8 +276,7 @@ pub fn from_mysql_tree(text: &str) -> Result<Plan, String> {
         };
         let node = mysql_node(body);
         // Close nodes at the same depth or deeper: they have all their children now.
-        while stack.last().is_some_and(|(d, _)| *d >= indent) {
-            let (_, done) = stack.pop().unwrap();
+        while let Some((_, done)) = stack.pop_if(|(d, _)| *d >= indent) {
             attach(&mut stack, &mut roots, done);
         }
         stack.push((indent, node));
@@ -285,14 +284,14 @@ pub fn from_mysql_tree(text: &str) -> Result<Plan, String> {
     while let Some((_, done)) = stack.pop() {
         attach(&mut stack, &mut roots, done);
     }
-    let root = match roots.len() {
-        0 => return Err("empty plan".into()),
-        1 => roots.pop().unwrap(),
-        _ => Node {
+    let root = if roots.len() > 1 {
+        Node {
             label: "Plan".into(),
             children: roots,
             ..Default::default()
-        },
+        }
+    } else {
+        roots.pop().ok_or("empty plan")?
     };
     Ok(Plan {
         analyzed: root.actual_ms.is_some(),

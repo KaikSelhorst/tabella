@@ -344,7 +344,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
 
 /// The dialogs over a result: statistics, a value, value filter, foreign-key picker, bulk
 /// update and fill.
-fn result_dialogs(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
+fn result_dialogs(ui: &egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let s = cx.s;
     stats_dialog(ui.ctx(), tab, s);
     if let Some(e) = value_dialog(ui.ctx(), tab) {
@@ -651,7 +651,7 @@ fn result_find(
 /// Pinned columns (and the row numbers) drawn again at the left edge once the grid is scrolled
 /// sideways past them. Clicks on them select, double-clicks edit, like the cells underneath.
 pub(super) fn paint_frozen(
-    ui: &mut egui::Ui,
+    ui: &egui::Ui,
     tab_id: u64,
     frozen: &[grid::Frozen],
     offset: f32,
@@ -1521,6 +1521,7 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
     event
 }
 
+#[derive(Clone, Copy)]
 enum PinAction {
     Pin,
     Compare(bool),
