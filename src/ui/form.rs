@@ -7,6 +7,8 @@ use crate::config;
 use crate::db::{ConnConfig, Kind, SshConfig, Tag};
 
 const FIELD_WIDTH: f32 = 280.0;
+/// Height of the connection form around its fields: margins, title, test outcome and buttons.
+const FORM_CHROME: f32 = 140.0;
 
 impl App {
     pub fn connection_form(&mut self, ctx: &egui::Context) {
@@ -38,36 +40,45 @@ impl App {
                         .color(t.muted_foreground),
                 );
                 ui.add_space(12.0);
-                egui::Grid::new("form")
-                    .num_columns(2)
-                    .spacing([12.0, 8.0])
-                    .min_col_width(72.0)
+                // The fields scroll when the window is too short for all of them; the title and
+                // the buttons stay in view.
+                let room = ui.ctx().content_rect().height() - FORM_CHROME;
+                egui::ScrollArea::vertical()
+                    .max_height(room.max(160.0))
+                    .min_scrolled_height(room.max(160.0))
                     .show(ui, |ui| {
-                        let is_new = form.editing.is_none();
-                        let c = &mut form.cfg;
-                        url_rows(ui, c);
-                        name_rows(ui, c, duplicate);
-                        kind_row(ui, c);
-                        if c.kind == Kind::Sqlite {
-                            sqlite_file_rows(ui, c);
-                        } else {
-                            server_rows(ui, c, is_new);
-                        }
-                        protection_rows(ui, c);
-                        ui.label("Color");
-                        color_picker(ui, &mut c.color);
-                        ui.end_row();
-                        ui.label("Group");
-                        ui.add(
-                            TextEdit::singleline(&mut c.group)
-                                .hint_text("e.g. Production")
-                                .desired_width(180.0),
-                        )
-                        .on_hover_text("Connections with the same group are listed together");
-                        ui.end_row();
-                        if c.kind != Kind::Sqlite {
-                            timeout_and_ssh_rows(ui, c);
-                        }
+                        egui::Grid::new("form")
+                            .num_columns(2)
+                            .spacing([12.0, 8.0])
+                            .min_col_width(72.0)
+                            .show(ui, |ui| {
+                                let is_new = form.editing.is_none();
+                                let c = &mut form.cfg;
+                                url_rows(ui, c);
+                                name_rows(ui, c, duplicate);
+                                kind_row(ui, c);
+                                if c.kind == Kind::Sqlite {
+                                    sqlite_file_rows(ui, c);
+                                } else {
+                                    server_rows(ui, c, is_new);
+                                }
+                                protection_rows(ui, c);
+                                ui.label("Color");
+                                color_picker(ui, &mut c.color);
+                                ui.end_row();
+                                ui.label("Group");
+                                ui.add(
+                                    TextEdit::singleline(&mut c.group)
+                                        .hint_text("e.g. Production")
+                                        .desired_width(180.0),
+                                )
+                                .on_hover_text("Connections with the same group are listed together");
+                                ui.end_row();
+                                if c.kind != Kind::Sqlite {
+                                    timeout_and_ssh_rows(ui, c);
+                                    background_row(ui, c);
+                                }
+                            });
                     });
                 // Above the buttons, wrapped to the form's width.
                 if let Some(test) = test {
@@ -414,6 +425,17 @@ fn timeout_and_ssh_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
         );
         ui.end_row();
     }
+}
+
+/// The second connection for reads that don't need the session.
+fn background_row(ui: &mut egui::Ui, c: &mut ConnConfig) {
+    ui.label("Background");
+    ui.checkbox(&mut c.background_reads, "Second connection for background reads")
+        .on_hover_text(
+            "The sidebar, exports, dumps and the server panel don't wait behind a long query. \
+             Turn off for servers short of connections or behind a transaction-mode pooler",
+        );
+    ui.end_row();
 }
 
 /// The connection test's outcome, while the settings are the ones it ran with.

@@ -15,6 +15,7 @@ pub fn fake_session(kind: Kind) -> (Session, Receiver<Job>, Sender<Reply>) {
         tx,
         rx,
         running: Vec::new(),
+        cancels: Default::default(),
         ready: true,
         tables: vec![],
         columns: vec![],

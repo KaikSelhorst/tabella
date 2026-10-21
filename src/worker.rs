@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::search::{SearchHit, SearchTarget};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -290,6 +291,76 @@ impl Running {
     }
 }
 
+/// When each tab was last cancelled: its jobs taken before that, still waiting in line, are
+/// answered as cancelled instead of run.
+#[derive(Default)]
+pub struct Cancels(Mutex<HashMap<u64, Instant>>);
+
+impl Cancels {
+    pub fn mark(&self, tab: u64) {
+        if let Ok(mut m) = self.0.lock() {
+            m.insert(tab, Instant::now());
+        }
+    }
+
+    fn skips(&self, tab: Option<u64>, taken: Instant) -> bool {
+        let Some(tab) = tab else { return false };
+        self.0
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&tab).copied())
+            .is_some_and(|at| at >= taken)
+    }
+}
+
+/// A job and when the dispatcher took it, to tell it from a cancel that came after.
+struct Queued {
+    job: Job,
+    taken: Instant,
+}
+
+impl Queued {
+    fn now(job: Job) -> Self {
+        Queued {
+            job,
+            taken: Instant::now(),
+        }
+    }
+}
+
+impl Job {
+    /// The reply to the job, cancelled before it ran; `None` for jobs that run anyway (writes,
+    /// scripts, and the ones with a cancel flag of their own that stop at once).
+    fn cancelled(&self) -> Option<Reply> {
+        let no = || DbError::Other("cancelled".into());
+        Some(match *self {
+            Job::Query { tab, .. } | Job::MoreRows { tab, .. } | Job::Activity { tab, .. } => Reply::Rows {
+                tab,
+                res: Box::new(Err(no())),
+                notice: None,
+            },
+            Job::Explain { tab, .. } => Reply::Plan { tab, res: Err(no()) },
+            Job::Preview { tab, .. } => Reply::Preview { tab, res: Err(no()) },
+            Job::Count { tab, .. } => Reply::Count { tab, res: Err(no()) },
+            Job::Distinct { tab, .. } => Reply::Distinct { tab, res: Err(no()) },
+            Job::ColumnStats { tab, .. } => Reply::ColumnStats { tab, res: Err(no()) },
+            Job::Columns { tab, .. } => Reply::Columns {
+                tab,
+                res: Err(no()),
+                incoming: Vec::new(),
+            },
+            Job::Structure { tab, .. } => Reply::Structure { tab, res: Err(no()) },
+            Job::Source { tab, .. } => Reply::Source { tab, res: Err(no()) },
+            Job::ServerInfo { tab } => Reply::ServerInfo { tab, res: Err(no()) },
+            Job::Fks { tab } => Reply::Fks { tab, res: Err(no()) },
+            Job::Export { tab, .. } => Reply::Exported { tab, res: Err(no()) },
+            Job::Compare { tab, .. } => Reply::Compared { tab, res: Err(no()) },
+            Job::SuggestIndex { tab, .. } => Reply::IndexAdvice { tab, res: Err(no()) },
+            _ => return None,
+        })
+    }
+}
+
 /// How far a script file got.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScriptProgress {
@@ -359,6 +430,7 @@ pub struct Spawned {
     pub jobs: Sender<Job>,
     pub replies: Receiver<Reply>,
     pub running: Vec<Arc<Running>>,
+    pub cancels: Arc<Cancels>,
 }
 
 pub enum Reply {
@@ -1004,18 +1076,20 @@ fn start_schema(conn: &mut Conn, tables: &[TableRef]) -> Option<String> {
 /// Spawns the thread that owns the session's connection. Dropping `Spawned::jobs` closes it once
 /// the current statement (if any) finishes; `Running::cancel` stops that statement early.
 ///
-/// Postgres and MySQL sessions also get a second connection on a thread of its own, opened
-/// once the first is up, for the reads `Job::runs_in_background` lists: a long query in one
+/// Postgres and MySQL sessions also get a second connection (unless `background_reads` is off)
+/// on a thread of its own, opened once the first is up, for the reads `Job::runs_in_background` lists: a long query in one
 /// tab then doesn't hold up the sidebar, an export or the server panel. A dispatcher thread
 /// picks the connection for each job; until the second is up (or if it can't connect),
 /// everything runs on the first.
 pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
     let (job_tx, job_rx) = channel::<Job>();
-    let (front_tx, front_rx) = channel::<Job>();
+    let (front_tx, front_rx) = channel::<Queued>();
     let (reply_tx, reply_rx) = channel::<Reply>();
     let front = Arc::new(Running::default());
     let back = Arc::new(Running::default());
     let running = vec![front.clone(), back.clone()];
+    let cancels = Arc::new(Cancels::default());
+    let marks = cancels.clone();
     let shared = Arc::new(Shared::default());
     {
         let shared = shared.clone();
@@ -1044,7 +1118,7 @@ pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
         let tables = conn.tables();
         let location = tables.as_ref().ok().and_then(|t| start_schema(&mut conn, t));
         send(Reply::Connected(tables.map(|tables| Connected { tables })));
-        if cfg.kind != crate::db::Kind::Sqlite {
+        if cfg.kind != crate::db::Kind::Sqlite && cfg.background_reads {
             let bg = spawn_background(
                 cfg.clone(),
                 via,
@@ -1052,6 +1126,7 @@ pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
                 back,
                 reply_tx.clone(),
                 wake.clone(),
+                marks.clone(),
             );
             let _ = shared.background.set(bg);
         }
@@ -1072,20 +1147,21 @@ pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
             last_job: Instant::now(),
             send: &send,
             running: &front,
+            cancels: &marks,
             background: false,
         };
-        while let Ok(job) = front_rx.recv() {
-            let holds_back = job.holds_back_background();
-            let schema = match &job {
+        while let Ok(q) = front_rx.recv() {
+            let holds_back = q.job.holds_back_background();
+            let schema = match &q.job {
                 Job::UseSchema(name) => Some(name.clone()),
                 _ => None,
             };
-            w.run(job);
+            w.run(q);
             // The second connection follows, before the reads waiting for this go to it.
             if let (Some(name), Some(bg)) = (schema, shared.background.get())
                 && w.location.as_ref() == Some(&name)
             {
-                bg.send(Job::UseSchema(name));
+                bg.send(Queued::now(Job::UseSchema(name)));
             }
             // Stored before the count drops: `dispatch` reads them the other way round.
             shared.tx_open.store(w.tx.open, Ordering::SeqCst);
@@ -1098,6 +1174,7 @@ pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
         jobs: job_tx,
         replies: reply_rx,
         running,
+        cancels,
     }
 }
 
@@ -1114,10 +1191,11 @@ struct Shared {
 }
 
 /// Sends each job to the second connection when it can run there, to the first otherwise.
-fn dispatch(jobs: &Receiver<Job>, front: &Sender<Job>, shared: &Shared) {
+fn dispatch(jobs: &Receiver<Job>, front: &Sender<Queued>, shared: &Shared) {
     while let Ok(job) = jobs.recv() {
+        let job = Queued::now(job);
         if let Some(bg) = shared.background.get().filter(|bg| bg.ready())
-            && job.runs_in_background()
+            && job.job.runs_in_background()
             // The count first: when it reads 0, the thread already stored `tx_open`.
             && shared.holding_back.load(Ordering::SeqCst) == 0
             && !shared.tx_open.load(Ordering::SeqCst)
@@ -1125,7 +1203,7 @@ fn dispatch(jobs: &Receiver<Job>, front: &Sender<Job>, shared: &Shared) {
             bg.send(job);
             continue;
         }
-        if job.holds_back_background() {
+        if job.job.holds_back_background() {
             shared.holding_back.fetch_add(1, Ordering::SeqCst);
         }
         if front.send(job).is_err() {
@@ -1136,7 +1214,7 @@ fn dispatch(jobs: &Receiver<Job>, front: &Sender<Job>, shared: &Shared) {
 
 /// The session's second connection, as the first thread sees it.
 struct Background {
-    jobs: Sender<Job>,
+    jobs: Sender<Queued>,
     /// Connected, and not lost since.
     ready: Arc<AtomicBool>,
 }
@@ -1146,7 +1224,7 @@ impl Background {
         self.ready.load(Ordering::Relaxed)
     }
 
-    fn send(&self, job: Job) {
+    fn send(&self, job: Queued) {
         let _ = self.jobs.send(job);
     }
 }
@@ -1156,12 +1234,13 @@ impl Background {
 fn spawn_background(
     cfg: ConnConfig,
     via: Option<u16>,
-    location: Option<String>,
+    mut location: Option<String>,
     running: Arc<Running>,
     reply_tx: Sender<Reply>,
     wake: Waker,
+    cancels: Arc<Cancels>,
 ) -> Background {
-    let (jobs, job_rx) = channel::<Job>();
+    let (jobs, job_rx) = channel::<Queued>();
     let ready = Arc::new(AtomicBool::new(false));
     let ready_flag = ready.clone();
     thread::spawn(move || {
@@ -1169,9 +1248,20 @@ fn spawn_background(
             let _ = reply_tx.send(r);
             wake();
         };
-        let Ok(mut conn) = Conn::connect(&cfg, via) else {
-            // Everything stays on the first connection.
-            return;
+        // Until it connects, everything stays on the first connection; it tries again now
+        // and then. All it can be sent meanwhile is the schema to follow.
+        let mut conn = loop {
+            match Conn::connect_as(&cfg, via, BACKGROUND_NAME) {
+                Ok(c) => break c,
+                Err(_) => match job_rx.recv_timeout(BACKGROUND_RETRY) {
+                    Ok(Queued {
+                        job: Job::UseSchema(name),
+                        ..
+                    }) => location = Some(name),
+                    Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => return,
+                },
+            }
         };
         if let Some(name) = &location {
             let _ = conn.use_schema(name);
@@ -1188,16 +1278,31 @@ fn spawn_background(
             last_job: Instant::now(),
             send: &send,
             running: &running,
+            cancels: &cancels,
             background: true,
         };
-        while let Ok(job) = job_rx.recv() {
-            if !w.run(job) {
-                ready_flag.store(false, Ordering::Relaxed);
-            }
+        loop {
+            let job = if ready_flag.load(Ordering::Relaxed) {
+                job_rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            } else {
+                job_rx.recv_timeout(BACKGROUND_RETRY)
+            };
+            let ok = match job {
+                Ok(job) => w.run(job),
+                // Lost and not replaced: try again.
+                Err(RecvTimeoutError::Timeout) => w.ensure_alive(true),
+                Err(RecvTimeoutError::Disconnected) => return,
+            };
+            ready_flag.store(ok, Ordering::Relaxed);
         }
     });
     Background { jobs, ready }
 }
+
+/// How the second connection names itself on the server, and how long it waits before trying
+/// again to connect when it couldn't.
+const BACKGROUND_NAME: &str = "tabella (background)";
+const BACKGROUND_RETRY: Duration = Duration::from_secs(60);
 
 /// The connection's thread: runs jobs one at a time and keeps the transaction's bookkeeping.
 struct Worker<'a, S: Fn(Reply)> {
@@ -1214,6 +1319,8 @@ struct Worker<'a, S: Fn(Reply)> {
     send: &'a S,
     /// The tab whose job runs now, and how to cancel it.
     running: &'a Running,
+    /// Tabs cancelled, whose jobs still in line are skipped.
+    cancels: &'a Cancels,
     /// The session's second connection: it only reads, and a lost connection is replaced
     /// without telling the app (no session state of the user's was on it).
     background: bool,
@@ -1227,7 +1334,14 @@ const RECONNECT_WAITS: [Duration; 3] = [Duration::ZERO, Duration::from_secs(1), 
 impl<S: Fn(Reply)> Worker<'_, S> {
     /// Runs one job and sends its reply. Returns false when the connection is gone and
     /// couldn't be replaced.
-    fn run(&mut self, job: Job) -> bool {
+    fn run(&mut self, q: Queued) -> bool {
+        let Queued { job, taken } = q;
+        if self.cancels.skips(job.tab(), taken)
+            && let Some(reply) = job.cancelled()
+        {
+            (self.send)(reply);
+            return true;
+        }
         let before = self.tx;
         let mut alive = self.ensure_alive(false);
         self.running.set_tab(job.tab());
@@ -1260,7 +1374,12 @@ impl<S: Fn(Reply)> Worker<'_, S> {
         let mut last_error = None;
         for wait in RECONNECT_WAITS {
             thread::sleep(wait);
-            match Conn::connect(self.cfg, self.via) {
+            let name = if self.background {
+                BACKGROUND_NAME
+            } else {
+                "tabella"
+            };
+            match Conn::connect_as(self.cfg, self.via, name) {
                 Ok(mut conn) => {
                     if let Some(name) = &self.location {
                         let _ = conn.use_schema(name);
@@ -2300,6 +2419,7 @@ mod tests {
             jobs,
             replies,
             running,
+            cancels,
         } = spawn(cfg, Arc::new(|| {}));
         // Which replies came, in order: "rows:<tab>" (ok or err) and "tables".
         let next = |timeout: u64| -> Option<String> {
@@ -2317,6 +2437,18 @@ mod tests {
         };
         // The second connection opens once the first is up.
         thread::sleep(Duration::from_secs(1));
+        if kind == Kind::Postgres {
+            let named = setup
+                .query(
+                    "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'tabella (background)'",
+                )
+                .unwrap();
+            assert_ne!(
+                named.rows.cell(0, 0),
+                Some("0"),
+                "the second session says what it is"
+            );
+        }
 
         jobs.send(Job::Query {
             tab: 1,
@@ -2346,6 +2478,31 @@ mod tests {
         let stopped = next(10).unwrap_or_default();
         assert!(stopped.starts_with("rows:2:"), "{kind:?}: its own is ({stopped})");
 
+        // A tab's job still in line behind another's is skipped, not run, once cancelled.
+        jobs.send(Job::Query {
+            tab: 4,
+            sql: sleep(1),
+        })
+        .unwrap();
+        jobs.send(Job::Query {
+            tab: 5,
+            sql: sleep(30),
+        })
+        .unwrap();
+        thread::sleep(Duration::from_millis(200));
+        cancels.mark(5);
+        running.iter().for_each(|r| r.cancel(Some(5)));
+        assert_eq!(
+            next(5).as_deref(),
+            Some("rows:4:ok"),
+            "{kind:?}: the other tab ran"
+        );
+        assert_eq!(
+            next(2).as_deref(),
+            Some("rows:5:err"),
+            "{kind:?}: skipped at once"
+        );
+
         // With a transaction open, the sidebar reads on the first connection, after it.
         jobs.send(Job::Query {
             tab: 1,
@@ -2368,6 +2525,35 @@ mod tests {
         jobs.send(Job::EndTx { commit: false }).unwrap();
         drop(jobs);
         setup.query("DROP TABLE dbl_bg").unwrap();
+    }
+
+    /// With `background_reads` off, the sidebar waits in line like before.
+    #[test]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
+    fn background_reads_can_be_turned_off() {
+        let mut cfg = ConnConfig::new(Kind::Postgres);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 55432;
+        cfg.password = "pw".into();
+        cfg.database = "postgres".into();
+        cfg.background_reads = false;
+        let Spawned { jobs, replies, .. } = spawn(cfg, Arc::new(|| {}));
+        thread::sleep(Duration::from_secs(1));
+        jobs.send(Job::Query {
+            tab: 1,
+            sql: "SELECT pg_sleep(1)".into(),
+        })
+        .unwrap();
+        jobs.send(Job::Tables).unwrap();
+        let order: Vec<&str> = std::iter::from_fn(|| replies.recv_timeout(Duration::from_secs(5)).ok())
+            .filter_map(|r| match r {
+                Reply::Rows { .. } => Some("rows"),
+                Reply::Tables(_) => Some("tables"),
+                _ => None,
+            })
+            .take(2)
+            .collect();
+        assert_eq!(order, ["rows", "tables"]);
     }
 
     #[test]

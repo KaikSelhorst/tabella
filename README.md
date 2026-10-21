@@ -118,6 +118,11 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
 - A dropped connection is replaced before the next query (Postgres notices at once, MySQL after
   a failed query or 30 s idle); the picked schema comes back, and an open transaction is reported
   as lost
+- Reads that don't need the session (sidebar, exports, dumps, value search, the server panel) run
+  on a second connection, so they don't wait behind a long query; it shows on the server as
+  "tabella (background)" next to "tabella", and can be turned off per connection ("Background"
+  in the form) for servers short of connections or behind a transaction-mode pooler
+- Cancelling stops the tab's own statement, and its jobs still waiting in line
 - Connection groups ("Group" in the form) list connections together in the welcome screen, the
   sidebar and `Ctrl+P`; "Confirm before any change" makes the editor ask before every statement
   that changes data

@@ -106,6 +106,8 @@ pub struct Session {
     rx: Receiver<Reply>,
     /// What each of the session's connections is running, for cancelling a tab's statement.
     running: Vec<Arc<worker::Running>>,
+    /// When each tab was cancelled, so its jobs still waiting in line are skipped.
+    cancels: Arc<worker::Cancels>,
     pub ready: bool,
     pub tables: Vec<TableRef>,
     /// `(table, column)` pairs for SQL autocomplete.
@@ -177,10 +179,12 @@ impl Session {
         let _ = self.tx.send(job);
     }
 
-    /// Asks the server to stop the statement running for this tab (on whichever of the
-    /// session's connections has it). Runs on its own thread: it may open a connection and
-    /// must not block the UI.
+    /// Stops this tab's work: its jobs still waiting in line are skipped, and the server is
+    /// asked to stop the statement running for it (on whichever of the session's connections
+    /// has it). Asking runs on its own thread: it may open a connection and must not block the
+    /// UI.
     pub fn cancel(&self, tab: u64) {
+        self.cancels.mark(tab);
         self.cancel_running(Some(tab));
     }
 

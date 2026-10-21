@@ -271,6 +271,7 @@ impl App {
             jobs: tx,
             replies: rx,
             running,
+            cancels,
         } = worker::spawn(cfg.clone(), self.waker());
         self.notice = Notice::info(format!("Connecting to {}…", cfg.name));
         self.session = Some(Session {
@@ -278,6 +279,7 @@ impl App {
             tx,
             rx,
             running,
+            cancels,
             ready: false,
             tables: vec![],
             columns: vec![],

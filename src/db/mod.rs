@@ -83,6 +83,15 @@ pub struct ConnConfig {
     /// Reach the database through an SSH tunnel (key or agent authentication).
     #[serde(default)]
     pub ssh: Option<SshConfig>,
+    /// Reads that don't need the session (sidebar, exports, the server panel) go to a second
+    /// connection, so they don't wait behind a long query. Off for servers short of connections
+    /// or behind a transaction-mode pooler.
+    #[serde(default = "yes")]
+    pub background_reads: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Connection color tags, in the order the form offers them.
@@ -161,6 +170,7 @@ impl std::fmt::Debug for ConnConfig {
             .field("confirm_writes", &self.confirm_writes)
             .field("timeout_secs", &self.timeout_secs)
             .field("ssh", &self.ssh)
+            .field("background_reads", &self.background_reads)
             .finish()
     }
 }
@@ -236,6 +246,7 @@ impl ConnConfig {
             confirm_writes: false,
             timeout_secs: 0,
             ssh: None,
+            background_reads: true,
         }
     }
 }
@@ -513,7 +524,13 @@ pub enum Conn {
 impl Conn {
     /// Connects to `cfg`, or through a local tunnel port when `via` is set (SSH).
     pub fn connect(cfg: &ConnConfig, via: Option<u16>) -> DbResult<Self> {
-        let mut conn = Self::open(cfg, via)?;
+        Self::connect_as(cfg, via, "tabella")
+    }
+
+    /// `connect`, naming the session `name` on the server (Postgres `application_name`, MySQL's
+    /// `program_name` attribute), so the session list tells a client's connections apart.
+    pub fn connect_as(cfg: &ConnConfig, via: Option<u16>, name: &str) -> DbResult<Self> {
+        let mut conn = Self::open(cfg, via, name)?;
         // SQLite: read-only is how the file is opened; there's no statement timeout to set.
         if cfg.kind == Kind::Sqlite {
             return Ok(conn);
@@ -537,7 +554,7 @@ impl Conn {
         Ok(conn)
     }
 
-    fn open(cfg: &ConnConfig, via: Option<u16>) -> DbResult<Self> {
+    fn open(cfg: &ConnConfig, via: Option<u16>, name: &str) -> DbResult<Self> {
         match cfg.kind {
             Kind::Postgres => {
                 let mut c = postgres::Config::new();
@@ -545,6 +562,7 @@ impl Conn {
                     .port(via.unwrap_or(cfg.port))
                     .user(&cfg.user)
                     .password(cfg.password.as_bytes())
+                    .application_name(name)
                     .connect_timeout(Duration::from_secs(10));
                 if !cfg.database.is_empty() {
                     c.dbname(&cfg.database);
@@ -564,7 +582,12 @@ impl Conn {
                 };
                 Ok(Conn::Pg(Box::new(client?)))
             }
-            Kind::MySql => Ok(Conn::My(mysql::Conn::new(my_opts(cfg, via))?)),
+            Kind::MySql => {
+                let attrs = std::collections::HashMap::from([("program_name", name)]);
+                Ok(Conn::My(mysql::Conn::new(
+                    my_opts(cfg, via).connect_attrs(Some(attrs)),
+                )?))
+            }
             Kind::Sqlite => Ok(Conn::Lite(Box::new(crate::sqlite::open(cfg)?))),
         }
     }
