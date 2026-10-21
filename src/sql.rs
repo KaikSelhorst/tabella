@@ -632,28 +632,35 @@ pub fn bind_params(kind: Kind, script: &str, value: impl Fn(&str) -> String) -> 
 /// Char range of the identifier at `cursor` (letters, digits, `_`, `$`, dots and quotes, so
 /// `public."Table"` comes whole). `None` on whitespace or punctuation.
 pub fn word_at(text: &str, cursor: usize) -> Option<(usize, usize)> {
-    let chars: Vec<char> = text.chars().collect();
     let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '$' | '.' | '"' | '`');
+    // Asked every frame the pointer rests on the editor: walks out from the cursor instead of
+    // copying the whole text into chars.
+    let at = text.char_indices().nth(cursor).map_or(text.len(), |(i, _)| i);
     // The pointer sits between chars: take the one after it, or the one before at a word's end.
-    let at = if chars.get(cursor).is_some_and(|c| is_word(*c)) {
-        cursor
-    } else if cursor > 0 && chars.get(cursor - 1).is_some_and(|c| is_word(*c)) {
-        cursor - 1
-    } else {
+    if !text[at..].chars().next().is_some_and(is_word) && !text[..at].chars().next_back().is_some_and(is_word)
+    {
         return None;
-    };
-    let mut a = at;
-    while a > 0 && is_word(chars[a - 1]) {
-        a -= 1;
     }
-    let mut b = at + 1;
-    while b < chars.len() && is_word(chars[b]) {
-        b += 1;
-    }
+    let before = text[..at].chars().rev().take_while(|c| is_word(*c)).count();
+    let after = text[at..].chars().take_while(|c| is_word(*c)).count();
     // Trailing dots ("table.") aren't part of the name.
-    while b > a && chars[b - 1] == '.' {
-        b -= 1;
-    }
+    let word_end = text[at..]
+        .char_indices()
+        .nth(after)
+        .map_or(text.len(), |(i, _)| at + i);
+    let start = at
+        - text[..at]
+            .chars()
+            .rev()
+            .take(before)
+            .map(char::len_utf8)
+            .sum::<usize>();
+    let dots = text[start..word_end]
+        .chars()
+        .rev()
+        .take_while(|c| *c == '.')
+        .count();
+    let (a, b) = (cursor - before, cursor + after - dots);
     (a < b).then_some((a, b))
 }
 
@@ -1882,6 +1889,16 @@ mod tests {
         );
         assert_eq!(w(7), None, "on punctuation");
         assert_eq!(w(0).as_deref(), Some("SELECT"));
+        assert_eq!(w(text.chars().count()).as_deref(), Some("1"), "at the very end");
+        // Past non-ASCII text, char positions still line up.
+        let text = "-- café ação\nSELECT * FROM pedidos. WHERE";
+        let w =
+            |i: usize| word_at(text, i).map(|(a, b)| text.chars().skip(a).take(b - a).collect::<String>());
+        assert_eq!(w(6).as_deref(), Some("café"));
+        assert_eq!(w(29).as_deref(), Some("pedidos"), "without the trailing dot");
+        assert_eq!(w(35).as_deref(), Some("pedidos"), "right after the dot");
+        assert_eq!(w(36).as_deref(), Some("WHERE"));
+        assert_eq!(word_at("a . b", 2), None, "a dot alone is no name");
     }
 
     #[test]

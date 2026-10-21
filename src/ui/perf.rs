@@ -16,6 +16,8 @@ use crate::db::{ColumnInfo, QueryResult, TableRef};
 struct Driver {
     ctx: egui::Context,
     app: App,
+    /// Where the pointer rests, with Ctrl held (hovering a name in the editor).
+    ctrl_hover: Option<egui::Pos2>,
 }
 
 impl Driver {
@@ -23,7 +25,11 @@ impl Driver {
         let ctx = egui::Context::default();
         super::theme::apply(&ctx);
         let app = fake_app(&ctx);
-        Driver { ctx, app }
+        Driver {
+            ctx,
+            app,
+            ctrl_hover: None,
+        }
     }
 
     fn frame(&mut self) {
@@ -32,6 +38,15 @@ impl Driver {
                 egui::Pos2::ZERO,
                 egui::vec2(1600.0, 900.0),
             )),
+            events: self
+                .ctrl_hover
+                .map(|p| {
+                    vec![
+                        egui::Event::ModifiersChanged(egui::Modifiers::COMMAND),
+                        egui::Event::PointerMoved(p),
+                    ]
+                })
+                .unwrap_or_default(),
             ..Default::default()
         };
         let app = &mut self.app;
@@ -224,6 +239,65 @@ fn frame_times() {
     }));
     report("Ctrl+P: 3000 tables + 40k columns, searching", harness.time(30));
     harness.state_mut().dialog = None;
+
+    // Typing in a big paste (~700 KB of JSON, 5000 lines): every keystroke changes the text, so
+    // nothing laid out for the previous frame can be reused.
+    {
+        let app = harness.state_mut();
+        let text: String = (0..5000)
+            .map(|i| {
+                format!(
+                    "  {{\"id\":{i},\"table_name\":\"sales.orders\",\"row_id\":\"{}\",\"action\":\"UPDATE\",\"changed_by\":\"svc_fulfillment\",\"old_values\":\"{{\\\"status\\\": \\\"confirmed\\\"}}\",\"changed_at\":\"2025-04-08 08:10:35+00\"}},\n",
+                    i * 37
+                )
+            })
+            .collect();
+        app.open_sql(text);
+        app.active = app.tabs.len() - 1;
+    }
+    report("editor: 700 KB paste, at rest", harness.time(10));
+    let typing = {
+        harness.frame();
+        let start = Instant::now();
+        for _ in 0..10 {
+            let app = harness.state_mut();
+            let i = app.active;
+            app.tabs[i].editor_mut().unwrap().text.push(' ');
+            harness.frame();
+        }
+        start.elapsed() / 10
+    };
+    report("editor: 700 KB paste, typing", typing);
+
+    // Ctrl held over a name in the editor, with a big catalog: "go to definition" looks it up
+    // every frame the pointer is there.
+    {
+        let app = harness.state_mut();
+        let s = app.session.as_mut().unwrap();
+        s.schema_cols = (0..40_000)
+            .map(|i| crate::db::SchemaColumn {
+                schema: format!("schema_{}", i / 3900),
+                table: format!("table_{}", i / 13),
+                column: format!("column_{}", i % 13),
+                data_type: "text".into(),
+                pk: false,
+            })
+            .collect();
+        let text: String = (0..200)
+            .map(|i| {
+                format!(
+                    "SELECT column_{} FROM table_{i} t JOIN table_{} u ON u.column_1 = t.column_2;\n",
+                    i % 13,
+                    i + 1
+                )
+            })
+            .collect();
+        app.open_sql(text);
+        app.active = app.tabs.len() - 1;
+    }
+    harness.ctrl_hover = Some(egui::pos2(330.0, 140.0));
+    report("editor: Ctrl+hover a name, 40k columns", harness.time(30));
+    harness.ctrl_hover = None;
 }
 
 /// Contact sheets of the screenshots, for reviewing many screens at once:

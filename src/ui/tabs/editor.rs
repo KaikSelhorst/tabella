@@ -60,6 +60,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 .or_else(|| statement.clone())
                 .unwrap_or_else(|| text.clone());
             let all = selection.clone().unwrap_or_else(|| text.clone());
+            let can_preview = previewable_cached(ui.ctx(), tab.id, &one);
             let format_key =
                 ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT | egui::Modifiers::ALT, Key::F));
             ui.horizontal(|ui| {
@@ -67,7 +68,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 // full bar took when it last fitted, so it doesn't flip back and forth.
                 let start_x = ui.cursor().left();
                 let avail = ui.available_width();
-                let variant = egui::Id::new(("editor_toolbar", statement.is_some(), app::previewable(&one), repeat.is_some(), busy));
+                let variant = egui::Id::new(("editor_toolbar", statement.is_some(), can_preview, repeat.is_some(), busy));
                 let full: Option<f32> = ui.data(|d| d.get_temp(variant));
                 let compact = full.is_some_and(|w| w + RIGHT_ROOM > avail);
                 let label = if selection.is_some() && !compact {
@@ -96,7 +97,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                 {
                     run = Some(all.clone());
                 }
-                if app::previewable(&one)
+                if can_preview
                     && ui
                         .add_enabled(
                             !busy,
@@ -359,7 +360,7 @@ pub(super) fn sql_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     }
                     let shift = ui.input(|i| i.modifiers.shift);
                     if out.response.has_focus() && ctrl_enter && shift {
-                        if app::previewable(&one) {
+                        if can_preview {
                             preview = Some(one.clone());
                         }
                     } else if out.response.has_focus() && ctrl_enter {
@@ -651,6 +652,22 @@ fn statement_ranges_cached(ctx: &egui::Context, tab: u64, text: &str) -> Vec<(us
     let r = sql::statement_ranges(text, true);
     ctx.data_mut(|d| d.insert_temp(cache, (key, r.clone())));
     r
+}
+
+/// `app::previewable` of what Ctrl+Enter would run, kept while that text stays the same: it
+/// reads the whole text, which costs milliseconds on a big paste, and the toolbar asks every
+/// frame.
+fn previewable_cached(ctx: &egui::Context, tab: u64, sql: &str) -> bool {
+    let cache = egui::Id::new(("previewable", tab));
+    let key = egui::Id::new(sql);
+    if let Some((k, v)) = ctx.data(|d| d.get_temp::<(egui::Id, bool)>(cache))
+        && k == key
+    {
+        return v;
+    }
+    let v = app::previewable(sql);
+    ctx.data_mut(|d| d.insert_temp(cache, (key, v)));
+    v
 }
 
 /// Hover card for a table name in the editor: its columns and types.
