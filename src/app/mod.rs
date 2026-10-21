@@ -1267,6 +1267,7 @@ pub struct App {
     /// The FPS readout in the corner (Ctrl+P), off unless asked for.
     pub show_fps: bool,
     pub history: Vec<Entry>,
+    history_writer: history::Writer,
     pub favorites: Vec<Favorite>,
     pub filters: Vec<SavedFilter>,
     /// Column widths dragged by the user, per connection and table.
@@ -1357,6 +1358,7 @@ impl App {
             max_fps: false,
             show_fps: false,
             history: history.value,
+            history_writer: history::Writer::new(),
             favorites: favorites.value,
             filters: filters.value,
             col_widths: col_widths.value,
@@ -2733,7 +2735,7 @@ impl App {
 
     /// Drops one entry from the history (and the file).
     pub fn forget_history(&mut self, conn: &str, sql: &str) {
-        history::forget(&mut self.history, conn, sql);
+        history::forget(&mut self.history, conn, sql, &self.history_writer);
     }
 
     /// Opens the "search value" tab (or focuses it).

@@ -9,6 +9,7 @@ use crate::error::DbResult;
 struct TabReplyCx<'a> {
     notice: &'a mut Option<Notice>,
     history: &'a mut Vec<Entry>,
+    history_writer: &'a history::Writer,
     /// Design tabs whose DDL ran: (tab, schema, table).
     designed: &'a mut Vec<(u64, String, String)>,
     /// Cells just saved inside a transaction (manual-commit mode).
@@ -18,7 +19,7 @@ struct TabReplyCx<'a> {
 impl App {
     /// Applies every reply that arrived since the last frame.
     pub fn poll(&mut self) {
-        if let Some(e) = crate::history::take_write_error() {
+        if let Some(e) = self.history_writer.take_error() {
             self.notice = Notice::error(format!("Error saving history: {e}"));
         }
         let mut restore = None;
@@ -59,6 +60,7 @@ impl App {
             let mut cx = TabReplyCx {
                 notice: &mut self.notice,
                 history: &mut self.history,
+                history_writer: &self.history_writer,
                 designed: &mut designed,
                 uncommitted: &mut uncommitted,
             };
@@ -450,7 +452,7 @@ fn on_rows(
             ok,
             ms,
         };
-        history::push(cx.history, entry);
+        history::push(cx.history, entry, cx.history_writer);
     }
     t.selected = kept_activity_selection(t, &res);
     t.anchor = None;

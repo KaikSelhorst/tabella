@@ -22,6 +22,8 @@ pub use rows::{Row, Rows};
 /// Default for the most rows kept from one query; protects against `SELECT *` on huge tables.
 pub const DEFAULT_MAX_ROWS: usize = 5000;
 
+/// A preference read by every connection's worker thread, so process-wide (an atomic, not
+/// threaded through each job); tests leave it at the default.
 static MAX_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_ROWS);
 
 /// Most rows kept from one query (a preference, see `set_max_rows`).

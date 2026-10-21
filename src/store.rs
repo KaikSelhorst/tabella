@@ -32,10 +32,14 @@ pub fn use_dir_in_this_thread(dir: PathBuf) {
 
 /// Where tabella keeps its files. `TABELLA_CONFIG_DIR` overrides it (portable setups).
 pub fn dir() -> Option<PathBuf> {
+    // Tests never touch the real files: their own directory, or else one for the whole run.
     #[cfg(test)]
-    if let Some(d) = TEST_DIR.with(|d| d.borrow().clone()) {
-        return Some(d);
-    }
+    return Some(
+        TEST_DIR
+            .with(|d| d.borrow().clone())
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("tabella-test-{}", std::process::id()))),
+    );
+    #[cfg(not(test))]
     match std::env::var_os("TABELLA_CONFIG_DIR") {
         Some(d) => Some(PathBuf::from(d)),
         None => dirs::config_dir().map(|d| migrated(&d)),

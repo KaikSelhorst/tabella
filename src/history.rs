@@ -1,7 +1,7 @@
 //! SQL editor history, kept per connection in `history.json` next to the saved connections.
 
-use std::sync::mpsc::{Sender, channel};
-use std::sync::{Mutex, OnceLock};
+use std::path::Path;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -23,47 +23,58 @@ pub struct Entry {
 
 const FILE: &str = "history.json";
 
-/// The last background write's failure, until the UI picks it up with `take_write_error`.
-static WRITE_ERROR: Mutex<Option<String>> = Mutex::new(None);
-
 pub fn load() -> Loaded<Vec<Entry>> {
     store::load(FILE)
 }
 
-/// Writes happen on one background thread so running a query never waits on the disk. Only the
-/// newest snapshot matters, so a backlog collapses to the last one.
-fn save(list: &[Entry]) {
-    static WRITER: OnceLock<Sender<Vec<Entry>>> = OnceLock::new();
-    let tx = WRITER.get_or_init(|| {
+/// Saves the history on its own thread so running a query never waits on the disk. Only the
+/// newest snapshot matters, so a backlog collapses to the last one. The thread ends with this.
+pub struct Writer {
+    tx: Sender<Vec<Entry>>,
+    /// Each write's outcome: `Some` with why it failed.
+    done: Receiver<Option<String>>,
+}
+
+impl Writer {
+    /// The file's place is settled here, on the caller's thread (a test's own directory).
+    pub fn new() -> Self {
+        let path = store::path(FILE);
         let (tx, rx) = channel::<Vec<Entry>>();
+        let (done_tx, done) = channel();
         std::thread::spawn(move || {
             while let Ok(mut latest) = rx.recv() {
                 while let Ok(newer) = rx.try_recv() {
                     latest = newer;
                 }
-                let error = write(&latest).err().map(|e| e.to_string());
-                if let Ok(mut slot) = WRITE_ERROR.lock() {
-                    *slot = error;
+                let error = match &path {
+                    Ok(p) => write(p, &latest).err().map(|e| e.to_string()),
+                    Err(e) => Some(e.to_string()),
+                };
+                if done_tx.send(error).is_err() {
+                    break;
                 }
             }
         });
-        tx
-    });
-    // The receiver lives as long as the process: sending can't fail.
-    let _ = tx.send(list.to_vec());
+        Writer { tx, done }
+    }
+
+    fn save(&self, list: &[Entry]) {
+        // The thread only stops once this is dropped: sending can't fail.
+        let _ = self.tx.send(list.to_vec());
+    }
+
+    /// Why the history could not be saved, once per failure (a later success clears it).
+    pub fn take_error(&self) -> Option<String> {
+        self.done.try_iter().last().flatten()
+    }
 }
 
 /// Queries can contain data, so the file is private like the connections file. Compact JSON:
 /// this one gets long.
-fn write(list: &[Entry]) -> Result<(), StoreError> {
+fn write(path: &Path, list: &[Entry]) -> Result<(), StoreError> {
     let json = serde_json::to_string(list)?;
-    store::write_private(&store::path(FILE)?, &json)?;
+    store::write_private(path, &json)?;
     Ok(())
-}
-
-/// Why the history could not be saved, once per failure.
-pub fn take_write_error() -> Option<String> {
-    WRITE_ERROR.lock().ok()?.take()
 }
 
 pub fn now() -> u64 {
@@ -74,15 +85,15 @@ pub fn now() -> u64 {
 
 /// Adds an entry (most recent last) and saves. Re-running the same SQL moves it to the end
 /// instead of duplicating it.
-pub fn push(list: &mut Vec<Entry>, entry: Entry) {
+pub fn push(list: &mut Vec<Entry>, entry: Entry, writer: &Writer) {
     insert(list, entry);
-    save(list);
+    writer.save(list);
 }
 
 /// Removes an entry and saves.
-pub fn forget(list: &mut Vec<Entry>, conn: &str, sql: &str) {
+pub fn forget(list: &mut Vec<Entry>, conn: &str, sql: &str, writer: &Writer) {
     list.retain(|e| !(e.conn == conn && e.sql == sql));
-    save(list);
+    writer.save(list);
 }
 
 fn insert(list: &mut Vec<Entry>, entry: Entry) {

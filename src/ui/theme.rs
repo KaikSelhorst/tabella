@@ -89,15 +89,19 @@ pub struct Tokens {
     pub on_accent: Color32,
 }
 
-static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    /// Per thread: the UI draws on one, and each test's harness gets its own, so a test that
+    /// switches the theme doesn't repaint the others running beside it.
+    static LIGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// Switches between the dark and the light palette; call `apply` afterwards.
 pub fn set_light(light: bool) {
-    LIGHT.store(light, std::sync::atomic::Ordering::Relaxed);
+    LIGHT.set(light);
 }
 
 pub fn is_light() -> bool {
-    LIGHT.load(std::sync::atomic::Ordering::Relaxed)
+    LIGHT.get()
 }
 
 /// The palette, computed once per theme (OKLCH conversions aren't free and this is read every
