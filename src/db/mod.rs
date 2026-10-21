@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{DbError, DbResult};
 use crate::plan::{self, Plan};
+use crate::secrets::Secret;
 use crate::sql::Stmt;
 use crate::tls;
 
@@ -87,7 +88,8 @@ impl Kind {
     }
 }
 
-/// `Debug` is written by hand below so the password never ends up in a log or panic message.
+/// `Debug` is written by hand below so the password never ends up in a log or panic message;
+/// `Secret` wipes it from memory when dropped.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ConnConfig {
     /// Stable identity (secrets are stored under it), so renaming never orphans a password.
@@ -99,7 +101,7 @@ pub struct ConnConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub password: String,
+    pub password: Secret,
     pub database: String,
     #[serde(default)]
     pub ssl: bool,
@@ -231,9 +233,9 @@ pub fn by_group(saved: &[ConnConfig]) -> Vec<(&str, Vec<usize>)> {
 
 impl ConnConfig {
     /// Every setting, password included: a connection test's result applies only while this
-    /// stays the same. Kept in memory, never shown or logged.
-    pub fn test_key(&self) -> String {
-        format!("{self:?}\0{}", self.password)
+    /// stays the same. A `Secret`, like the password inside it.
+    pub fn test_key(&self) -> Secret {
+        format!("{self:?}\0{}", self.password.as_str()).into()
     }
 
     /// Whether `other` connects the same way (server, account, database and the session
@@ -273,7 +275,7 @@ impl ConnConfig {
                 Kind::MySql => "root".into(),
                 Kind::Sqlite => String::new(),
             },
-            password: String::new(),
+            password: Secret::default(),
             database: String::new(),
             preview_writes: false,
             manual_commit: false,
@@ -486,7 +488,7 @@ fn my_opts(cfg: &ConnConfig, via: Option<u16>) -> mysql::OptsBuilder {
         .ip_or_hostname(Some(host))
         .tcp_port(via.unwrap_or(cfg.port))
         .user(Some(cfg.user.clone()))
-        .pass(Some(cfg.password.clone()))
+        .pass(Some(cfg.password.to_string()))
         .tcp_connect_timeout(Some(Duration::from_secs(10)))
         // Affected-row counts mean "rows matched", like Postgres: an UPDATE that writes the value a
         // row already had still reports 1, so "0 rows" really means the row is gone.
@@ -600,7 +602,7 @@ impl Conn {
                 c.host(&cfg.host)
                     .port(via.unwrap_or(cfg.port))
                     .user(&cfg.user)
-                    .password(&cfg.password)
+                    .password(cfg.password.as_bytes())
                     .connect_timeout(Duration::from_secs(10));
                 if !cfg.database.is_empty() {
                     c.dbname(&cfg.database);

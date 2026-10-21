@@ -16,6 +16,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use chacha20poly1305::aead::{Aead, Generate, Key, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::store::{self, Loaded, StoreError};
 
@@ -25,6 +26,49 @@ const OLD_SERVICE: &str = "dblite";
 /// Encrypted with the vault key to tell a wrong master password from a corrupted file. Still the
 /// old name: changing it would make every existing vault refuse its master password.
 const CHECK: &[u8] = b"dblite-vault-ok";
+
+/// A password in memory: wiped when dropped, and `Debug` never shows it. Reads as a `String`.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl std::ops::Deref for Secret {
+    type Target = String;
+
+    fn deref(&self) -> &String {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Secret {
+    fn deref_mut(&mut self) -> &mut String {
+        &mut self.0
+    }
+}
+
+impl From<String> for Secret {
+    fn from(s: String) -> Self {
+        Secret(s)
+    }
+}
+
+impl From<&str> for Secret {
+    fn from(s: &str) -> Self {
+        Secret(s.to_string())
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_empty() { "\"\"" } else { "\"***\"" })
+    }
+}
 
 pub enum SecretStore {
     Os,
@@ -54,10 +98,10 @@ impl SecretStore {
         }
     }
 
-    pub fn get(&self, name: &str) -> Option<String> {
+    pub fn get(&self, name: &str) -> Option<Secret> {
         match self {
-            SecretStore::Os => os::get(name),
-            SecretStore::Vault(v) => v.get(name),
+            SecretStore::Os => os::get(name).map(Secret),
+            SecretStore::Vault(v) => v.get(name).map(Secret),
         }
     }
 
@@ -122,9 +166,10 @@ struct Sealed {
     data: String,
 }
 
-/// Input for the key derivation, sendable to another thread.
+/// Input for the key derivation, sendable to another thread. Secrets here and below are wiped
+/// from memory when dropped (`Zeroizing`, and the cipher's own key with the `zeroize` feature).
 pub struct KdfJob {
-    master: String,
+    master: Secret,
     salt: Vec<u8>,
     create: bool,
 }
@@ -190,11 +235,11 @@ impl Vault {
     }
 
     fn derive(master: &str, salt: &[u8]) -> Result<ChaCha20Poly1305, String> {
-        let mut key = [0u8; 32];
+        let mut key = Zeroizing::new([0u8; 32]);
         Argon2::default()
-            .hash_password_into(master.as_bytes(), salt, &mut key)
+            .hash_password_into(master.as_bytes(), salt, &mut *key)
             .map_err(|e| format!("failed to derive the key: {e}"))?;
-        Ok(ChaCha20Poly1305::new(&Key::<ChaCha20Poly1305>::from(key)))
+        ChaCha20Poly1305::new_from_slice(&*key).map_err(|_| "failed to derive the key".into())
     }
 
     /// First half of create/unlock, cheap: checks the input and picks the salt. The slow key
@@ -211,7 +256,7 @@ impl Vault {
             B64.decode(&file.salt).map_err(|_| "corrupted vault")?
         };
         Ok(KdfJob {
-            master: master.to_string(),
+            master: master.into(),
             salt,
             create,
         })
@@ -231,7 +276,7 @@ impl Vault {
         }
         let file = self.file.as_ref().ok_or("the vault hasn't been created yet")?;
         match open(&cipher, &file.check) {
-            Some(v) if v == CHECK => {
+            Some(v) if *v == CHECK => {
                 self.cipher = Some(cipher);
                 Ok(())
             }
@@ -255,7 +300,8 @@ impl Vault {
     fn get(&self, name: &str) -> Option<String> {
         let cipher = self.cipher.as_ref()?;
         let sealed = self.file.as_ref()?.entries.get(name)?;
-        String::from_utf8(open(cipher, sealed)?).ok()
+        // Takes the buffer over: the plain text isn't copied, and leaves with the caller.
+        String::from_utf8(std::mem::take(&mut *open(cipher, sealed)?)).ok()
     }
 
     fn set(&mut self, name: &str, password: &str) -> Result<(), SecretError> {
@@ -297,12 +343,13 @@ fn seal(cipher: &ChaCha20Poly1305, plain: &[u8]) -> Result<Sealed, String> {
 }
 
 /// `None` for a wrong key or tampered data (the AEAD tag doesn't match).
-fn open(cipher: &ChaCha20Poly1305, sealed: &Sealed) -> Option<Vec<u8>> {
+fn open(cipher: &ChaCha20Poly1305, sealed: &Sealed) -> Option<Zeroizing<Vec<u8>>> {
     let nonce = B64.decode(&sealed.nonce).ok()?;
     let nonce = Nonce::try_from(nonce.as_slice()).ok()?;
     cipher
         .decrypt(&nonce, B64.decode(&sealed.data).ok()?.as_ref())
         .ok()
+        .map(Zeroizing::new)
 }
 
 #[cfg(any(windows, target_os = "linux"))]
@@ -374,6 +421,15 @@ mod os {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_secret_is_saved_as_plain_text_but_never_debug_printed() {
+        let s = Secret::from("hunter2");
+        assert_eq!(format!("{s:?}"), "\"***\"");
+        assert_eq!(format!("{:?}", Secret::default()), "\"\"");
+        assert_eq!(serde_json::to_string(&s).unwrap(), "\"hunter2\"");
+        assert_eq!(serde_json::from_str::<Secret>("\"hunter2\"").unwrap(), s);
+    }
 
     fn temp_vault() -> (Vault, PathBuf) {
         let dir = std::env::temp_dir().join(format!("tabella-vault-test-{}", Nonce::generate()[0]));

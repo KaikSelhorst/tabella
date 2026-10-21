@@ -47,7 +47,7 @@ pub fn plan(cfg: &ConnConfig, op: Op, file: &Path) -> Option<Plan> {
                 ]
                 .map(String::from)
                 .to_vec(),
-                vec![("PGPASSWORD", cfg.password.clone())],
+                vec![("PGPASSWORD", cfg.password.to_string())],
             )
         }
         (Kind::Postgres, Op::Restore) => {
@@ -60,7 +60,7 @@ pub fn plan(cfg: &ConnConfig, op: Op, file: &Path) -> Option<Plan> {
             (
                 program,
                 common.iter().copied().chain(tail).map(String::from).collect(),
-                vec![("PGPASSWORD", cfg.password.clone())],
+                vec![("PGPASSWORD", cfg.password.to_string())],
             )
         }
         (Kind::MySql, Op::Backup) => (
@@ -80,7 +80,7 @@ pub fn plan(cfg: &ConnConfig, op: Op, file: &Path) -> Option<Plan> {
             ]
             .map(String::from)
             .to_vec(),
-            vec![("MYSQL_PWD", cfg.password.clone())],
+            vec![("MYSQL_PWD", cfg.password.to_string())],
         ),
         // The file is fed through the program's input (see `run`).
         (Kind::MySql, Op::Restore) => (
@@ -88,7 +88,7 @@ pub fn plan(cfg: &ConnConfig, op: Op, file: &Path) -> Option<Plan> {
             ["-h", &cfg.host, "-P", &port, "-u", &cfg.user, &cfg.database]
                 .map(String::from)
                 .to_vec(),
-            vec![("MYSQL_PWD", cfg.password.clone())],
+            vec![("MYSQL_PWD", cfg.password.to_string())],
         ),
         (Kind::Sqlite, _) => return None,
     };

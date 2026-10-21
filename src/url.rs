@@ -50,7 +50,7 @@ pub fn apply(cfg: &mut ConnConfig, url: &str) -> Result<(), String> {
     if let Some(u) = userinfo {
         let (user, pass) = u.split_once(':').unwrap_or((u, ""));
         next.user = decode(user)?;
-        next.password = decode(pass)?;
+        next.password = decode(pass)?.into();
     }
     next.database = decode(database.trim_end_matches('/'))?;
     for pair in query.split('&').filter(|p| !p.is_empty()) {

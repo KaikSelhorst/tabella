@@ -1805,7 +1805,7 @@ fn screenshots() {
     harness.state_mut().master = Some(crate::app::MasterPrompt {
         mode: crate::app::MasterMode::Create,
         password: "abc".into(),
-        confirm: String::new(),
+        confirm: Default::default(),
         error: None,
         then: crate::app::AfterMaster::Nothing,
         working: None,
@@ -1818,8 +1818,8 @@ fn screenshots() {
         .unwrap();
     harness.state_mut().master = Some(crate::app::MasterPrompt {
         mode: crate::app::MasterMode::Unlock,
-        password: String::new(),
-        confirm: String::new(),
+        password: Default::default(),
+        confirm: Default::default(),
         error: Some("Wrong master password".into()),
         then: crate::app::AfterMaster::Nothing,
         working: None,

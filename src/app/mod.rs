@@ -28,6 +28,7 @@ use crate::history::{self, Entry};
 use crate::import;
 use crate::plan::Plan;
 use crate::search::SearchHit;
+use crate::secrets::Secret;
 use crate::secrets::{Derived, SecretStore};
 use crate::session::{self, SavedTab};
 use crate::sql::{self, FilterOp, PageQuery, Stmt};
@@ -974,8 +975,9 @@ pub enum AfterMaster {
 /// Master-password prompt for the encrypted vault (Linux without a system keyring).
 pub struct MasterPrompt {
     pub mode: MasterMode,
-    pub password: String,
-    pub confirm: String,
+    /// Wiped from memory when dropped, like `ConnConfig::password`.
+    pub password: Secret,
+    pub confirm: Secret,
     pub error: Option<String>,
     pub then: AfterMaster,
     /// Key derivation running off the UI thread (Argon2 takes a noticeable moment).
@@ -998,7 +1000,7 @@ pub struct ConnForm {
 
 pub struct ConnTest {
     /// The settings tested (`ConnConfig::test_key`): a result says nothing once they change.
-    pub key: String,
+    pub key: Secret,
     pub rx: Receiver<Result<String, String>>,
     pub result: Option<Result<String, String>>,
 }
@@ -1906,8 +1908,8 @@ impl App {
         };
         self.master = Some(MasterPrompt {
             mode,
-            password: String::new(),
-            confirm: String::new(),
+            password: Secret::default(),
+            confirm: Secret::default(),
             error: None,
             then,
             working: None,

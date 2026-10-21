@@ -236,10 +236,10 @@ mod tests {
         let mut list: Vec<ConnConfig> =
             serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         fill_passwords(&mut list, &again);
-        assert_eq!(list[0].password, "");
+        assert_eq!(list[0].password.as_str(), "");
         again.vault_mut().unwrap().unlock("good-master-password").unwrap();
         fill_passwords(&mut list, &again);
-        assert_eq!(list[0].password, "hunter2-secret");
+        assert_eq!(list[0].password.as_str(), "hunter2-secret");
         assert_eq!(list[0].id, c.id);
         let _ = std::fs::remove_dir_all(&dir);
     }
