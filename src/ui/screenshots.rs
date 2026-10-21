@@ -1463,7 +1463,11 @@ fn screenshots() {
             _ => None,
         });
         let titles: Vec<&str> = state.tabs.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(opened, Some(("orders".into(), Some("id".into()))), "tabs: {titles:?}");
+        assert_eq!(
+            opened,
+            Some(("orders".into(), Some("id".into()))),
+            "tabs: {titles:?}"
+        );
         assert_eq!(state.tabs.len(), 3, "nothing else opened: {titles:?}");
         let i = state.tabs.len() - 1;
         state.tabs.remove(i);
