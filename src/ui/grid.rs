@@ -244,6 +244,8 @@ pub struct GridOpts<'a> {
     pub kinds: &'a [ValueKind],
     /// Cells with an unsaved edit, and rows marked for deletion.
     pub changed: Option<&'a HashSet<(usize, usize)>>,
+    /// Cells saved inside the open transaction (not committed yet).
+    pub uncommitted: Option<&'a HashSet<(usize, usize)>>,
     pub deleted: Option<&'a HashSet<usize>>,
     /// Table tabs: offer "filter by this value" in the cell menu.
     pub can_filter: bool,
@@ -298,6 +300,7 @@ pub fn grid(
         widths,
         kinds,
         changed,
+        uncommitted,
         deleted,
         range,
         view,
@@ -558,6 +561,7 @@ pub fn grid(
                                     .then_some(found_current == Some((ri, ci))),
                                 deleted: row_deleted,
                                 changed: changed.is_some_and(|c| c.contains(&(ri, ci))),
+                                uncommitted: uncommitted.is_some_and(|c| c.contains(&(ri, ci))),
                                 same_value: same.is_some_and(|(c, v)| {
                                     c == ci
                                         && selected != Some((ri, ci))
@@ -1050,6 +1054,8 @@ struct CellState {
     found: Option<bool>,
     deleted: bool,
     changed: bool,
+    /// Saved in the open transaction, not committed yet.
+    uncommitted: bool,
     /// The same value as the selected cell, in its column.
     same_value: bool,
 }
@@ -1067,6 +1073,8 @@ fn cell_fill(t: &theme::Tokens, c: CellState) -> Option<egui::Color32> {
         Some(mix(t.destructive, 0.14))
     } else if c.changed {
         Some(mix(t.warning, 0.18))
+    } else if c.uncommitted {
+        Some(mix(t.lime, 0.2))
     } else if c.same_value {
         Some(mix(t.selection, 0.45))
     } else {
@@ -1085,6 +1093,7 @@ mod tests {
             found: None,
             deleted: false,
             changed,
+            uncommitted: false,
             same_value,
         };
         assert!(cell_fill(t, state(true, false, false)).is_some());
@@ -1154,6 +1163,7 @@ mod tests {
                     widths: None,
                     kinds: &[ValueKind::Number, ValueKind::Text],
                     changed: None,
+                    uncommitted: None,
                     deleted: None,
                     can_filter: false,
                     range: None,
@@ -1193,6 +1203,7 @@ mod tests {
                     widths: None,
                     kinds: &[ValueKind::Number, ValueKind::Text],
                     changed: None,
+                    uncommitted: None,
                     deleted: None,
                     can_filter: false,
                     range: None,

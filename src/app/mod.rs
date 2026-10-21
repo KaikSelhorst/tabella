@@ -82,9 +82,44 @@ pub struct Session {
     pub current_schema: String,
     /// Manual-commit mode and the open transaction, as last reported by the worker.
     pub txn: TxState,
+    /// Cells saved from a grid inside the open transaction: not committed yet. Emptied when
+    /// the transaction ends (commit, rollback, or the connection losing it).
+    pub uncommitted: HashSet<UncommittedCell>,
+}
+
+/// A cell written inside the open transaction.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct UncommittedCell {
+    pub schema: String,
+    pub table: String,
+    /// The row's primary key values.
+    pub key: Vec<Option<String>>,
+    pub column: String,
 }
 
 impl Session {
+    /// The cells of `res` (rows of `ts`'s table) written in the open transaction.
+    pub fn uncommitted_in(&self, ts: &TableState, res: &QueryResult) -> HashSet<(usize, usize)> {
+        let mut out = HashSet::new();
+        let here: Vec<&UncommittedCell> = self
+            .uncommitted
+            .iter()
+            .filter(|c| c.schema == ts.schema && c.table == ts.table)
+            .collect();
+        if here.is_empty() {
+            return out;
+        }
+        for row in 0..res.rows.len() {
+            let key = ts.row_key(res, row);
+            for c in here.iter().filter(|c| c.key == key) {
+                if let Some(col) = res.columns.iter().position(|n| *n == c.column) {
+                    out.insert((row, col));
+                }
+            }
+        }
+        out
+    }
+
     /// Whether the sidebar lists this as a view (no rows to insert, no table DDL).
     pub fn is_view(&self, schema: &str, table: &str) -> bool {
         self.tables
@@ -1952,6 +1987,7 @@ impl App {
                 manual: cfg_manual,
                 ..Default::default()
             },
+            uncommitted: HashSet::new(),
         });
     }
 

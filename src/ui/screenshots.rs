@@ -967,6 +967,17 @@ fn screenshots() {
             writes: 3,
             failed: false,
         };
+        // Cells saved in that transaction: marked in the grid until it ends.
+        let cell = |id: &str, column: &str| crate::app::UncommittedCell {
+            schema: "public".into(),
+            table: "customers".into(),
+            key: vec![Some(id.into())],
+            column: column.into(),
+        };
+        state.session.as_mut().unwrap().uncommitted =
+            [cell("2", "name"), cell("4", "balance"), cell("4", "active")]
+                .into_iter()
+                .collect();
         state.tabs[0].col_stats = Some(crate::app::StatsView {
             column: "city".into(),
             scope: "whole table".into(),
@@ -992,6 +1003,7 @@ fn screenshots() {
         let state = harness.state_mut();
         state.tabs[0].col_stats = None;
         state.session.as_mut().unwrap().txn = Default::default();
+        state.session.as_mut().unwrap().uncommitted.clear();
     }
 
     // Editor: find bar, then the parameters prompt, then a JSON value in the detail panel.

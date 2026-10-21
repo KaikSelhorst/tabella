@@ -39,7 +39,8 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
   transaction
 - Manual commit per connection (or just for the session, from the "…" menu): changes stay in a
   transaction until "Commit" or "Roll back", with a warning band and a confirmation when closing
-  the window. Grid edits and imports use a savepoint inside it. In MySQL, DDL commits on its own
+  the window. Grid edits and imports use a savepoint inside it. In MySQL, DDL commits on its own.
+  Cells saved from a grid in that transaction stay tinted until it is committed or rolled back
 - Parameters in SQL (`WHERE id = :id`): the app asks for the values before running
 - Find and replace in the editor (`Ctrl+F` / `Ctrl+H`)
 - JSON as a tree in the detail panel (copies a value or its path, e.g. `$.items[0].price`)

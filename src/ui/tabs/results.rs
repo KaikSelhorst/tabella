@@ -333,6 +333,11 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
 
     // Pending changes are shown in place: edited values, deleted rows struck through.
     let overlay = app::editable_ref(&tab.kind).and_then(|ts| ts.overlay(res));
+    // Cells saved in the open transaction, not committed yet.
+    let uncommitted = app::editable_ref(&tab.kind)
+        .filter(|_| !s.uncommitted.is_empty())
+        .map(|ts| s.uncommitted_in(ts, res))
+        .filter(|c| !c.is_empty());
     let shown = overlay.as_ref().map_or(res, |o| &o.result);
     let view = tab.view();
     let pinned = tab.pinned_count();
@@ -468,6 +473,7 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
         widths: table_tab.then_some(&tab.col_widths),
         kinds: &kinds,
         changed: overlay.as_ref().map(|o| &o.changed),
+        uncommitted: uncommitted.as_ref(),
         deleted: overlay.as_ref().map(|o| &o.deleted),
         can_filter: editable,
         range: range.as_ref(),

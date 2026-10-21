@@ -11,6 +11,8 @@ struct TabReplyCx<'a> {
     history: &'a mut Vec<Entry>,
     /// Design tabs whose DDL ran: (tab, schema, table).
     designed: &'a mut Vec<(u64, String, String)>,
+    /// Cells just saved inside a transaction (manual-commit mode).
+    uncommitted: &'a mut Vec<UncommittedCell>,
 }
 
 impl App {
@@ -21,6 +23,7 @@ impl App {
         }
         let mut restore = None;
         let mut designed: Vec<(u64, String, String)> = Vec::new();
+        let mut uncommitted: Vec<UncommittedCell> = Vec::new();
         // Tabs that just stopped being busy, and for how long they were.
         let mut finished: Vec<(String, std::time::Duration)> = Vec::new();
         loop {
@@ -57,8 +60,10 @@ impl App {
                 notice: &mut self.notice,
                 history: &mut self.history,
                 designed: &mut designed,
+                uncommitted: &mut uncommitted,
             };
             on_tab_reply(t, s, reply, &mut cx);
+            s.uncommitted.extend(uncommitted.drain(..));
         }
         if let Some(r) = restore {
             self.restore_tabs(r);
@@ -78,7 +83,12 @@ impl App {
     fn on_session_reply(&mut self, reply: Reply, restore: &mut Option<session::Saved>) -> bool {
         let Some(s) = &mut self.session else { return false };
         match reply {
-            Reply::Tx(state) => s.txn = state,
+            Reply::Tx(state) => {
+                s.txn = state;
+                if !state.open {
+                    s.uncommitted.clear();
+                }
+            }
             Reply::TxEnded { commit, res } => {
                 if std::mem::take(&mut self.quit_after_tx) && res.is_ok() {
                     self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -314,6 +324,20 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
             match *res {
                 Ok(r) => {
                     if let Some(ts) = editable_mut(&mut t.kind) {
+                        // In manual-commit mode the batch ran in a transaction: its edits stay
+                        // marked until it ends.
+                        if s.txn.manual {
+                            for c in &ts.changes {
+                                if let Change::Set { key, col, .. } = c {
+                                    cx.uncommitted.push(UncommittedCell {
+                                        schema: ts.schema.clone(),
+                                        table: ts.table.clone(),
+                                        key: key.clone(),
+                                        column: col.clone(),
+                                    });
+                                }
+                            }
+                        }
                         ts.changes.clear();
                     }
                     t.result = Some(r);

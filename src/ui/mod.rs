@@ -137,6 +137,7 @@ impl App {
         let Some(txn) = self.session.as_ref().map(|s| s.txn).filter(|t| t.open) else {
             return;
         };
+        let cells = self.session.as_ref().map_or(0, |s| s.uncommitted.len());
         let t = theme::tokens();
         let accent = if txn.failed { t.destructive } else { t.warning };
         let mut end = None;
@@ -162,6 +163,19 @@ impl App {
                         )
                     };
                     ui.label(egui::RichText::new(text).color(t.foreground));
+                    if cells > 0 {
+                        // The same tint the grid gives those cells.
+                        let swatch = egui::RichText::new("  ").background_color(theme::mix(
+                            t.lime,
+                            0.35,
+                            t.background,
+                        ));
+                        ui.label(swatch);
+                        ui.label(
+                            egui::RichText::new(format!("{cells} edited cell(s) marked in the grids"))
+                                .color(t.muted_foreground),
+                        );
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add_enabled(!txn.failed, theme::primary_button(Some(icon::CHECK), "Commit"))

@@ -905,3 +905,57 @@ fn a_column_opens_the_structure_pointing_at_it() {
     app.open_structure("public", "orders");
     assert_eq!(focus(&app), (Some("total".into()), 2));
 }
+
+/// In manual-commit mode, cells saved from a grid stay marked until the transaction ends;
+/// with auto-commit nothing is marked (it is already committed).
+#[test]
+fn saved_cells_stay_marked_until_the_transaction_ends() {
+    let (mut s, jobs, replies) = fake_session(Kind::Postgres);
+    s.txn.manual = true;
+    let mut app = app_with(s);
+    app.tabs.push(super::tests::table_tab());
+    let save = |app: &mut App| {
+        let s = app.session.as_ref().unwrap();
+        let t = &mut app.tabs[0];
+        handle_grid_event(t, s, GridEvent::Commit(0, 2, Some("beth".into())), true);
+        save_changes(t, s);
+        assert!(jobs.try_iter().any(|j| matches!(j, Job::Batch { .. })));
+        let res = t.result.clone().unwrap();
+        replies
+            .send(Reply::Saved {
+                tab: t.id,
+                res: Box::new(Ok(res)),
+            })
+            .unwrap();
+    };
+    save(&mut app);
+    replies
+        .send(Reply::Tx(TxState {
+            manual: true,
+            open: true,
+            writes: 1,
+            failed: false,
+        }))
+        .unwrap();
+    app.poll();
+    let marked = |app: &App| {
+        let s = app.session.as_ref().unwrap();
+        let t = &app.tabs[0];
+        s.uncommitted_in(editable_ref(&t.kind).unwrap(), t.result.as_ref().unwrap())
+    };
+    assert_eq!(marked(&app), HashSet::from([(0, 2)]), "the `name` cell of row 7");
+    // Committed (or rolled back): nothing is pending any more.
+    replies
+        .send(Reply::Tx(TxState {
+            manual: true,
+            ..Default::default()
+        }))
+        .unwrap();
+    app.poll();
+    assert!(marked(&app).is_empty());
+    // Auto-commit: the save is already final.
+    app.session.as_mut().unwrap().txn.manual = false;
+    save(&mut app);
+    app.poll();
+    assert!(marked(&app).is_empty());
+}

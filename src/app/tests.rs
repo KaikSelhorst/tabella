@@ -25,6 +25,7 @@ pub fn fake_session(kind: Kind) -> (Session, Receiver<Job>, Sender<Reply>) {
         current_db: String::new(),
         current_schema: String::new(),
         txn: TxState::default(),
+        uncommitted: HashSet::new(),
     };
     (s, jobs, replies)
 }
