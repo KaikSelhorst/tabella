@@ -2161,6 +2161,34 @@ fn screenshots() {
                 statement: "ALTER TABLE customers ADD COLUMN phone text".into(),
                 cancelled: false,
             }));
+            let stmt = |line: usize, ms: u64, rows: u64, sql: &str| crate::db::StatementTime {
+                line,
+                sql: sql.into(),
+                elapsed: std::time::Duration::from_millis(ms),
+                rows,
+                returned_rows: false,
+            };
+            st.slowest = vec![
+                stmt(
+                    37,
+                    1_412,
+                    0,
+                    "CREATE INDEX orders_customer_idx ON orders (customer_id)",
+                ),
+                stmt(12, 388, 25_000, "COPY customers (id, name, email) FROM stdin"),
+                stmt(
+                    201,
+                    96,
+                    0,
+                    "UPDATE orders SET status = 'archived' WHERE created_at < '2024-01-01'",
+                ),
+                stmt(
+                    3,
+                    41,
+                    0,
+                    "CREATE TABLE audit_log (id bigserial PRIMARY KEY, payload jsonb)",
+                ),
+            ];
         }
     }
     harness.run();

@@ -158,6 +158,7 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         }
                         None => {}
                     }
+                    slowest_statements(ui, &st.slowest);
                 });
         });
     if start {
@@ -165,4 +166,54 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     } else if cancel {
         app::cancel_script(tab, s);
     }
+}
+
+/// The slowest statements of the run: where the time went in a long file.
+fn slowest_statements(ui: &mut egui::Ui, slowest: &[crate::db::StatementTime]) {
+    let t = theme::tokens();
+    // Below this, the list says nothing a glance at the total doesn't.
+    if slowest
+        .first()
+        .is_none_or(|s| s.elapsed < std::time::Duration::from_millis(5))
+    {
+        return;
+    }
+    ui.add_space(14.0);
+    ui.label(
+        egui::RichText::new("SLOWEST STATEMENTS")
+            .size(11.0)
+            .color(t.subtle),
+    );
+    ui.add_space(4.0);
+    egui::Grid::new("script_slowest")
+        .num_columns(4)
+        .spacing([14.0, 4.0])
+        .show(ui, |ui| {
+            for (i, st) in slowest.iter().enumerate() {
+                let color = if i == 0 { t.lime } else { t.muted_foreground };
+                ui.label(
+                    egui::RichText::new(format!("line {}", st.line))
+                        .size(12.0)
+                        .color(t.subtle),
+                );
+                ui.label(
+                    egui::RichText::new(format!("{} ms", st.elapsed.as_millis()))
+                        .size(12.0)
+                        .color(color),
+                );
+                let rows = if st.rows > 0 {
+                    format!("{} rows via COPY", st.rows)
+                } else {
+                    String::new()
+                };
+                ui.label(egui::RichText::new(rows).size(12.0).color(t.subtle));
+                ui.label(
+                    egui::RichText::new(&st.sql)
+                        .monospace()
+                        .size(12.0)
+                        .color(t.foreground),
+                );
+                ui.end_row();
+            }
+        });
 }

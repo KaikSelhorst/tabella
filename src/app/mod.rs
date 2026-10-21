@@ -566,6 +566,8 @@ pub struct ScriptState {
     pub started: Option<Instant>,
     pub took: Option<std::time::Duration>,
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// The slowest statements of the last run, slowest first.
+    pub slowest: Vec<crate::db::StatementTime>,
 }
 
 #[derive(Default)]
@@ -2428,6 +2430,7 @@ impl App {
             started: None,
             took: None,
             cancel: Arc::default(),
+            slowest: Vec::new(),
         };
         self.push_tab(crate::files::title(path), TabKind::Script(Box::new(st)));
     }

@@ -282,10 +282,16 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                 st.progress = progress;
             }
         }
-        Reply::ScriptDone { progress, error, .. } => {
+        Reply::ScriptDone {
+            progress,
+            error,
+            slowest,
+            ..
+        } => {
             if let TabKind::Script(st) = &mut t.kind {
                 st.running = false;
                 st.progress = progress;
+                st.slowest = slowest;
                 st.took = st.started.map(|at| at.elapsed());
                 st.outcome = Some(error);
             }

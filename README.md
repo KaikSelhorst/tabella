@@ -166,7 +166,8 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
 - Running a large `.sql` file (`Ctrl+P` or the editor's file menu) without opening it in the
   editor: reads it statement by statement (understands `DELIMITER`, `$$` and pg_dump's
   `COPY … FROM stdin`), shows progress, stops at the first error with its line, can be
-  cancelled and runs in a transaction
+  cancelled and runs in a transaction. When it ends, the ten slowest statements are listed with
+  their line and time
 - SQL errors marked in the editor: the spot is underlined, the cursor goes to it and the
   message gives the line and column
 - Excel-style column filter (right-click the header → "Filter values…"): distinct values with

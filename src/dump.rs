@@ -673,7 +673,7 @@ mod tests {
         }
         let mut tx = crate::worker::TxState::default();
         let pg = kind == Kind::Postgres;
-        let (_, err) =
+        let (_, err, _) =
             crate::worker::run_script(&mut c, &mut tx, pg, &path, pg, &AtomicBool::new(false), |_| {});
         if let Some(e) = err {
             panic!("{kind:?}: line {}: {}\n{}", e.line, e.message, e.statement);
@@ -777,7 +777,7 @@ mod tests {
         .unwrap();
         let started = std::time::Instant::now();
         let mut tx = crate::worker::TxState::default();
-        let (_, err) = crate::worker::run_script(
+        let (_, err, _) = crate::worker::run_script(
             &mut dst,
             &mut tx,
             true,
@@ -852,7 +852,7 @@ mod tests {
         crate::sqlite::create(&target.database).unwrap();
         let mut d = Conn::connect(&target, None).unwrap();
         let mut tx = crate::worker::TxState::default();
-        let (_, err) = crate::worker::run_script(
+        let (_, err, _) = crate::worker::run_script(
             &mut d,
             &mut tx,
             false,

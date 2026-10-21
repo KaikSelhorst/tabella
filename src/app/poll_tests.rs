@@ -843,6 +843,7 @@ fn replies_reach_their_tab_or_the_session() {
             tab,
             progress,
             error: None,
+            slowest: Vec::new(),
         })
         .unwrap();
     replies

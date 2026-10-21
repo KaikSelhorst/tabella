@@ -289,6 +289,8 @@ pub enum Reply {
         progress: ScriptProgress,
         /// `None` when every statement ran.
         error: Option<ScriptError>,
+        /// The slowest statements, slowest first.
+        slowest: Vec<crate::db::StatementTime>,
     },
     /// Definition of an object, for the editor tab opened to show it.
     Source {
@@ -428,7 +430,11 @@ impl Reply {
     }
 }
 
-/// Runs a script file. Progress is reported at most every 150 ms.
+/// How many of a script file's slowest statements are kept.
+const SLOWEST_KEPT: usize = 10;
+
+/// Runs a script file. Progress is reported at most every 150 ms. Each statement is timed: the
+/// `SLOWEST_KEPT` slowest come back, slowest first.
 pub(crate) fn run_script(
     conn: &mut Conn,
     tx: &mut TxState,
@@ -437,7 +443,26 @@ pub(crate) fn run_script(
     transaction: bool,
     cancel: &AtomicBool,
     report: impl Fn(ScriptProgress),
-) -> (ScriptProgress, Option<ScriptError>) {
+) -> (ScriptProgress, Option<ScriptError>, Vec<crate::db::StatementTime>) {
+    let mut slowest: Vec<crate::db::StatementTime> = Vec::new();
+    let mut keep = |sql: &str, line: u64, elapsed: std::time::Duration, rows: u64| {
+        // Cheap test first: most statements are faster than the tenth slowest.
+        if slowest.len() == SLOWEST_KEPT && slowest.last().is_some_and(|s| s.elapsed >= elapsed) {
+            return;
+        }
+        let at = slowest.partition_point(|s| s.elapsed >= elapsed);
+        slowest.insert(
+            at,
+            crate::db::StatementTime {
+                line: line as usize,
+                sql: sql.trim().lines().next().unwrap_or("").chars().take(80).collect(),
+                elapsed,
+                rows,
+                returned_rows: false,
+            },
+        );
+        slowest.truncate(SLOWEST_KEPT);
+    };
     use crate::script::{Item, ScriptReader};
     let mut p = ScriptProgress::default();
     let fail = |message: String, line: u64, statement: &str, cancelled: bool| ScriptError {
@@ -449,7 +474,11 @@ pub(crate) fn run_script(
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            return (p, Some(fail(format!("couldn't open: {e}"), 0, "", false)));
+            return (
+                p,
+                Some(fail(format!("couldn't open: {e}"), 0, "", false)),
+                Vec::new(),
+            );
         }
     };
     let kind = conn.kind();
@@ -468,7 +497,7 @@ pub(crate) fn run_script(
         ("BEGIN", "COMMIT", "ROLLBACK")
     };
     if transaction && let Err(e) = conn.query(begin) {
-        return (p, Some(fail(e.to_string(), 0, begin, false)));
+        return (p, Some(fail(e.to_string(), 0, begin, false)), Vec::new());
     }
     let mut last_report = std::time::Instant::now();
     let error = loop {
@@ -487,11 +516,17 @@ pub(crate) fn run_script(
                 p.skipped += 1;
                 Ok(())
             }
-            Item::Copy { sql, data, line } => conn
-                .copy_in(sql, data)
-                .map(|n| p.copied += n)
-                .map_err(|e| fail(e.to_string(), *line, sql, cancel.load(Ordering::Relaxed))),
+            Item::Copy { sql, data, line } => {
+                let begun = Instant::now();
+                conn.copy_in(sql, data)
+                    .map(|n| {
+                        p.copied += n;
+                        keep(sql, *line, begun.elapsed(), n);
+                    })
+                    .map_err(|e| fail(e.to_string(), *line, sql, cancel.load(Ordering::Relaxed)))
+            }
             Item::Stmt { sql, line } => {
+                let begun = Instant::now();
                 let res = if transaction {
                     conn.query(sql).map(|_| ()).and_then(|()| {
                         // MySQL ends the transaction on DDL (committing it, and the user's one
@@ -509,7 +544,11 @@ pub(crate) fn run_script(
                 } else {
                     run_user_sql(conn, tx, pg, sql).map(|_| ())
                 };
-                res.map(|()| p.statements += 1).map_err(|e| {
+                res.map(|()| {
+                    p.statements += 1;
+                    keep(sql, *line, begun.elapsed(), 0);
+                })
+                .map_err(|e| {
                     let cancelled = cancel.load(Ordering::Relaxed);
                     fail(e.to_string(), *line, sql, cancelled)
                 })
@@ -528,10 +567,10 @@ pub(crate) fn run_script(
         if let Err(e) = conn.query(end)
             && error.is_none()
         {
-            return (p, Some(fail(e.to_string(), p.line, end, false)));
+            return (p, Some(fail(e.to_string(), p.line, end, false)), slowest);
         }
     }
-    (p, error)
+    (p, error, slowest)
 }
 
 /// A read that mustn't hold the connection: Postgres gets a 2 s statement timeout inside a
@@ -1011,7 +1050,7 @@ impl<S: Fn(Reply)> Worker<'_, S> {
                 transaction,
                 cancel,
             } => {
-                let (progress, error) =
+                let (progress, error, slowest) =
                     run_script(conn, &mut self.tx, self.pg, &path, transaction, &cancel, |p| {
                         send(Reply::ScriptProgress { tab, progress: p })
                     });
@@ -1019,7 +1058,12 @@ impl<S: Fn(Reply)> Worker<'_, S> {
                 send(Reply::Tables(conn.tables()));
                 send(Reply::AllColumns(conn.all_columns()));
                 send(Reply::Objects(conn.objects()));
-                Reply::ScriptDone { tab, progress, error }
+                Reply::ScriptDone {
+                    tab,
+                    progress,
+                    error,
+                    slowest,
+                }
             }
             Job::Admin { sql, done } => {
                 let res = run_user_sql(conn, &mut self.tx, self.pg, &sql).map(|_| ());
@@ -1481,6 +1525,43 @@ mod tests {
         other.query("DROP TABLE dbl_tx").unwrap();
     }
 
+    /// A file script keeps its ten slowest statements, slowest first, with their lines.
+    #[test]
+    fn a_file_script_keeps_its_slowest_statements() {
+        let cfg = crate::sqlite::tests::sample_db("slowest");
+        let mut conn = Conn::connect(&cfg, None).unwrap();
+        let dir = std::env::temp_dir().join(format!("tabella-slowest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("script.sql");
+        // Fifteen quick statements, and one that counts a few million rows on line 8.
+        let mut text = String::new();
+        for i in 1..=15 {
+            if i == 8 {
+                text.push_str(
+                    "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 3000000) SELECT count(*) FROM n;\n",
+                );
+            }
+            text.push_str(&format!("SELECT {i};\n"));
+        }
+        std::fs::write(&path, text).unwrap();
+        let (p, err, slowest) = run_script(
+            &mut conn,
+            &mut TxState::default(),
+            false,
+            &path,
+            false,
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(p.statements, 16);
+        assert_eq!(slowest.len(), SLOWEST_KEPT);
+        assert_eq!(slowest[0].line, 8, "the slow one first");
+        assert!(slowest[0].sql.starts_with("WITH RECURSIVE"));
+        assert!(slowest.windows(2).all(|w| w[0].elapsed >= w[1].elapsed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A script from the editor is timed statement by statement and still ends with the same
     /// result sets and error position as the whole text would.
     #[test]
@@ -1872,7 +1953,7 @@ mod tests {
         let run = |c: &mut Conn, text: &str, transaction: bool| {
             std::fs::write(&path, text).unwrap();
             let mut tx = TxState::default();
-            run_script(
+            let (p, err, _) = run_script(
                 c,
                 &mut tx,
                 pg,
@@ -1880,7 +1961,8 @@ mod tests {
                 transaction,
                 &AtomicBool::new(false),
                 |_| {},
-            )
+            );
+            (p, err)
         };
         c.query("DROP TABLE IF EXISTS dbl_script").unwrap();
 
@@ -1923,7 +2005,7 @@ mod tests {
 
         // Cancelled before it starts: nothing runs.
         std::fs::write(&path, body).unwrap();
-        let (p, err) = run_script(
+        let (p, err, _) = run_script(
             &mut c,
             &mut TxState::default(),
             pg,
