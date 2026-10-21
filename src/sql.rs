@@ -1,6 +1,6 @@
 //! Builders for the statements the UI generates (table browsing and row edits).
 
-use crate::db::Kind;
+use crate::dialect::Kind;
 use std::fmt::Write as _;
 
 /// Rows per page in table tabs.
@@ -486,6 +486,9 @@ pub fn tx_control(script: &str) -> Option<TxControl> {
         .next_back()
 }
 
+/// Most common values kept in `values::ColumnStats::top`.
+pub const TOP_VALUES: usize = 10;
+
 /// The two queries behind "Column statistics": totals (count, non-null, distinct and, with
 /// `ordered`, min/max), then the most common values. Postgres compares through text so json and
 /// other types without equality still work.
@@ -518,7 +521,7 @@ pub fn column_stats(
         format!("SELECT count(*), count({c}), count(DISTINCT {as_text}){range} FROM {t}{wh}"),
         format!(
             "SELECT {as_text}, count(*) FROM {t}{wh} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {}",
-            crate::values::TOP_VALUES
+            TOP_VALUES
         ),
     )
 }
@@ -1417,6 +1420,14 @@ fn unwrap_parens(s: &str) -> &str {
 /// Referenced tables up to this many rows are loaded whole for the foreign-key picker and
 /// filtered as you type; bigger ones are searched in the database.
 pub const FK_LOCAL_ROWS: i64 = 10_000;
+/// Where a foreign key column points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FkRef {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+}
+
 /// Rows a database search of the picker brings.
 pub const FK_SEARCH_ROWS: usize = 50;
 
@@ -1425,7 +1436,7 @@ pub const FK_SEARCH_ROWS: usize = 50;
 /// exactly (instant, by the primary key index); text is looked for inside the label.
 pub fn fk_options(
     kind: Kind,
-    fk: &crate::db::FkRef,
+    fk: &FkRef,
     label: Option<&str>,
     numeric_key: bool,
     local: bool,
@@ -2178,7 +2189,7 @@ mod tests {
 
     #[test]
     fn foreign_key_picker_queries() {
-        let fk = crate::db::FkRef {
+        let fk = FkRef {
             schema: "public".into(),
             table: "customers".into(),
             column: "id".into(),

@@ -10,6 +10,7 @@ mod db;
 mod definition;
 mod design;
 mod diagram;
+mod dialect;
 mod dump;
 mod error;
 mod export;

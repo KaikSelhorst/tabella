@@ -314,9 +314,6 @@ pub struct ColumnStats {
     pub top: Vec<(Option<String>, i64)>,
 }
 
-/// Most common values kept in `ColumnStats::top`.
-pub const TOP_VALUES: usize = 10;
-
 /// Stats over the rows already loaded (editor results, which have no table to ask).
 pub fn local_column_stats(res: &QueryResult, ci: usize, kind: ValueKind) -> ColumnStats {
     let mut counts: std::collections::HashMap<Option<&str>, i64> = std::collections::HashMap::new();
@@ -349,7 +346,7 @@ pub fn local_column_stats(res: &QueryResult, ci: usize, kind: ValueKind) -> Colu
         .map(|(k, n)| (k.map(str::to_string), n))
         .collect();
     top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    top.truncate(TOP_VALUES);
+    top.truncate(crate::sql::TOP_VALUES);
     ColumnStats {
         total: res.rows.len() as i64,
         nulls,
