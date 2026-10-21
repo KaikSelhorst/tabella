@@ -1,9 +1,10 @@
 //! Windows builds get version info and a manifest embedded in the .exe: executables without any
 //! metadata are what antivirus heuristics flag most (Defender's `!ml` detections).
 
+/// `{version}` becomes the package version as Windows wants it (four numbers).
 const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="tabella" version="0.1.0.0"/>
+  <assemblyIdentity type="win32" name="tabella" version="{version}"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
@@ -25,16 +26,23 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    let version = format!(
+        "{}.{}.{}.0",
+        env!("CARGO_PKG_VERSION_MAJOR"),
+        env!("CARGO_PKG_VERSION_MINOR"),
+        env!("CARGO_PKG_VERSION_PATCH")
+    );
+    let manifest = MANIFEST.replace("{version}", &version);
     let mut res = winresource::WindowsResource::new();
     res.set("ProductName", "tabella")
         .set(
             "FileDescription",
-            "tabella - lightweight PostgreSQL and MySQL client",
+            "tabella - lightweight PostgreSQL, MySQL and SQLite client",
         )
         .set("InternalName", "tabella")
         .set("OriginalFilename", "tabella.exe")
         .set_icon("assets/icon.ico")
-        .set_manifest(MANIFEST);
+        .set_manifest(&manifest);
     res.compile()
         .expect("Windows resources (is MinGW's windres installed?)");
 }
