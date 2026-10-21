@@ -823,6 +823,23 @@ fn send_tx(send: &impl Fn(Reply), before: TxState, now: TxState) {
 
 /// Spawns a thread that owns the connection. Dropping the returned sender closes it once the
 /// current statement (if any) finishes; use the `Canceller` to stop that statement early.
+/// Postgres opens in the first schema of the search path, usually `public`. When the sidebar
+/// lists nothing there (it's empty, or holds only what extensions installed) but tables elsewhere,
+/// the connection starts in the first schema that has some instead (`public` stays in the path).
+/// Returns the schema switched to.
+fn start_schema(conn: &mut Conn, tables: &[TableRef]) -> Option<String> {
+    if conn.kind() != crate::db::Kind::Postgres {
+        return None;
+    }
+    let (_, _, here) = conn.location().ok()?;
+    if tables.iter().any(|t| t.schema == here) {
+        return None;
+    }
+    let first = tables.first()?.schema.clone();
+    conn.use_schema(&first).ok()?;
+    Some(first)
+}
+
 pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Receiver<Reply>) {
     let (job_tx, job_rx) = channel::<Job>();
     let (reply_tx, reply_rx) = channel::<Reply>();
@@ -846,8 +863,10 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
             Err(e) => return send(Reply::Connected(Err(e))),
         };
         let canceller = Arc::new(conn.canceller(&cfg, via));
+        let tables = conn.tables();
+        let location = tables.as_ref().ok().and_then(|t| start_schema(&mut conn, t));
         send(Reply::Connected(
-            conn.tables().map(|tables| Connected { tables, canceller }),
+            tables.map(|tables| Connected { tables, canceller }),
         ));
         send(Reply::AllColumns(conn.all_columns()));
         send(Reply::AllFks(conn.all_fks()));
@@ -862,7 +881,7 @@ pub fn spawn(cfg: ConnConfig, ctx: eframe::egui::Context) -> (Sender<Job>, Recei
             pg: cfg.kind == crate::db::Kind::Postgres,
             cfg: &cfg,
             via,
-            location: None,
+            location,
             last_job: Instant::now(),
             send: &send,
         };
@@ -1917,6 +1936,39 @@ mod tests {
             assert_eq!(n.rows.cell(0, 0), Some("0"), "Postgres rolls the whole text back");
         }
         conn.query("DROP TABLE dbl_timed").unwrap();
+    }
+
+    /// A database with nothing in `public` opens in its first schema with tables.
+    #[test]
+    #[ignore]
+    fn starts_in_a_schema_with_tables() {
+        let mut cfg = ConnConfig::new(Kind::Postgres);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 55432;
+        cfg.user = "postgres".into();
+        cfg.password = "pw".into();
+        cfg.database = "postgres".into();
+        let mut admin = Conn::connect(&cfg, None).unwrap();
+        admin.query("DROP DATABASE IF EXISTS dbl_start").unwrap();
+        admin.query("CREATE DATABASE dbl_start").unwrap();
+        cfg.database = "dbl_start".into();
+        {
+            let mut conn = Conn::connect(&cfg, None).unwrap();
+            conn.query("CREATE SCHEMA zeta; CREATE TABLE zeta.z (n INT); CREATE SCHEMA beta; CREATE TABLE beta.b (n INT)")
+                .unwrap();
+            let tables = conn.tables().unwrap();
+            assert_eq!(start_schema(&mut conn, &tables).as_deref(), Some("beta"));
+            assert_eq!(conn.location().unwrap().2, "beta");
+            conn.query("SELECT n FROM b")
+                .expect("unqualified names find its tables");
+            // With a table of its own, public is where it opens.
+            conn.query("CREATE TABLE public.p (n INT)").unwrap();
+            let mut conn = Conn::connect(&cfg, None).unwrap();
+            let tables = conn.tables().unwrap();
+            assert_eq!(start_schema(&mut conn, &tables), None);
+            assert_eq!(conn.location().unwrap().2, "public");
+        }
+        admin.query("DROP DATABASE dbl_start").unwrap();
     }
 
     #[test]
