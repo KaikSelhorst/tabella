@@ -13,8 +13,8 @@ pub fn load() -> Loaded<Store> {
     store::load(FILE)
 }
 
-pub fn save(starred: &Store) -> Result<(), StoreError> {
-    store::save(FILE, starred)
+pub fn save(starred: &mut Store) -> Result<(), StoreError> {
+    store::sync(FILE, starred)
 }
 
 /// Whether the table is in a connection's list.

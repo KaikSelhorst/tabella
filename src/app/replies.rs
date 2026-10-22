@@ -19,8 +19,16 @@ struct TabReplyCx<'a> {
 impl App {
     /// Applies every reply that arrived since the last frame.
     pub fn poll(&mut self) {
-        if let Some(e) = self.library.history_writer.take_error() {
-            self.notice = Notice::error(format!("Error saving history: {e}"));
+        if crate::crash::take_unguarded() {
+            self.notice = Notice::error(format!(
+                "Part of tabella stopped after an {}. Restarting it is safest.",
+                crate::crash::internal_error()
+            ));
+        }
+        match self.library.history_writer.take() {
+            Some(Ok(list)) => self.library.history = list,
+            Some(Err(e)) => self.notice = Notice::error(format!("Error saving history: {e}")),
+            None => {}
         }
         let mut restore = None;
         let mut designed: Vec<(u64, String, String)> = Vec::new();
@@ -29,7 +37,7 @@ impl App {
         let mut finished: Vec<(String, std::time::Duration)> = Vec::new();
         loop {
             let Some(s) = &mut self.session else { return };
-            let reply = match s.rx.try_recv() {
+            let worker::Tagged { seq, reply } = match s.rx.try_recv() {
                 Ok(r) => r,
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -56,6 +64,16 @@ impl App {
             };
             if ends_job && let Some(took) = t.end_job() {
                 finished.push((t.title.clone(), took));
+            }
+            if t.stale(&reply, seq) {
+                // Its rows are old, but what it has to say (a kill refused) isn't.
+                if let Reply::Rows { notice: Some(n), .. } = reply {
+                    match &mut t.kind {
+                        TabKind::Activity(st) => st.kill_error = Some(n),
+                        _ => t.error = Some(n),
+                    }
+                }
+                continue;
             }
             let mut cx = TabReplyCx {
                 notice: &mut self.notice,
@@ -198,10 +216,12 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                 }
             }
         }
-        Reply::SearchDone { cancelled, .. } => {
+        Reply::SearchDone { cancelled, error, .. } => {
             if let TabKind::Search(st) = &mut t.kind {
                 st.running = false;
-                if cancelled {
+                if let Some(e) = error {
+                    *cx.notice = Notice::error(format!("Search failed: {e}"));
+                } else if cancelled {
                     *cx.notice = Notice::info("Search cancelled");
                 }
             }

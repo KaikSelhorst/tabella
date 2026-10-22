@@ -82,14 +82,42 @@ pub struct Saved {
     pub not_removed: usize,
 }
 
-/// Writes the connections without passwords; those go to the secret store.
-pub fn save(list: &[ConnConfig], store: &mut SecretStore) -> Result<Saved, StoreError> {
+/// Writes the connections without passwords; those go to the secret store. `list` picks up the
+/// connections another window saved (see `store::sync`).
+pub fn save(list: &mut Vec<ConnConfig>, store: &mut SecretStore) -> Result<Saved, StoreError> {
     save_at(&crate::store::path(FILE)?, list, store)
 }
 
-fn save_at(path: &Path, list: &[ConnConfig], store: &mut SecretStore) -> Result<Saved, StoreError> {
+/// Picks up what another window saved, leaving the secret store alone.
+pub fn refresh(list: &mut Vec<ConnConfig>, store: &SecretStore) -> Result<(), StoreError> {
+    let mut stripped: Vec<ConnConfig> = list
+        .iter()
+        .cloned()
+        .map(|mut c| {
+            c.password.clear();
+            c
+        })
+        .collect();
+    crate::store::sync(FILE, &mut stripped)?;
+    adopt(list, stripped, store);
+    Ok(())
+}
+
+/// `merged` (the file's list, without passwords) becomes the list: each connection keeps the
+/// password it had here, and the others' come from the store.
+fn adopt(list: &mut Vec<ConnConfig>, mut merged: Vec<ConnConfig>, store: &SecretStore) {
+    for c in &mut merged {
+        if let Some(old) = list.iter().find(|o| o.id == c.id) {
+            c.password = old.password.clone();
+        }
+    }
+    fill_passwords(&mut merged, store);
+    *list = merged;
+}
+
+fn save_at(path: &Path, list: &mut Vec<ConnConfig>, store: &mut SecretStore) -> Result<Saved, StoreError> {
     let mut report = Saved::default();
-    let stripped: Vec<ConnConfig> = list
+    let mut stripped: Vec<ConnConfig> = list
         .iter()
         .cloned()
         .map(|mut c| {
@@ -112,7 +140,8 @@ fn save_at(path: &Path, list: &[ConnConfig], store: &mut SecretStore) -> Result<
             c
         })
         .collect();
-    crate::store::save_at(path, &stripped)?;
+    crate::store::sync_at(path, &mut stripped)?;
+    adopt(list, stripped, store);
     Ok(report)
 }
 
@@ -215,7 +244,8 @@ mod tests {
         c.name = "prod".into();
         c.password = "hunter2-secret".into();
         let file = dir.join("connections.json");
-        let save_to = |list: &[ConnConfig], store: &mut SecretStore| save_at(&file, list, store);
+        let save_to =
+            |list: &[ConnConfig], store: &mut SecretStore| save_at(&file, &mut list.to_vec(), store);
 
         // Locked vault: the connection is saved, the password is not (and not in plain text).
         assert_eq!(save_to(&[c.clone()], &mut store).unwrap().not_stored, 1);

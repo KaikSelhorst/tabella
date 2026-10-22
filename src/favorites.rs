@@ -20,9 +20,10 @@ pub fn load() -> Loaded<Vec<Favorite>> {
     store::load(FILE)
 }
 
-/// Queries can contain data, so the file is private like the connections file.
-pub fn save(list: &[Favorite]) -> Result<(), StoreError> {
-    store::save(FILE, list)
+/// Queries can contain data, so the file is private like the connections file. `list` picks up
+/// what another window saved (see `store::sync`).
+pub fn save(list: &mut Vec<Favorite>) -> Result<(), StoreError> {
+    store::sync(FILE, list)
 }
 
 /// Favorites to show for a connection: its own first, then the shared ones, each by name.

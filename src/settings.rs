@@ -57,8 +57,8 @@ pub fn load() -> Loaded<Settings> {
     l
 }
 
-pub fn save(s: &Settings) -> Result<(), StoreError> {
-    store::save(FILE, s)
+pub fn save(s: &mut Settings) -> Result<(), StoreError> {
+    store::sync(FILE, s)
 }
 
 #[cfg(test)]

@@ -45,12 +45,16 @@ ignore_without_reason = "warn"
 opt-level = "s"
 lto = true
 codegen-units = 1
-panic = "abort"
+# Unwinding, not abort: a panic in one job's code becomes an error in that tab (see
+# `Worker::run`) instead of closing the app.
+panic = "unwind"
 strip = true
 
 [target."cfg(windows)".dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
 rfd = { version = "0.15", default-features = false }
+# Ends ssh with the app even when it is killed (Task Manager), not just when it closes.
+win32job = "2.0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust", "vendored"] }

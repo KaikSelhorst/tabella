@@ -42,3 +42,10 @@ fn find(name: &str) -> Option<PathBuf> {
 fn find(name: &str) -> Option<PathBuf> {
     Some(PathBuf::from(name))
 }
+
+/// Whether `name` is on `PATH`.
+#[cfg(target_os = "linux")]
+pub fn installed(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|d| d.is_absolute() && d.join(name).is_file()))
+}

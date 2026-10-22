@@ -96,6 +96,7 @@ impl eframe::App for App {
         if let Err(e) = crate::session::save(&self.snapshot()) {
             eprintln!("tabella: couldn't save the session: {e}");
         }
+        self.shutdown();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -107,6 +108,15 @@ impl App {
     /// One frame of the whole window.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         self.tick_fps();
+        // Back from another window, maybe another tabella: show what it saved.
+        let focused = ui.ctx().input(|i| i.viewport().focused);
+        if focused == Some(true)
+            && self.window_state.was_focused == Some(false)
+            && let Some(s) = self.sync_from_disk()
+        {
+            self.use_settings(ui.ctx(), s);
+        }
+        self.window_state.was_focused = focused;
         self.forget_closed_tabs(ui.ctx());
         self.clear_finished_notice();
         // Not while minimized: the window may say 0 x 0 then, and that would be saved.

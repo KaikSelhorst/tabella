@@ -14,8 +14,8 @@ pub fn load() -> Loaded<Store> {
     store::load(FILE)
 }
 
-pub fn save(widths: &Store) -> Result<(), StoreError> {
-    store::save(FILE, widths)
+pub fn save(widths: &mut Store) -> Result<(), StoreError> {
+    store::sync(FILE, widths)
 }
 
 /// A column can't be dragged narrower than this (the grid's own minimum), and a hand-edited file

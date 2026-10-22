@@ -19,7 +19,7 @@ use crate::export::{Format, Writer};
 use crate::import::ImportSpec;
 use crate::plan::Plan;
 use crate::sql::{self, PageQuery, Stmt, select_range};
-use crate::tunnel::Tunnel;
+use crate::tunnel::{Link, Tunnel};
 
 pub enum Job {
     Query {
@@ -253,7 +253,30 @@ impl Job {
             | Job::Admin { .. }
             | Job::RunScript { .. }
             | Job::UseSchema(_) => true,
-            _ => false,
+            // Listed one by one, so a new job has to be thought about here.
+            Job::MoreRows { .. }
+            | Job::Columns { .. }
+            | Job::Count { .. }
+            | Job::Tables
+            | Job::Structure { .. }
+            | Job::Explain { .. }
+            | Job::Activity { .. }
+            | Job::SearchValue { .. }
+            | Job::Fks { .. }
+            | Job::Source { .. }
+            | Job::SuggestIndex { .. }
+            | Job::ServerInfo { .. }
+            | Job::ResetQueryStats { .. }
+            | Job::Kill { .. }
+            | Job::Export { .. }
+            | Job::Preview { .. }
+            | Job::ColumnStats { .. }
+            | Job::Distinct { .. }
+            | Job::FkOptions { .. }
+            | Job::Compare { .. }
+            | Job::Dump { .. }
+            | Job::SetManual(_)
+            | Job::EndTx { .. } => false,
         }
     }
 }
@@ -264,9 +287,32 @@ impl Job {
 pub struct Running {
     tab: Mutex<Option<u64>>,
     canceller: Mutex<Option<Arc<Canceller>>>,
+    /// When a cancel was last sent (see `start`).
+    cancelled_at: Mutex<Option<Instant>>,
 }
 
+/// How long after a cancel the connection's next statement waits.
+const CANCEL_GRACE: Duration = Duration::from_millis(100);
+
 impl Running {
+    /// A job for `tab` starts. Right after a cancel it waits a moment: Postgres hands the cancel
+    /// to the session asynchronously, and a statement started meanwhile would be the one stopped.
+    fn start(&self, tab: Option<u64>) {
+        let Ok(mut t) = self.tab.lock() else { return };
+        let since = self
+            .cancelled_at
+            .lock()
+            .ok()
+            .and_then(|at| *at)
+            .map(|at| at.elapsed());
+        if let Some(since) = since
+            && since < CANCEL_GRACE
+        {
+            thread::sleep(CANCEL_GRACE - since);
+        }
+        *t = tab;
+    }
+
     fn set_tab(&self, tab: Option<u64>) {
         if let Ok(mut t) = self.tab.lock() {
             *t = tab;
@@ -282,13 +328,19 @@ impl Running {
     /// Stops the statement running for `tab`, or whatever runs with `None`. Blocks (it may
     /// open a connection to ask the server): call it off the UI thread.
     pub fn cancel(&self, tab: Option<u64>) {
-        let running = self.tab.lock().ok().and_then(|t| *t);
-        if running.is_none() || (tab.is_some() && running != tab) {
+        // Held while asking: the job can't end and another tab's start in between, so the
+        // statement stopped is the one checked here. (The worker waits for it at most that
+        // long before its next job.)
+        let Ok(running) = self.tab.lock() else { return };
+        if running.is_none() || (tab.is_some() && *running != tab) {
             return;
         }
         let canceller = self.canceller.lock().ok().and_then(|c| c.clone());
         if let Some(c) = canceller {
             let _ = c.cancel();
+            if let Ok(mut at) = self.cancelled_at.lock() {
+                *at = Some(Instant::now());
+            }
         }
     }
 }
@@ -301,7 +353,10 @@ pub struct Cancels(Mutex<HashMap<u64, Instant>>);
 impl Cancels {
     pub fn mark(&self, tab: u64) {
         if let Ok(mut m) = self.0.lock() {
-            m.insert(tab, Instant::now());
+            let now = Instant::now();
+            // A job doesn't wait in line that long: older marks can't skip anything any more.
+            m.retain(|_, at| now.duration_since(*at) < Duration::from_secs(3600));
+            m.insert(tab, now);
         }
     }
 
@@ -319,6 +374,8 @@ impl Cancels {
 struct Queued {
     job: Job,
     taken: Instant,
+    /// Its place in the order the app sent jobs (0: not sent by the app).
+    seq: u64,
 }
 
 impl Queued {
@@ -326,39 +383,138 @@ impl Queued {
         Queued {
             job,
             taken: Instant::now(),
+            seq: 0,
         }
     }
 }
 
+/// A reply and the `seq` of the job it answers (0 for the connection's own news). A tab's jobs
+/// may run on either of the session's connections, so their replies can arrive out of order;
+/// this tells a late one from the newer one already shown.
+pub struct Tagged {
+    pub seq: u64,
+    pub reply: Reply,
+}
+
+impl From<Reply> for Tagged {
+    fn from(reply: Reply) -> Self {
+        Tagged { seq: 0, reply }
+    }
+}
+
 impl Job {
-    /// The reply to the job, cancelled before it ran; `None` for jobs that run anyway (writes,
-    /// scripts, and the ones with a cancel flag of their own that stop at once).
-    fn cancelled(&self) -> Option<Reply> {
-        let no = || DbError::Other("cancelled".into());
-        Some(match *self {
-            Job::Query { tab, .. } | Job::MoreRows { tab, .. } | Job::Activity { tab, .. } => Reply::Rows {
+    /// Whether a job cancelled while it waited in line is answered as cancelled instead of run.
+    /// Writes and scripts run anyway; the jobs with a cancel flag of their own stop at once.
+    fn skippable(&self) -> bool {
+        match self {
+            Job::Query { .. }
+            | Job::MoreRows { .. }
+            | Job::Activity { .. }
+            | Job::Explain { .. }
+            | Job::Preview { .. }
+            | Job::Count { .. }
+            | Job::Distinct { .. }
+            | Job::ColumnStats { .. }
+            | Job::Columns { .. }
+            | Job::Structure { .. }
+            | Job::Source { .. }
+            | Job::ServerInfo { .. }
+            | Job::Fks { .. }
+            | Job::Export { .. }
+            | Job::Compare { .. }
+            | Job::SuggestIndex { .. } => true,
+            Job::Exec { .. }
+            | Job::Batch { .. }
+            | Job::Import { .. }
+            | Job::RunScript { .. }
+            | Job::Admin { .. }
+            | Job::Kill { .. }
+            | Job::ResetQueryStats { .. }
+            | Job::SearchValue { .. }
+            | Job::Dump { .. }
+            | Job::FkOptions { .. }
+            | Job::Tables
+            | Job::UseSchema(_)
+            | Job::SetManual(_)
+            | Job::EndTx { .. } => false,
+        }
+    }
+
+    /// The reply saying the job failed with `err` without running (cancelled, or its code hit a
+    /// bug): the tab waiting for it must hear back. `None` for the one job that has no reply.
+    fn failed(&self, err: impl Fn() -> DbError) -> Option<Reply> {
+        Some(match self {
+            &Job::Query { tab, .. }
+            | &Job::MoreRows { tab, .. }
+            | &Job::Activity { tab, .. }
+            | &Job::Kill { tab, .. }
+            | &Job::ResetQueryStats { tab } => Reply::Rows {
                 tab,
-                res: Box::new(Err(no())),
+                res: Box::new(Err(err())),
                 notice: None,
             },
-            Job::Explain { tab, .. } => Reply::Plan { tab, res: Err(no()) },
-            Job::Preview { tab, .. } => Reply::Preview { tab, res: Err(no()) },
-            Job::Count { tab, .. } => Reply::Count { tab, res: Err(no()) },
-            Job::Distinct { tab, .. } => Reply::Distinct { tab, res: Err(no()) },
-            Job::ColumnStats { tab, .. } => Reply::ColumnStats { tab, res: Err(no()) },
-            Job::Columns { tab, .. } => Reply::Columns {
+            &Job::Explain { tab, .. } => Reply::Plan { tab, res: Err(err()) },
+            &Job::Preview { tab, .. } => Reply::Preview { tab, res: Err(err()) },
+            &Job::Count { tab, .. } => Reply::Count { tab, res: Err(err()) },
+            &Job::Distinct { tab, .. } => Reply::Distinct { tab, res: Err(err()) },
+            &Job::ColumnStats { tab, .. } => Reply::ColumnStats { tab, res: Err(err()) },
+            &Job::Columns { tab, .. } => Reply::Columns {
                 tab,
-                res: Err(no()),
+                res: Err(err()),
                 incoming: Vec::new(),
             },
-            Job::Structure { tab, .. } => Reply::Structure { tab, res: Err(no()) },
-            Job::Source { tab, .. } => Reply::Source { tab, res: Err(no()) },
-            Job::ServerInfo { tab } => Reply::ServerInfo { tab, res: Err(no()) },
-            Job::Fks { tab } => Reply::Fks { tab, res: Err(no()) },
-            Job::Export { tab, .. } => Reply::Exported { tab, res: Err(no()) },
-            Job::Compare { tab, .. } => Reply::Compared { tab, res: Err(no()) },
-            Job::SuggestIndex { tab, .. } => Reply::IndexAdvice { tab, res: Err(no()) },
-            _ => return None,
+            &Job::Structure { tab, .. } => Reply::Structure { tab, res: Err(err()) },
+            &Job::Source { tab, .. } => Reply::Source { tab, res: Err(err()) },
+            &Job::ServerInfo { tab } => Reply::ServerInfo { tab, res: Err(err()) },
+            &Job::Fks { tab } => Reply::Fks { tab, res: Err(err()) },
+            &Job::Export { tab, .. } => Reply::Exported { tab, res: Err(err()) },
+            &Job::Compare { tab, .. } => Reply::Compared { tab, res: Err(err()) },
+            &Job::SuggestIndex { tab, .. } => Reply::IndexAdvice { tab, res: Err(err()) },
+            &Job::Exec { tab, .. } | &Job::Batch { tab, .. } => Reply::Saved {
+                tab,
+                res: Box::new(Err(err())),
+            },
+            &Job::Import { tab, .. } => Reply::Imported { tab, res: Err(err()) },
+            &Job::FkOptions { tab, ref search, .. } => Reply::FkOptions {
+                tab,
+                search: search.clone(),
+                res: Err(err()),
+            },
+            &Job::Dump { tab, .. } => Reply::DumpDone {
+                tab,
+                progress: Default::default(),
+                res: Err(err()),
+            },
+            &Job::RunScript { tab, .. } => Reply::ScriptDone {
+                tab,
+                progress: ScriptProgress::default(),
+                error: Some(ScriptError {
+                    message: err().to_string(),
+                    line: 0,
+                    statement: String::new(),
+                    cancelled: false,
+                    lost: false,
+                }),
+                slowest: Vec::new(),
+            },
+            &Job::SearchValue { tab, .. } => Reply::SearchDone {
+                tab,
+                cancelled: false,
+                lost: false,
+                error: Some(err().to_string()),
+            },
+            Job::Admin { done, failed, .. } => Reply::Admin {
+                done: done.clone(),
+                failed: failed.clone(),
+                res: Err(err()),
+            },
+            Job::Tables => Reply::Tables(Err(err())),
+            Job::UseSchema(_) => Reply::Location(Err(err())),
+            &Job::EndTx { commit } => Reply::TxEnded {
+                commit,
+                res: Err(err()),
+            },
+            Job::SetManual(_) => return None,
         })
     }
 }
@@ -430,9 +586,11 @@ pub struct Connected {
 /// connections is running (for cancelling).
 pub struct Spawned {
     pub jobs: Sender<Job>,
-    pub replies: Receiver<Reply>,
+    pub replies: Receiver<Tagged>,
     pub running: Vec<Arc<Running>>,
     pub cancels: Arc<Cancels>,
+    /// The SSH tunnel its connections go through, if any.
+    pub link: Option<Arc<Link>>,
 }
 
 pub enum Reply {
@@ -562,6 +720,8 @@ pub enum Reply {
         cancelled: bool,
         /// Stopped because the connection dropped.
         lost: bool,
+        /// Why the search as a whole failed (each table's own errors come with its progress).
+        error: Option<String>,
     },
     Fks {
         tab: u64,
@@ -614,7 +774,78 @@ impl Reply {
             | Reply::Fks { res: Err(e), .. }
             | Reply::TxEnded { res: Err(e), .. } => Some(e),
             Reply::Rows { res, .. } | Reply::Saved { res, .. } => res.as_ref().as_ref().err(),
-            _ => None,
+            // Listed one by one, so a new reply carrying an error has to be added above.
+            Reply::Connected(Ok(_))
+            | Reply::Reconnected { res: Ok(_), .. }
+            | Reply::Tables(Ok(_))
+            | Reply::Columns { res: Ok(_), .. }
+            | Reply::Count { res: Ok(_), .. }
+            | Reply::AllColumns(Ok(_))
+            | Reply::AllFks(Ok(_))
+            | Reply::Objects(Ok(_))
+            | Reply::Location(Ok(_))
+            | Reply::Admin { res: Ok(_), .. }
+            | Reply::IndexAdvice { res: Ok(_), .. }
+            | Reply::Source { res: Ok(_), .. }
+            | Reply::Structure { res: Ok(_), .. }
+            | Reply::Plan { res: Ok(_), .. }
+            | Reply::Imported { res: Ok(_), .. }
+            | Reply::Exported { res: Ok(_), .. }
+            | Reply::ColumnStats { res: Ok(_), .. }
+            | Reply::Distinct { res: Ok(_), .. }
+            | Reply::FkOptions { res: Ok(_), .. }
+            | Reply::Compared { res: Ok(_), .. }
+            | Reply::DumpDone { res: Ok(_), .. }
+            | Reply::Preview { res: Ok(_), .. }
+            | Reply::ServerInfo { res: Ok(_), .. }
+            | Reply::Fks { res: Ok(_), .. }
+            | Reply::TxEnded { res: Ok(_), .. }
+            | Reply::ScriptProgress { .. }
+            | Reply::ScriptDone { .. }
+            | Reply::DumpProgress { .. }
+            | Reply::SearchProgress { .. }
+            | Reply::SearchDone { .. }
+            | Reply::Tx(_) => None,
+        }
+    }
+
+    /// A reply that shows the tab something (rows, a plan, the server panel) rather than reports
+    /// an action (a save, an export): one that arrives after a newer one of its kind is stale.
+    pub fn is_view(&self) -> bool {
+        match self {
+            Reply::Rows { .. }
+            | Reply::Columns { .. }
+            | Reply::Count { .. }
+            | Reply::IndexAdvice { .. }
+            | Reply::Source { .. }
+            | Reply::Structure { .. }
+            | Reply::Plan { .. }
+            | Reply::ColumnStats { .. }
+            | Reply::Distinct { .. }
+            | Reply::FkOptions { .. }
+            | Reply::Compared { .. }
+            | Reply::Preview { .. }
+            | Reply::ServerInfo { .. }
+            | Reply::Fks { .. } => true,
+            Reply::Connected(_)
+            | Reply::Reconnected { .. }
+            | Reply::Tables(_)
+            | Reply::AllColumns(_)
+            | Reply::AllFks(_)
+            | Reply::Objects(_)
+            | Reply::Location(_)
+            | Reply::Admin { .. }
+            | Reply::ScriptProgress { .. }
+            | Reply::ScriptDone { .. }
+            | Reply::Imported { .. }
+            | Reply::Saved { .. }
+            | Reply::Exported { .. }
+            | Reply::DumpProgress { .. }
+            | Reply::DumpDone { .. }
+            | Reply::SearchProgress { .. }
+            | Reply::SearchDone { .. }
+            | Reply::Tx(_)
+            | Reply::TxEnded { .. } => false,
         }
     }
 
@@ -839,7 +1070,7 @@ pub fn test_connection(cfg: ConnConfig, wake: Waker) -> Receiver<Result<String, 
     let (tx, rx) = channel();
     thread::spawn(move || {
         let started = std::time::Instant::now();
-        let res = (|| {
+        let res = crate::crash::guard(|| {
             let tunnel = match &cfg.ssh {
                 Some(ssh) => {
                     Some(Tunnel::open(ssh, &cfg.host, cfg.port).map_err(|e| format!("SSH tunnel: {e}"))?)
@@ -861,7 +1092,8 @@ pub fn test_connection(cfg: ConnConfig, wake: Waker) -> Receiver<Result<String, 
                 .map(|v| server_name(cfg.kind, &v))
                 .unwrap_or_default();
             Ok(format!("Connected in {ms} ms · {version}"))
-        })();
+        })
+        .unwrap_or_else(Err);
         let _ = tx.send(res);
         wake();
     });
@@ -1087,7 +1319,7 @@ fn start_schema(conn: &mut Conn, tables: &[TableRef]) -> Option<String> {
 pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
     let (job_tx, job_rx) = channel::<Job>();
     let (front_tx, front_rx) = channel::<Queued>();
-    let (reply_tx, reply_rx) = channel::<Reply>();
+    let (reply_tx, reply_rx) = channel::<Tagged>();
     let front = Arc::new(Running::default());
     let back = Arc::new(Running::default());
     let running = vec![front.clone(), back.clone()];
@@ -1098,21 +1330,26 @@ pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
         let shared = shared.clone();
         thread::spawn(move || dispatch(&job_rx, &front_tx, &shared));
     }
+    let link = cfg
+        .ssh
+        .as_ref()
+        .map(|ssh| Link::new(ssh.clone(), &cfg.host, cfg.port));
+    let session_link = link.clone();
     thread::spawn(move || {
-        let send = |r: Reply| {
+        // The job being run: its replies carry its number.
+        let seq = std::cell::Cell::new(0);
+        let send = |reply: Reply| {
             // Only fails once the app dropped its end: nobody is left to tell.
-            let _ = reply_tx.send(r);
+            let _ = reply_tx.send(Tagged {
+                seq: seq.get(),
+                reply,
+            });
             wake();
         };
-        // Lives as long as this thread: dropping it stops ssh.
-        let tunnel = match &cfg.ssh {
-            Some(ssh) => match Tunnel::open(ssh, &cfg.host, cfg.port) {
-                Ok(t) => Some(t),
-                Err(e) => return send(Reply::Connected(Err(DbError::Other(e.to_string())))),
-            },
-            None => None,
+        let via = match route(link.as_ref()) {
+            Ok(via) => via,
+            Err(e) => return send(Reply::Connected(Err(e))),
         };
-        let via = tunnel.as_ref().map(|t| t.local_port);
         let mut conn = match Conn::connect(&cfg, via) {
             Ok(c) => c,
             Err(e) => return send(Reply::Connected(Err(e))),
@@ -1124,7 +1361,7 @@ pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
         if cfg.kind != crate::db::Kind::Sqlite && cfg.background_reads {
             let bg = spawn_background(
                 cfg.clone(),
-                via,
+                link.clone(),
                 location.clone(),
                 back,
                 reply_tx.clone(),
@@ -1145,10 +1382,12 @@ pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
             },
             pg: cfg.kind == crate::db::Kind::Postgres,
             cfg: &cfg,
+            link,
             via,
             location,
             last_job: Instant::now(),
             send: &send,
+            seq: &seq,
             running: &front,
             cancels: &marks,
             background: false,
@@ -1178,7 +1417,16 @@ pub fn spawn(cfg: ConnConfig, wake: Waker) -> Spawned {
         replies: reply_rx,
         running,
         cancels,
+        link: session_link,
     }
+}
+
+/// Where a connection goes: straight to the server, or to the tunnel's local port (ssh is started
+/// again first if it exited).
+fn route(link: Option<&Arc<Link>>) -> DbResult<Option<u16>> {
+    link.map(|l| l.port())
+        .transpose()
+        .map_err(|e| DbError::Other(format!("SSH tunnel: {e}")))
 }
 
 /// What the dispatcher and the first connection's thread share.
@@ -1195,8 +1443,13 @@ struct Shared {
 
 /// Sends each job to the second connection when it can run there, to the first otherwise.
 fn dispatch(jobs: &Receiver<Job>, front: &Sender<Queued>, shared: &Shared) {
+    let mut seq = 0;
     while let Ok(job) = jobs.recv() {
-        let job = Queued::now(job);
+        seq += 1;
+        let job = Queued {
+            seq,
+            ..Queued::now(job)
+        };
         if let Some(bg) = shared.background.get().filter(|bg| bg.ready())
             && job.job.runs_in_background()
             // The count first: when it reads 0, the thread already stored `tx_open`.
@@ -1236,10 +1489,10 @@ impl Background {
 /// ends when the first thread does (its sender is dropped).
 fn spawn_background(
     cfg: ConnConfig,
-    via: Option<u16>,
+    link: Option<Arc<Link>>,
     mut location: Option<String>,
     running: Arc<Running>,
-    reply_tx: Sender<Reply>,
+    reply_tx: Sender<Tagged>,
     wake: Waker,
     cancels: Arc<Cancels>,
 ) -> Background {
@@ -1247,14 +1500,20 @@ fn spawn_background(
     let ready = Arc::new(AtomicBool::new(false));
     let ready_flag = ready.clone();
     thread::spawn(move || {
-        let send = |r: Reply| {
-            let _ = reply_tx.send(r);
+        let seq = std::cell::Cell::new(0);
+        let send = |reply: Reply| {
+            let _ = reply_tx.send(Tagged {
+                seq: seq.get(),
+                reply,
+            });
             wake();
         };
         // Until it connects, everything stays on the first connection; it tries again now
         // and then. All it can be sent meanwhile is the schema to follow.
-        let mut conn = loop {
-            match Conn::connect_as(&cfg, via, BACKGROUND_NAME) {
+        let (mut conn, via) = loop {
+            let attempt =
+                route(link.as_ref()).and_then(|via| Ok((Conn::connect_as(&cfg, via, BACKGROUND_NAME)?, via)));
+            match attempt {
                 Ok(c) => break c,
                 Err(_) => match job_rx.recv_timeout(BACKGROUND_RETRY) {
                     Ok(Queued {
@@ -1276,10 +1535,12 @@ fn spawn_background(
             tx: TxState::default(),
             pg: cfg.kind == crate::db::Kind::Postgres,
             cfg: &cfg,
+            link,
             via,
             location,
             last_job: Instant::now(),
             send: &send,
+            seq: &seq,
             running: &running,
             cancels: &cancels,
             background: true,
@@ -1313,13 +1574,16 @@ struct Worker<'a, S: Fn(Reply)> {
     tx: TxState,
     pg: bool,
     cfg: &'a ConnConfig,
-    /// Local port of the SSH tunnel, if any.
+    /// The SSH tunnel, if any, and the local port the connection went through.
+    link: Option<Arc<Link>>,
     via: Option<u16>,
     /// The schema or database picked with `UseSchema`: session state a new connection lacks.
     location: Option<String>,
     last_job: Instant,
     /// For replies sent before the job's own (progress, refreshed lists).
     send: &'a S,
+    /// Read by `send`: the number of the job running now.
+    seq: &'a std::cell::Cell<u64>,
     /// The tab whose job runs now, and how to cancel it.
     running: &'a Running,
     /// Tabs cancelled, whose jobs still in line are skipped.
@@ -1338,29 +1602,42 @@ impl<S: Fn(Reply)> Worker<'_, S> {
     /// Runs one job and sends its reply. Returns false when the connection is gone and
     /// couldn't be replaced.
     fn run(&mut self, q: Queued) -> bool {
-        let Queued { job, taken } = q;
-        if self.cancels.skips(job.tab(), taken)
-            && let Some(reply) = job.cancelled()
-        {
-            (self.send)(reply);
+        let Queued { job, taken, seq } = q;
+        self.seq.set(seq);
+        if job.skippable() && self.cancels.skips(job.tab(), taken) {
+            if let Some(reply) = job.failed(|| DbError::Other("cancelled".into())) {
+                (self.send)(reply);
+            }
             return true;
         }
         let before = self.tx;
         let mut alive = self.ensure_alive(false);
-        self.running.set_tab(job.tab());
-        let reply = self.handle(job);
-        self.running.set_tab(None);
-        if let Some(reply) = reply {
-            // A job that found the connection dead (MySQL can't tell beforehand): replace
-            // it now, so the run-again the user is about to do works.
-            let lost = reply.connection_lost();
-            (self.send)(reply);
-            if lost {
-                alive = self.ensure_alive(true);
+        // Should its code panic, the tab still gets an answer and the app stays up.
+        let crashed = job.failed(|| DbError::Other(crate::crash::internal_error()));
+        self.running.start(job.tab());
+        let reply = match crate::crash::guard(|| self.handle(job)) {
+            Ok(reply) => reply,
+            Err(_) => {
+                // Whatever the connection was doing was cut halfway: it can't be trusted.
+                self.running.set_tab(None);
+                alive = self.reconnect();
+                crashed
             }
+        };
+        // A job that found the connection dead (MySQL can't tell beforehand): it is replaced
+        // below, so the run-again the user is about to do works.
+        let lost = reply.as_ref().is_some_and(Reply::connection_lost);
+        if let Some(reply) = reply {
+            (self.send)(reply);
+        }
+        // Only after the reply: a cancel being sent holds this, and the reply needn't wait.
+        self.running.set_tab(None);
+        if lost {
+            alive = self.ensure_alive(true);
         }
         self.last_job = Instant::now();
         send_tx(self.send, before, self.tx);
+        self.seq.set(0);
         alive
     }
 
@@ -1368,12 +1645,14 @@ impl<S: Fn(Reply)> Worker<'_, S> {
     /// before the next job runs, so it doesn't fail with "connection closed". Whatever the old
     /// session held (an open transaction) is gone; the app is told.
     fn ensure_alive(&mut self, ping: bool) -> bool {
-        if self
-            .conn
+        self.conn
             .is_alive(ping || self.last_job.elapsed() >= PING_AFTER_IDLE)
-        {
-            return true;
-        }
+            || self.reconnect()
+    }
+
+    /// Replaces the connection with a new one (the old one's transaction goes with it, and the
+    /// app is told). False when none could be made.
+    fn reconnect(&mut self) -> bool {
         let mut last_error = None;
         for wait in RECONNECT_WAITS {
             thread::sleep(wait);
@@ -1382,8 +1661,17 @@ impl<S: Fn(Reply)> Worker<'_, S> {
             } else {
                 "tabella"
             };
-            match Conn::connect_as(self.cfg, self.via, name) {
+            // A dead tunnel is opened again, on another port.
+            let via = match route(self.link.as_ref()) {
+                Ok(via) => via,
+                Err(e) => {
+                    last_error = Some(e);
+                    continue;
+                }
+            };
+            match Conn::connect_as(self.cfg, via, name) {
                 Ok(mut conn) => {
+                    self.via = via;
                     if let Some(name) = &self.location {
                         let _ = conn.use_schema(name);
                     }
@@ -1419,11 +1707,16 @@ impl<S: Fn(Reply)> Worker<'_, S> {
         let conn = &mut self.conn;
         let send = self.send;
         Some(match job {
-            Job::Query { tab, sql } => Reply::Rows {
-                tab,
-                res: Box::new(run_editor_sql(conn, &mut self.tx, self.pg, &sql)),
-                notice: None,
-            },
+            Job::Query { tab, sql } => {
+                // Tests: a job whose code hits a bug.
+                #[cfg(test)]
+                assert_ne!(sql, tests::PANIC, "a bug in a job");
+                Reply::Rows {
+                    tab,
+                    res: Box::new(run_editor_sql(conn, &mut self.tx, self.pg, &sql)),
+                    notice: None,
+                }
+            }
             Job::MoreRows { tab, sql, limit } => Reply::Rows {
                 tab,
                 res: Box::new(conn.query_up_to(&sql, limit)),
@@ -1741,6 +2034,7 @@ impl<S: Fn(Reply)> Worker<'_, S> {
             tab,
             cancelled: cancel.load(Ordering::Relaxed),
             lost,
+            error: None,
         }
     }
 }
@@ -1825,9 +2119,12 @@ fn export(conn: &mut Conn, spec: ExportSpec) -> DbResult<(PathBuf, u64)> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::db::Kind;
+
+    /// SQL that makes `Worker::handle` panic.
+    pub const PANIC: &str = "-- tabella test: panic";
 
     #[test]
     fn any_reply_can_report_a_lost_connection() {
@@ -1860,6 +2157,7 @@ mod tests {
             tab: 1,
             cancelled: false,
             lost,
+            error: None,
         };
         assert!(search(true).connection_lost() && !search(false).connection_lost());
     }
@@ -1995,7 +2293,8 @@ mod tests {
             loop {
                 let r = replies
                     .recv_timeout(Duration::from_secs(10))
-                    .expect("worker reply");
+                    .expect("worker reply")
+                    .reply;
                 if let Some(v) = f(r) {
                     return v;
                 }
@@ -2161,6 +2460,28 @@ mod tests {
     /// SQLite through the worker, like the app uses it: connect, catalog, location, a query,
     /// and "commit manual" undoing an UPDATE. No server needed.
     #[test]
+    fn a_job_that_panics_answers_its_tab_and_the_next_one_runs() {
+        let cfg = crate::sqlite::tests::sample_db("worker-panic");
+        let Spawned { jobs, replies, .. } = spawn(cfg, Arc::new(|| {}));
+        let rows = |tab: u64| loop {
+            let r = replies
+                .recv_timeout(Duration::from_secs(10))
+                .expect("worker reply");
+            if let Reply::Rows { tab: t, res, .. } = r.reply
+                && t == tab
+            {
+                break res.map(|r| r.rows.len()).map_err(|e| e.to_string());
+            }
+        };
+        let query = |tab, sql: &str| jobs.send(Job::Query { tab, sql: sql.into() }).unwrap();
+        query(1, PANIC);
+        let err = rows(1).unwrap_err();
+        assert!(err.contains("internal error"), "{err}");
+        query(2, "SELECT 1");
+        assert_eq!(rows(2), Ok(1), "the connection was replaced and still works");
+    }
+
+    #[test]
     fn sqlite_through_the_worker() {
         use std::time::Duration;
         let mut cfg = crate::sqlite::tests::sample_db("worker");
@@ -2170,7 +2491,8 @@ mod tests {
             loop {
                 let r = replies
                     .recv_timeout(Duration::from_secs(10))
-                    .expect("worker reply");
+                    .expect("worker reply")
+                    .reply;
                 if let Some(v) = f(r) {
                     return v;
                 }
@@ -2238,6 +2560,7 @@ mod tests {
             replies
                 .recv_timeout(Duration::from_secs(15))
                 .expect("worker reply")
+                .reply
         };
         let rows = |sql: &str| {
             jobs.send(Job::Query {
@@ -2314,8 +2637,10 @@ mod tests {
             })
             .unwrap();
             loop {
-                if let Reply::IndexAdvice { res, .. } =
-                    replies.recv_timeout(Duration::from_secs(15)).expect("reply")
+                if let Reply::IndexAdvice { res, .. } = replies
+                    .recv_timeout(Duration::from_secs(15))
+                    .expect("reply")
+                    .reply
                 {
                     return res;
                 }
@@ -2460,12 +2785,13 @@ mod tests {
             replies,
             running,
             cancels,
+            ..
         } = spawn(cfg, Arc::new(|| {}));
         // Which replies came, in order: "rows:<tab>" (ok or err) and "tables".
         let next = |timeout: u64| -> Option<String> {
             let deadline = Instant::now() + Duration::from_secs(timeout);
             while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-                match replies.recv_timeout(left).ok()? {
+                match replies.recv_timeout(left).ok()?.reply {
                     Reply::Rows { tab, res, .. } => {
                         return Some(format!("rows:{tab}:{}", if res.is_ok() { "ok" } else { "err" }));
                     }
@@ -2586,7 +2912,7 @@ mod tests {
         .unwrap();
         jobs.send(Job::Tables).unwrap();
         let order: Vec<&str> = std::iter::from_fn(|| replies.recv_timeout(Duration::from_secs(5)).ok())
-            .filter_map(|r| match r {
+            .filter_map(|r| match r.reply {
                 Reply::Rows { .. } => Some("rows"),
                 Reply::Tables(_) => Some("tables"),
                 _ => None,

@@ -6,6 +6,7 @@ mod backup;
 mod cli;
 mod compare;
 mod config;
+mod crash;
 mod db;
 mod definition;
 mod design;
@@ -44,6 +45,7 @@ mod worker;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    crash::install();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(text) = cli::info_request(&args) {
         cli::show(&text);

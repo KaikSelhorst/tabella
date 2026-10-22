@@ -9,7 +9,16 @@ use crate::settings::{self, Settings, ZOOM, ZOOM_STEP};
 impl App {
     /// Makes `s` current (theme, zoom) and saves it.
     pub fn apply_settings(&mut self, ctx: &egui::Context, s: Settings) {
-        let s = s.clamped();
+        let mut s = s.clamped();
+        // Another window's changes come along (see `store::sync`) and are applied here too.
+        if let Err(e) = settings::save(&mut s) {
+            self.notice = crate::app::Notice::error(format!("Error saving preferences: {e}"));
+        }
+        self.use_settings(ctx, s.clamped());
+    }
+
+    /// Makes `s` current without saving it.
+    pub fn use_settings(&mut self, ctx: &egui::Context, s: Settings) {
         if s.light != self.settings.light {
             theme::set_light(s.light);
             theme::apply(ctx);
@@ -18,9 +27,6 @@ impl App {
             ctx.set_zoom_factor(s.zoom);
         }
         crate::db::set_max_rows(s.row_limit);
-        if let Err(e) = settings::save(&s) {
-            self.notice = crate::app::Notice::error(format!("Error saving preferences: {e}"));
-        }
         self.settings = s;
     }
 

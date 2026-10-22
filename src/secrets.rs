@@ -196,6 +196,10 @@ pub enum VaultError {
     WrongPassword,
     #[error("the vault hasn't been created yet")]
     NotCreated,
+    #[error("{0}")]
+    Internal(String),
+    #[error("Another tabella window created a vault meanwhile: enter its master password")]
+    CreatedElsewhere,
     #[error("corrupted vault")]
     Corrupted,
     #[error("failed to derive the key")]
@@ -317,6 +321,15 @@ impl Vault {
 
     pub fn finish(&mut self, derived: Derived) -> Result<(), VaultError> {
         let Derived { cipher, salt, create } = derived;
+        // Another window may have created one meanwhile: replacing it would lose its passwords,
+        // which only open with its master password.
+        if create
+            && let Some(path) = &self.path
+            && let Some(theirs) = store::load_at::<Option<VaultFile>>(path).value
+        {
+            self.file = Some(theirs);
+            return Err(VaultError::CreatedElsewhere);
+        }
         if create {
             let check = seal(&cipher, CHECK)?;
             self.file = Some(VaultFile {
@@ -378,11 +391,40 @@ impl Vault {
         }
     }
 
-    fn save(&self) -> Result<(), StoreError> {
-        let (Some(path), Some(file)) = (&self.path, &self.file) else {
+    /// Writes the vault, keeping the passwords another window saved in it meanwhile (and taking
+    /// them in, see `store::sync`).
+    fn save(&mut self) -> Result<(), StoreError> {
+        let (Some(path), Some(file)) = (&self.path, &mut self.file) else {
             return Ok(());
         };
-        store::save_at(path, file)
+        store::sync_with(path, file, store::Layout::Pretty, merge_vaults)
+    }
+
+    /// Picks up the passwords another window saved; and the vault itself when one was created
+    /// elsewhere since this window started.
+    pub fn refresh(&mut self) -> Result<(), StoreError> {
+        if self.file.is_some() {
+            return self.save();
+        }
+        if let Some(path) = &self.path {
+            self.file = store::load_at::<Option<VaultFile>>(path).value;
+        }
+        Ok(())
+    }
+}
+
+/// Passwords another window saved in the same vault are kept. A vault with another salt (a
+/// window that created its own without knowing of the other's) can't be mixed with this one:
+/// its entries open with another key. This window's replaces it.
+fn merge_vaults(
+    base: &serde_json::Value,
+    ours: &serde_json::Value,
+    theirs: &serde_json::Value,
+) -> serde_json::Value {
+    if ours.get("salt") == theirs.get("salt") {
+        store::merge(base, ours, theirs)
+    } else {
+        ours.clone()
     }
 }
 
@@ -506,7 +548,10 @@ mod tests {
     }
 
     fn temp_vault() -> (Vault, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("tabella-vault-test-{}", Nonce::generate()[0]));
+        // One per test: tests run side by side, and two sharing a file is two windows.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("tabella-vault-test-{}-{n}", std::process::id()));
         let path = dir.join("vault.json");
         let _ = std::fs::remove_file(&path);
         (Vault::load(Some(path.clone())), path)
@@ -538,6 +583,23 @@ mod tests {
         assert_eq!(again.get("dev").as_deref(), Some("s3cr3t café"));
         again.delete("dev").unwrap();
         assert!(!again.has("dev"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_vault_another_window_created_is_not_replaced() {
+        let (mut a, path) = temp_vault();
+        let mut b = Vault::load(Some(path.clone()));
+        a.create("first-master-password").unwrap();
+        a.set("dev", "kept").unwrap();
+        // B started before the vault existed and offers to create one.
+        assert!(matches!(
+            b.create("other-master-password"),
+            Err(VaultError::CreatedElsewhere)
+        ));
+        assert!(b.exists() && b.has("dev"));
+        b.unlock("first-master-password").unwrap();
+        assert_eq!(b.get("dev").as_deref(), Some("kept"));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

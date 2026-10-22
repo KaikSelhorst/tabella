@@ -672,7 +672,7 @@ impl App {
     pub fn toggle_star(&mut self, schema: &str, table: &str) {
         let Some(s) = &self.session else { return };
         crate::starred::toggle(&mut self.library.starred, &s.cfg.id, schema, table);
-        if let Err(e) = crate::starred::save(&self.library.starred) {
+        if let Err(e) = crate::starred::save(&mut self.library.starred) {
             self.notice = Notice::error(format!("Error saving starred tables: {e}"));
         }
     }
@@ -680,7 +680,7 @@ impl App {
     pub(super) fn remember_recent(&mut self, schema: &str, table: &str) {
         let Some(s) = &self.session else { return };
         if crate::recent::touch(&mut self.library.recent, &s.cfg.id, schema, table)
-            && let Err(e) = crate::recent::save(&self.library.recent)
+            && let Err(e) = crate::recent::save(&mut self.library.recent)
         {
             self.notice = Notice::error(format!("Error saving recent tables: {e}"));
         }

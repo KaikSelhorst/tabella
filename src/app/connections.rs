@@ -18,7 +18,7 @@ impl App {
     }
 
     pub(super) fn write_connections(&mut self) {
-        match config::save(&self.connections.saved, &mut self.connections.secrets) {
+        match config::save(&mut self.connections.saved, &mut self.connections.secrets) {
             Ok(r) if r.not_stored > 0 => {
                 self.notice = Notice::info(format!(
                     "{} {} saved to disk (this session only)",
@@ -108,7 +108,9 @@ impl App {
             Ok(job) => {
                 let (tx, rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
-                    let _ = tx.send(job.run());
+                    let res =
+                        crate::crash::guard(|| job.run()).unwrap_or_else(|e| Err(VaultError::Internal(e)));
+                    let _ = tx.send(res);
                     wake();
                 });
                 p.error = None;
@@ -142,6 +144,10 @@ impl App {
                 self.after_master(then);
             }
             Err(e) => {
+                // The vault another window made is the one to unlock now.
+                if matches!(e, VaultError::CreatedElsewhere) {
+                    p.mode = MasterMode::Unlock;
+                }
                 p.error = Some(e.to_string());
                 p.password.clear();
                 p.confirm.clear();
@@ -278,6 +284,7 @@ impl App {
             replies: rx,
             running,
             cancels,
+            link,
         } = worker::spawn(cfg.clone(), self.waker());
         self.notice = Notice::info(format!("Connecting to {}…", cfg.name));
         self.session = Some(Session {
@@ -286,6 +293,7 @@ impl App {
             rx,
             running,
             cancels,
+            link,
             ready: false,
             tables: vec![],
             columns: vec![],
@@ -327,6 +335,20 @@ impl App {
         }
         self.tabs.clear();
         true
+    }
+
+    /// The window is closing and the process with it, cutting off every thread: the history's
+    /// last write is waited for, and the session ends now (its SSH tunnel stopped, a query still
+    /// running cancelled) instead of being abandoned.
+    pub fn shutdown(&mut self) {
+        self.library
+            .history_writer
+            .finish(std::time::Duration::from_secs(2));
+        if let Some(s) = self.session.take()
+            && self.tabs.iter().any(Tab::busy)
+        {
+            s.cancel_all_and_wait(std::time::Duration::from_secs(2));
+        }
     }
 }
 
@@ -450,7 +472,10 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = self.waker();
         std::thread::spawn(move || {
-            let _ = tx.send(crate::backup::run(&cfg, op, &file));
+            // A panic is reported like a stopped backup (the details go to the crash log).
+            if let Ok(res) = crate::crash::guard(|| crate::backup::run(&cfg, op, &file)) {
+                let _ = tx.send(res);
+            }
             wake();
         });
         self.connections.backup = Some(rx);

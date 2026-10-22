@@ -103,11 +103,13 @@ impl Notice {
 pub struct Session {
     pub cfg: ConnConfig,
     tx: Sender<Job>,
-    rx: Receiver<Reply>,
+    rx: Receiver<worker::Tagged>,
     /// What each of the session's connections is running, for cancelling a tab's statement.
     running: Vec<Arc<worker::Running>>,
     /// When each tab was cancelled, so its jobs still waiting in line are skipped.
     cancels: Arc<worker::Cancels>,
+    /// The SSH tunnel, stopped when the session ends (see `Drop`).
+    link: Option<Arc<crate::tunnel::Link>>,
     pub ready: bool,
     pub tables: Vec<TableRef>,
     /// `(table, column)` pairs for SQL autocomplete.
@@ -193,13 +195,40 @@ impl Session {
         self.cancel_running(None);
     }
 
+    /// `cancel_all`, waiting up to `limit` for the server to have been asked: the process is
+    /// about to end, and a statement left running would go on on the server.
+    pub fn cancel_all_and_wait(&self, limit: std::time::Duration) {
+        let (done, wait) = std::sync::mpsc::channel();
+        self.cancel_then(None, move || {
+            let _ = done.send(());
+        });
+        let _ = wait.recv_timeout(limit);
+    }
+
     fn cancel_running(&self, tab: Option<u64>) {
+        self.cancel_then(tab, || {});
+    }
+
+    fn cancel_then(&self, tab: Option<u64>, then: impl FnOnce() + Send + 'static) {
         let running = self.running.clone();
         std::thread::spawn(move || {
-            for r in running {
-                r.cancel(tab);
-            }
+            let _ = crate::crash::guard(|| {
+                for r in running {
+                    r.cancel(tab);
+                }
+            });
+            then();
         });
+    }
+}
+
+impl Drop for Session {
+    /// Disconnecting, switching connections or quitting: ssh stops now, even while the
+    /// session's threads are still busy or are about to be cut off by the process ending.
+    fn drop(&mut self) {
+        if let Some(link) = &self.link {
+            link.close();
+        }
     }
 }
 
@@ -380,6 +409,8 @@ pub struct WindowState {
     pub quit_after_tx: bool,
     /// The user chose to quit without the unsaved edits (a transaction may still be asked about).
     pub quit_drops_edits: bool,
+    /// Whether the window had the focus last frame (`None`: unknown yet).
+    pub was_focused: Option<bool>,
 }
 
 impl App {
@@ -418,6 +449,7 @@ impl App {
             col_widths.warning,
             settings.warning,
             last.warning,
+            crate::crash::take_previous(),
         ]
         .into_iter()
         .flatten()
@@ -628,14 +660,48 @@ impl App {
             return;
         };
         if crate::widths::remember(&mut self.library.col_widths, &conn, schema, table, widths)
-            && let Err(e) = crate::widths::save(&self.library.col_widths)
+            && let Err(e) = crate::widths::save(&mut self.library.col_widths)
         {
             self.notice = Notice::error(format!("Error saving column widths: {e}"));
         }
     }
 
+    /// The window got the focus back: picks up what another window saved meanwhile (see
+    /// `store::sync`). Returns the preferences when they changed, for the caller to apply.
+    pub fn sync_from_disk(&mut self) -> Option<crate::settings::Settings> {
+        let lib = &mut self.library;
+        lib.history_writer.reload();
+        let mut errors = Vec::new();
+        let mut check = |what: &str, r: Result<(), crate::store::StoreError>| {
+            if let Err(e) = r {
+                errors.push(format!("{what}: {e}"));
+            }
+        };
+        check(
+            "connections",
+            config::refresh(&mut self.connections.saved, &self.connections.secrets),
+        );
+        if let Some(vault) = self.connections.secrets.vault_mut() {
+            check("passwords", vault.refresh());
+        }
+        check("favorites", favorites::save(&mut lib.favorites));
+        check("filters", filters::save(&mut lib.filters));
+        check("column widths", crate::widths::save(&mut lib.col_widths));
+        check("recent tables", crate::recent::save(&mut lib.recent));
+        check("starred tables", crate::starred::save(&mut lib.starred));
+        let mut settings = self.settings.clone();
+        check("preferences", crate::settings::save(&mut settings));
+        if !errors.is_empty() {
+            self.notice = Notice::error(format!(
+                "Couldn't read what other windows saved: {}",
+                errors.join("; ")
+            ));
+        }
+        (settings != self.settings).then_some(settings)
+    }
+
     fn store_filters(&mut self) {
-        if let Err(e) = filters::save(&self.library.filters) {
+        if let Err(e) = filters::save(&mut self.library.filters) {
             self.notice = Notice::error(format!("Error saving filters: {e}"));
         }
     }
@@ -646,7 +712,7 @@ impl App {
     }
 
     fn save_favorites(&mut self) {
-        if let Err(e) = favorites::save(&self.library.favorites) {
+        if let Err(e) = favorites::save(&mut self.library.favorites) {
             self.notice = Notice::error(format!("Error saving favorites: {e}"));
         }
     }

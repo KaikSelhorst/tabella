@@ -249,7 +249,7 @@ fn a_tab_opens_with_the_widths_remembered_for_its_table() {
         250.0
     );
     app.library.col_widths.clear();
-    let _ = crate::widths::save(&app.library.col_widths);
+    let _ = crate::widths::save(&mut app.library.col_widths);
 }
 
 #[test]
@@ -872,7 +872,7 @@ fn value_filter_round_trip() {
             })
             .expect("a Distinct job")
     };
-    let reply = |replies: &Sender<Reply>| {
+    let reply = |replies: &super::tests::FakeReplies| {
         let row = |v: Option<&str>, n: &str| vec![v.map(String::from), Some(n.to_string())];
         replies
             .send(Reply::Distinct {
@@ -1063,4 +1063,40 @@ fn saved_cells_stay_marked_until_the_transaction_ends() {
     save(&mut app);
     app.poll();
     assert!(marked(&app).is_empty());
+}
+
+#[test]
+fn a_late_reply_does_not_replace_a_newer_one() {
+    let (s, _jobs, replies) = fake_session(Kind::Postgres);
+    let mut app = app_with(s);
+    app.open_sql(String::new());
+    let id = app.tabs[0].id;
+    app.tabs[0].pending = 2;
+    let newer = QueryResult {
+        columns: vec!["n".into()],
+        rows: vec![vec![Some("2".into())]].into(),
+        ..Default::default()
+    };
+    // Job 6 ran on the idle connection and answered before job 5, still on the busy one.
+    replies.send_for(
+        6,
+        Reply::Rows {
+            tab: id,
+            res: Box::new(Ok(newer)),
+            notice: None,
+        },
+    );
+    replies.send_for(
+        5,
+        Reply::Rows {
+            tab: id,
+            res: Box::new(Err(crate::error::DbError::Other("old".into()))),
+            notice: None,
+        },
+    );
+    app.poll();
+    let t = &app.tabs[0];
+    assert_eq!(t.result.as_ref().and_then(|r| r.rows.cell(0, 0)), Some("2"));
+    assert!(t.error.is_none(), "{:?}", t.error);
+    assert!(!t.busy(), "the late reply still ends its job");
 }

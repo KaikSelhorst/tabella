@@ -569,6 +569,8 @@ pub struct Tab {
     pub(super) pending: u32,
     /// When the tab became busy, to tell the user about long ones finishing in the background.
     started: Option<Instant>,
+    /// The newest reply shown of each kind, by job number (see `stale`).
+    shown: Vec<(std::mem::Discriminant<Reply>, u64)>,
     /// Selected cell `(row, column)` in the result grid.
     pub selected: Option<(usize, usize)>,
     /// Other corner of a range selection (Shift+click, drag, Shift+arrows); `selected` is the
@@ -656,6 +658,7 @@ impl Tab {
             error: None,
             pending: 0,
             started: None,
+            shown: Vec::new(),
             selected: None,
             anchor: None,
             detail_hidden: None,
@@ -780,6 +783,27 @@ impl Tab {
             self.started = Some(Instant::now());
         }
         self.pending += 1;
+    }
+
+    /// Whether a newer reply of this kind was shown already (`seq` is the number of the job it
+    /// answers, see `worker::Tagged`): rows or a panel from an older job that arrived late, from
+    /// the session's other connection, must not replace them. Else remembers this one.
+    pub(super) fn stale(&mut self, reply: &Reply, seq: u64) -> bool {
+        if seq == 0 || !reply.is_view() {
+            return false;
+        }
+        let kind = std::mem::discriminant(reply);
+        match self.shown.iter_mut().find(|(k, _)| *k == kind) {
+            Some((_, last)) if *last > seq => true,
+            Some((_, last)) => {
+                *last = seq;
+                false
+            }
+            None => {
+                self.shown.push((kind, seq));
+                false
+            }
+        }
     }
 
     /// Counts a reply. Returns how long the tab was busy when this was the last one.

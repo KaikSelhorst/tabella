@@ -2,9 +2,24 @@ use std::sync::mpsc::channel;
 
 use super::*;
 
+/// The worker's side of a fake session's replies.
+pub struct FakeReplies(Sender<worker::Tagged>);
+
+impl FakeReplies {
+    /// A reply to no job in particular (never stale).
+    pub fn send(&self, reply: Reply) -> Result<(), &'static str> {
+        self.0.send(reply.into()).map_err(|_| "the app's end is gone")
+    }
+
+    /// A reply to the job the worker numbered `seq`.
+    pub fn send_for(&self, seq: u64, reply: Reply) {
+        let _ = self.0.send(worker::Tagged { seq, reply });
+    }
+}
+
 /// A ready session whose jobs land in the returned receiver instead of a database. Keep the
 /// returned sender alive: when it drops, `poll` treats the worker as gone.
-pub fn fake_session(kind: Kind) -> (Session, Receiver<Job>, Sender<Reply>) {
+pub fn fake_session(kind: Kind) -> (Session, Receiver<Job>, FakeReplies) {
     let (tx, jobs) = channel();
     let (replies, rx) = channel();
     let mut cfg = ConnConfig::new(kind);
@@ -16,6 +31,7 @@ pub fn fake_session(kind: Kind) -> (Session, Receiver<Job>, Sender<Reply>) {
         rx,
         running: Vec::new(),
         cancels: Default::default(),
+        link: None,
         ready: true,
         tables: vec![],
         columns: vec![],
@@ -28,7 +44,7 @@ pub fn fake_session(kind: Kind) -> (Session, Receiver<Job>, Sender<Reply>) {
         txn: TxState::default(),
         uncommitted: HashSet::new(),
     };
-    (s, jobs, replies)
+    (s, jobs, FakeReplies(replies))
 }
 
 pub(super) fn table_tab() -> Tab {

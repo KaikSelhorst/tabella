@@ -22,8 +22,8 @@ pub fn load() -> Loaded<Vec<SavedFilter>> {
 }
 
 /// Filters can contain data (names, documents), so the file is private.
-pub fn save(list: &[SavedFilter]) -> Result<(), StoreError> {
-    store::save(FILE, list)
+pub fn save(list: &mut Vec<SavedFilter>) -> Result<(), StoreError> {
+    store::sync(FILE, list)
 }
 
 /// This table's filters, by name.

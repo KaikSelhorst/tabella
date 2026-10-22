@@ -87,9 +87,10 @@ pub fn load() -> Loaded<Saved> {
     store::load(FILE)
 }
 
-/// SQL editors can hold data, so the file is private like the others.
+/// SQL editors can hold data, so the file is private like the others. Each window has its own
+/// tabs: the last one closed is what the next start reopens, not a mix of them.
 pub fn save(s: &Saved) -> Result<(), StoreError> {
-    store::save(FILE, s)
+    store::replace(FILE, s)
 }
 
 #[cfg(test)]

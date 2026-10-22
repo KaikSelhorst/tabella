@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use serde_json::Value;
+
 use crate::store::{self, Loaded, StoreError};
 
 /// Connection id → `(schema, table)`, the latest first.
@@ -15,8 +17,33 @@ pub fn load() -> Loaded<Store> {
     store::load(FILE)
 }
 
-pub fn save(recent: &Store) -> Result<(), StoreError> {
-    store::save(FILE, recent)
+pub fn save(recent: &mut Store) -> Result<(), StoreError> {
+    let path = store::path(FILE)?;
+    store::sync_with(&path, recent, store::Layout::Pretty, merge)
+}
+
+/// Two windows' recent tables: per connection, the order of this window when it opened tables
+/// since it last saw the file (it opened them last), then the other window's it doesn't have.
+fn merge(base: &Value, ours: &Value, theirs: &Value) -> Value {
+    let (Some(o), Some(t)) = (ours.as_object(), theirs.as_object()) else {
+        return ours.clone();
+    };
+    let b = base.as_object();
+    let mut out = t.clone();
+    for (conn, list) in o {
+        if b.and_then(|b| b.get(conn)) == Some(list) {
+            continue;
+        }
+        let mut merged: Vec<Value> = list.as_array().cloned().unwrap_or_default();
+        for v in t.get(conn).and_then(Value::as_array).into_iter().flatten() {
+            if !merged.contains(v) {
+                merged.push(v.clone());
+            }
+        }
+        merged.truncate(KEEP);
+        out.insert(conn.clone(), Value::Array(merged));
+    }
+    Value::Object(out)
 }
 
 /// Puts the table first. Returns whether the list changed (opening the one already first does not).
@@ -59,5 +86,17 @@ mod tests {
         }
         assert_eq!(s["c"].len(), KEEP);
         assert_eq!(rank(&s, "c", "public", "a"), None, "old ones fall off");
+    }
+
+    #[test]
+    fn the_window_that_opened_tables_last_sets_the_order() {
+        use serde_json::json;
+        let base = json!({"c": [["s", "a"], ["s", "b"]]});
+        let ours = json!({"c": [["s", "x"], ["s", "a"], ["s", "b"]]});
+        let theirs = json!({"c": [["s", "b"], ["s", "a"]], "d": [["s", "z"]]});
+        assert_eq!(
+            merge(&base, &ours, &theirs),
+            json!({"c": [["s", "x"], ["s", "a"], ["s", "b"]], "d": [["s", "z"]]})
+        );
     }
 }

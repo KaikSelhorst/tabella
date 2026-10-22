@@ -2,9 +2,12 @@
 //! user's keys, agent and `~/.ssh/config` just work, without bundling an SSH implementation.
 //! Authentication must not need typing: keys or agent only (`BatchMode=yes`).
 
-use std::io::Read;
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::io::{BufRead, BufReader};
+use std::net::{Ipv4Addr, TcpListener};
 use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{RecvTimeoutError, channel};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::db::SshConfig;
@@ -53,6 +56,8 @@ pub enum TunnelError {
     ExitedSilently,
     #[error("SSH: timed out opening the tunnel")]
     Timeout,
+    #[error("SSH: the tunnel was closed")]
+    Closed,
 }
 
 /// A running `ssh -L`. The process is stopped when this is dropped.
@@ -68,9 +73,16 @@ impl Tunnel {
         check_arg("SSH host", &ssh.host, true)?;
         check_arg("database host", db_host, true)?;
         let local_port = free_port().map_err(TunnelError::NoFreePort)?;
-        let mut cmd = crate::programs::command("ssh").ok_or(TunnelError::NoClient)?;
+        Self::open_on(ssh, db_host, db_port, local_port)
+    }
+
+    /// `open` on a given local port.
+    fn open_on(ssh: &SshConfig, db_host: &str, db_port: u16, local_port: u16) -> Result<Tunnel, TunnelError> {
+        let mut cmd = ssh_command().ok_or(TunnelError::NoClient)?;
         cmd.args([
             "-N",
+            // Says when the forward is in place (see `wait_ready`).
+            "-v",
             // Fail instead of prompting (there is no terminal) or silently not forwarding.
             "-o",
             "BatchMode=yes",
@@ -105,42 +117,181 @@ impl Tunnel {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
         let child = cmd.spawn().map_err(TunnelError::Spawn)?;
+        #[cfg(windows)]
+        tie_to_app(&child);
         let mut tunnel = Tunnel { child, local_port };
         tunnel.wait_ready()?;
         Ok(tunnel)
     }
 
+    /// Whether ssh is still running.
+    fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Waits for ssh to say the forward is in place. Not by trying the port: until ssh has bound
+    /// it, another program could, and would then be taken for the tunnel and sent the database's
+    /// password. ssh only enters the session once every forward is listening, and exits instead
+    /// when one can't (`ExitOnForwardFailure`).
     fn wait_ready(&mut self) -> Result<(), TunnelError> {
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, self.local_port));
+        let stderr = self.child.stderr.take().ok_or(TunnelError::ExitedSilently)?;
+        let (tx, lines) = channel::<String>();
+        // Reads ssh's stderr for as long as ssh runs: once nobody listens the lines are dropped,
+        // but still read, or the pipe fills and ssh, blocked writing, stops forwarding.
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).split(b'\n') {
+                let Ok(line) = line else { break };
+                let _ = tx.send(String::from_utf8_lossy(&line).trim_end().to_string());
+            }
+        });
         let deadline = Instant::now() + OPEN_TIMEOUT;
+        // What ssh said besides its debug output, for the error.
+        let mut said: Vec<String> = Vec::new();
+        let mut keep = |line: String| {
+            if !line.starts_with("debug") && !line.trim().is_empty() {
+                said.push(line);
+            }
+        };
         loop {
-            if let Ok(Some(_)) = self.child.try_wait() {
-                let mut err = String::new();
-                if let Some(mut stderr) = self.child.stderr.take() {
-                    let _ = stderr.read_to_string(&mut err);
+            match lines.recv_timeout(Duration::from_millis(100)) {
+                Ok(line) if line.contains(READY) => return Ok(()),
+                Ok(line) => keep(line),
+                Err(RecvTimeoutError::Timeout) => {}
+                // stderr closed: ssh is exiting.
+                Err(RecvTimeoutError::Disconnected) => {
+                    let _ = self.child.wait();
                 }
-                let err = err.trim();
+            }
+            if let Ok(Some(_)) = self.child.try_wait() {
+                // Its last words may still be on the way.
+                while let Ok(line) = lines.recv_timeout(Duration::from_millis(200)) {
+                    keep(line);
+                }
+                let err = said.join("\n");
                 return Err(if err.is_empty() {
                     TunnelError::ExitedSilently
                 } else {
-                    TunnelError::Exited(err.to_string())
+                    TunnelError::Exited(err)
                 });
-            }
-            if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-                return Ok(());
             }
             if Instant::now() > deadline {
                 return Err(TunnelError::Timeout);
             }
-            std::thread::sleep(Duration::from_millis(100));
         }
     }
 }
+
+/// `ssh`, made to end with the app even when the app is killed instead of closed (its `Drop` then
+/// never runs). On Linux `setpriv` asks the kernel to kill ssh when the thread that started it
+/// ends: the session's threads live as long as the tunnel is used, and a tunnel that dies with
+/// one is opened again by the next connection (see `Link`). Without `setpriv`, plain ssh.
+#[cfg(target_os = "linux")]
+fn ssh_command() -> Option<std::process::Command> {
+    if !crate::programs::installed("ssh") {
+        return None;
+    }
+    if !crate::programs::installed("setpriv") {
+        return crate::programs::command("ssh");
+    }
+    let mut cmd = crate::programs::command("setpriv")?;
+    cmd.args(["--pdeathsig", "KILL", "--", "ssh"]);
+    Some(cmd)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ssh_command() -> Option<std::process::Command> {
+    crate::programs::command("ssh")
+}
+
+/// Puts ssh in a job object that Windows closes with the app's process, however it ends, and
+/// closing it ends ssh.
+#[cfg(windows)]
+fn tie_to_app(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    static JOB: std::sync::OnceLock<Option<win32job::Job>> = std::sync::OnceLock::new();
+    let job = JOB.get_or_init(|| {
+        let mut info = win32job::ExtendedLimitInfo::new();
+        info.limit_kill_on_job_close();
+        win32job::Job::create_with_limit_info(&info).ok()
+    });
+    if let Some(job) = job {
+        let _ = job.assign_process(child.as_raw_handle() as isize);
+    }
+}
+
+/// What ssh prints (with `-v`) once authenticated and every forward listens.
+const READY: &str = "Entering interactive session";
 
 impl Drop for Tunnel {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// A session's tunnel, shared by its connections. When ssh has exited (the network dropped), the
+/// next connection opens it again on a new local port: the old one may by then belong to another
+/// program, which must not be sent the database's password.
+pub struct Link {
+    ssh: SshConfig,
+    host: String,
+    port: u16,
+    tunnel: Mutex<Option<Tunnel>>,
+    closed: AtomicBool,
+}
+
+impl Link {
+    /// Nothing runs until a connection asks for `port`.
+    pub fn new(ssh: SshConfig, db_host: &str, db_port: u16) -> Arc<Link> {
+        Arc::new(Link {
+            ssh,
+            host: db_host.to_string(),
+            port: db_port,
+            tunnel: Mutex::new(None),
+            closed: AtomicBool::new(false),
+        })
+    }
+
+    fn tunnel(&self) -> MutexGuard<'_, Option<Tunnel>> {
+        self.tunnel.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The local port to connect to, starting ssh first when it isn't running.
+    pub fn port(&self) -> Result<u16, TunnelError> {
+        {
+            let mut t = self.tunnel();
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(TunnelError::Closed);
+            }
+            if let Some(t) = t.as_mut()
+                && t.alive()
+            {
+                return Ok(t.local_port);
+            }
+            *t = None;
+        }
+        // Opening takes seconds: not while holding the lock, which `close` waits for.
+        let new = Tunnel::open(&self.ssh, &self.host, self.port)?;
+        let mut t = self.tunnel();
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(TunnelError::Closed);
+        }
+        // The session's other connection may have opened one meanwhile: that one stays.
+        if let Some(other) = t.as_mut()
+            && other.alive()
+        {
+            return Ok(other.local_port);
+        }
+        let port = new.local_port;
+        *t = Some(new);
+        Ok(port)
+    }
+
+    /// Stops ssh for good. The session's threads may be busy (a long query) or about to end with
+    /// the process: they can't be counted on to drop the tunnel themselves.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.tunnel().take();
     }
 }
 
@@ -169,6 +320,7 @@ fn free_port() -> std::io::Result<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{SocketAddr, TcpStream};
 
     #[test]
     fn option_like_fields_are_refused() {
@@ -266,6 +418,65 @@ mod tests {
             )
             .is_err()
         );
+
+        // A session's link: ssh that died (the network dropped) is started again, on a new
+        // port, and closing it stops ssh for good.
+        let link = Link::new(ssh.clone(), &cfg.host, cfg.port);
+        link.port().expect("tunnel");
+        let pid = |link: &Link| link.tunnel().as_ref().unwrap().child.id();
+        let first = pid(&link);
+        {
+            // As when ssh exits on its own: gone before the next connection asks.
+            let mut t = link.tunnel();
+            let child = &mut t.as_mut().unwrap().child;
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+        // The OS may hand out the same free port again: what matters is a new ssh behind it.
+        let second = link.port().expect("reopened");
+        assert_ne!(pid(&link), first);
+        let mut c = Conn::connect(&cfg, Some(second)).expect("connect through the new tunnel");
+        assert!(c.query("SELECT 1").is_ok());
+        drop(c);
+        link.close();
+        assert!(matches!(link.port(), Err(TunnelError::Closed)));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            TcpStream::connect_timeout(
+                &SocketAddr::from((Ipv4Addr::LOCALHOST, second)),
+                Duration::from_millis(300)
+            )
+            .is_err()
+        );
+        // ssh ends with the thread that started it, as it would with the app killed outright.
+        #[cfg(target_os = "linux")]
+        {
+            let (ssh2, host) = (ssh.clone(), cfg.host.clone());
+            let pid = std::thread::spawn(move || {
+                let t = Tunnel::open(&ssh2, &host, 5432).expect("tunnel");
+                let pid = t.child.id();
+                // Not dropped: only the thread's end may stop it.
+                std::mem::forget(t);
+                pid
+            })
+            .join()
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+            let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            // Gone, or a zombie waiting for us to reap it: either way no longer forwarding.
+            assert!(
+                state.is_empty() || state.contains(") Z "),
+                "ssh {pid} still runs: {state}"
+            );
+        }
+        // Another program took the port between picking it and ssh binding it: that program
+        // must not pass for the tunnel.
+        let squatter = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let taken = squatter.local_addr().unwrap().port();
+        let err = Tunnel::open_on(&ssh, &cfg.host, cfg.port, taken)
+            .err()
+            .expect("refused");
+        assert!(err.to_string().contains("forwarding"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
