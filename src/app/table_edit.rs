@@ -66,10 +66,22 @@ pub fn apply_value_filter(tab: &mut Tab, s: &Session) {
         .partition(|v| vf.unchecked.contains(v));
     let cond = sql::values_condition(s.cfg.kind, &vf.expr, &checked, &unchecked, vf.complete);
     if let Some(i) = ts.value_conds.iter().position(|v| v.column == vf.column) {
-        let old = ts.value_conds.remove(i);
-        if let Some(rest) = sql::remove_condition(&ts.filter, &old.cond) {
-            ts.filter = rest;
+        let old = &ts.value_conds[i].cond;
+        match sql::remove_condition(&ts.filter, old) {
+            Some(rest) => ts.filter = rest,
+            // Still in the WHERE box but edited around: adding the new one would keep both.
+            None if ts.filter.contains(old.trim()) => {
+                tab.error = Some(format!(
+                    "The WHERE box was edited around this column's condition: remove {old} \
+                     there first."
+                ));
+                ts.value_filter = Some(vf);
+                return;
+            }
+            // The user took it out.
+            None => {}
         }
+        ts.value_conds.remove(i);
     }
     if let Some(cond) = cond {
         ts.filter = sql::and(&ts.filter, &cond);

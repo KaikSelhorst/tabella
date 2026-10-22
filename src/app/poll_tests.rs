@@ -1006,6 +1006,25 @@ fn value_filters_on_several_columns_change_in_any_order() {
     );
     let columns: Vec<String> = t(&mut app).value_conds.iter().map(|v| v.column.clone()).collect();
     assert_eq!(columns, ["z", "y"]);
+
+    // Typed around in the WHERE box, `z` can't be taken out: applying is refused rather than
+    // keeping the old condition next to the new one.
+    let edited = format!("{} OR b", t(&mut app).filter);
+    t(&mut app).filter = edited.clone();
+    filter_column(&mut app, "z", &["a"]);
+    assert!(app.tabs[0].error.as_deref().is_some_and(|e| e.contains(z)));
+    assert_eq!(t(&mut app).filter, edited);
+    assert!(
+        t(&mut app).value_filter.is_some(),
+        "still open, to fix and apply again"
+    );
+    assert_eq!(t(&mut app).value_conds.len(), 2);
+    // Taken out by hand: the new one goes in alone.
+    t(&mut app).filter = "active".into();
+    t(&mut app).value_filter = None;
+    app.tabs[0].error = None;
+    filter_column(&mut app, "z", &["a"]);
+    assert_eq!(t(&mut app).filter, sql::and("active", "\"z\" NOT IN ('a')"));
 }
 
 /// An editor SELECT that puts another value under a table column's name (`name AS id`) can't
