@@ -566,6 +566,8 @@ fn header_cell<'a>(
     };
     let (r, filter_clicked) = if numeric {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            // Same room before the edge as the values below, so the last column isn't clipped.
+            ui.add_space(NUMBER_PAD);
             let clicked = filter(ui);
             sort(ui);
             let r = label(ui);
@@ -579,7 +581,10 @@ fn header_cell<'a>(
         let r = label(ui);
         sort(ui);
         let clicked = filter(ui);
-        ui.with_layout(Layout::right_to_left(Align::Center), data_type);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add_space(NUMBER_PAD);
+            data_type(ui);
+        });
         (r, clicked)
     };
     if filter_clicked {
