@@ -2,8 +2,8 @@ name: Release
 
 # Publishing a release on GitHub (with a tag matching Cargo.toml's version, e.g. v0.2.0) builds
 # tabella and attaches to that release:
-#   Windows: an installer (per user, no admin), the portable .exe, and a .zip with it and the README
-#   Linux:   an AppImage, a .deb and a .tar.gz with the binary and the README
+#   Windows: an installer (per user, no admin), the portable .exe, and a .zip with it, the README and the licenses
+#   Linux:   an AppImage, a .deb and a .tar.gz with the binary, the README and the licenses
 # each with a SHA-256 checksum next to it.
 #
 # Hardening: third-party actions are pinned to commit SHAs, nothing is restored from a cache
@@ -57,7 +57,7 @@ jobs:
           $name = "tabella-$env:TAG-${{ matrix.name }}"
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/tabella.exe "dist/$name.exe"
-          Compress-Archive -Path target/release/tabella.exe, README.md -DestinationPath "dist/$name.zip"
+          Compress-Archive -Path target/release/tabella.exe, README.md, LICENSE-MIT, LICENSE-APACHE -DestinationPath "dist/$name.zip"
           cargo install cargo-packager --version 0.11.8 --locked
           cargo packager --release --formats nsis
           Move-Item (Get-ChildItem target/packages/*-setup.exe).FullName "dist/$name-setup.exe"
@@ -73,7 +73,7 @@ jobs:
           mkdir -p "dist/$name"
           mv target/packages/*.AppImage "dist/$name.AppImage"
           mv target/packages/*.deb "dist/$name.deb"
-          cp target/release/tabella README.md "dist/$name/"
+          cp target/release/tabella README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -r "dist/$name"
 

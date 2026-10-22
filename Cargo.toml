@@ -5,6 +5,8 @@ edition = "2024"
 # What the dependencies ask for (egui 0.36 needs 1.95); checked by CI.
 rust-version = "1.95"
 authors = ["Kaik Selhorst"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/KaikSelhorst/tabella"
 
 [dependencies]
 argon2 = "0.6.0"
