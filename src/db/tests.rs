@@ -21,6 +21,39 @@ fn connections_list_by_group() {
     assert!(by_group(&[]).is_empty());
 }
 
+#[test]
+fn only_loopback_addresses_are_local() {
+    let local = |host: &str| {
+        ConnConfig {
+            host: host.into(),
+            ..ConnConfig::new(Kind::Postgres)
+        }
+        .is_local()
+    };
+    for host in [
+        "localhost",
+        "",
+        "127.0.0.1",
+        "127.0.1.1",
+        "::1",
+        "[::1]",
+        " 127.0.0.1 ",
+    ] {
+        assert!(local(host), "{host}");
+    }
+    // Names that only look like an address may point anywhere.
+    for host in [
+        "127.attacker.example",
+        "localhost.example",
+        "[[::1]]",
+        "[::1",
+        "10.0.0.5",
+        "db.example.com",
+    ] {
+        assert!(!local(host), "{host}");
+    }
+}
+
 fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
     let cfg = ConnConfig {
         password: pass.into(),

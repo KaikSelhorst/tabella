@@ -232,8 +232,16 @@ impl ConnConfig {
     }
 
     /// Whether traffic to this host stays on the machine (no need for TLS).
+    /// An address, not a name starting like one: `127.example.com` can be anywhere.
     pub fn is_local(&self) -> bool {
-        matches!(self.host.trim(), "localhost" | "127.0.0.1" | "::1" | "") || self.host.starts_with("127.")
+        let host = self.host.trim();
+        matches!(host, "localhost" | "")
+            || host
+                .strip_prefix('[')
+                .and_then(|h| h.strip_suffix(']'))
+                .unwrap_or(host)
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
     }
 
     pub fn new(kind: Kind) -> Self {
