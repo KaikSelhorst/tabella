@@ -1,9 +1,63 @@
 # tabella
 
-Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, written in Rust with
-[egui](https://github.com/emilk/egui). A single executable, no runtime.
+Lightweight database client for **PostgreSQL**, **MySQL** (and MariaDB) and **SQLite**, written
+in Rust with [egui](https://github.com/emilk/egui). A single executable, no runtime.
 
-## Features
+![A table open in tabella, with the row detail panel](docs/screenshots/table.png)
+
+## Install
+
+Download the latest version from the
+[releases page](https://github.com/KaikSelhorst/tabella/releases):
+
+- **Windows**: `…-setup.exe` installs for the current user (no administrator rights); the plain
+  `.exe` is portable and runs from anywhere. The executable isn't signed yet, so Windows
+  SmartScreen may warn about an unknown publisher: "More info" → "Run anyway".
+- **Linux**: the `.AppImage` runs as is (`chmod +x` it first); the `.deb` installs on Debian and
+  Ubuntu; the `.tar.gz` holds the bare binary. They need glibc 2.35 or newer (Ubuntu 22.04,
+  Debian 12, Fedora 36 or later).
+
+Each file has a `.sha256` checksum next to it.
+
+## Getting started
+
+1. Open tabella and click **New connection**. Fill in the server, user and password, or paste a
+   URL such as `postgres://user@host:5432/db` in the form's URL field and click **Fill in**. For
+   SQLite, pick a `.db` file (or create a new one).
+2. **Test connection** checks it without saving. **Save** adds it to the list; click it there to
+   connect.
+3. Click a table in the sidebar to browse it, or press `Ctrl+P` to find a table, a column or a
+   command by name.
+4. `Ctrl+T` opens a SQL editor: `Ctrl+Enter` runs the statement under the cursor, `F5` runs
+   everything.
+5. `F1` lists every keyboard shortcut.
+
+The password is kept in the system's credential store (see [Security](#security)). On Linux
+without a keyring, tabella asks for a master password the first time it needs to store one.
+
+## Highlights
+
+- Edit data in the grid or in a row panel; changes are saved together in one transaction
+  (`Ctrl+S`) and can be undone (`Ctrl+Z`)
+- SQL editor with autocomplete that knows aliases and joins, formatting, history, favorites and
+  `:parameters`
+- Visual execution plans with full scans highlighted, index suggestions and before/after
+  comparison
+- Import CSV and Excel; export to CSV, Excel, JSON or SQL, including whole tables and databases
+- Compare the structure of two schemas or databases and generate the SQL that aligns them
+- Activity monitor: sessions, locks, slow queries and server health
+- SSH tunnels, TLS, read-only connections, a color per connection (e.g. red for production) and
+  confirmation before destructive statements
+
+![The SQL editor with a result](docs/screenshots/sql.png)
+
+![An execution plan with a full scan highlighted](docs/screenshots/plan.png)
+
+## All features
+
+<details>
+<summary>The full list</summary>
+
 
 - Table browsing with paging, a `WHERE` filter, sorting and the total row count
 - Editing directly in the grid and in a row detail panel (tables with a primary key): changes
@@ -207,6 +261,21 @@ Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, writte
 - The tab bar scrolls (including with the mouse wheel), follows the active tab and lists all
   tabs when they don't fit
 
+</details>
+
+## Known limitations
+
+- **Platforms**: Windows and Linux (x86_64) only; there is no macOS build yet.
+- **TLS**: there's no way to give a custom CA. A server whose certificate a private CA signed
+  can only be reached with "Accept invalid certificate" (no verification), and client
+  certificates aren't supported.
+- **SQLite**: what depends on a server (activity monitor, sessions, visual plan) isn't
+  available, and changing the type or `NULL` of an existing column only generates a comment.
+- **Backup and restore** run `pg_dump`/`pg_restore`/`psql` or `mysqldump`/`mysql`, which must
+  be installed separately.
+- **Updates**: the app doesn't check for new versions; watch the releases page.
+- **Language**: the interface is in English only.
+
 ## Security
 
 - **Passwords** never go to disk in plain text: Credential Manager (Windows), the system keyring
@@ -288,3 +357,13 @@ The UI screenshots (fake data, no database) are generated with
 
 Files live in `%APPDATA%\tabella` (Windows) or `~/.config/tabella` (Linux); `TABELLA_CONFIG_DIR`
 changes the location. `connections.json` holds no passwords.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option. The bundled fonts are under the SIL Open Font
+License 1.1 (see [`assets/README.md`](assets/README.md)).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+tabella by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without
+any additional terms or conditions.
