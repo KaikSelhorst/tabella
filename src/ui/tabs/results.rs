@@ -760,8 +760,8 @@ fn bulk_sql(tab: &Tab, s: &Session, p: &app::BulkPrompt) -> Result<String, Strin
     let (TabKind::Table(ts), Some(res)) = (&tab.kind, &tab.result) else {
         return Err("Open a table first".into());
     };
-    sql::check_expression(&p.expression)?;
     let k = s.cfg.kind;
+    sql::check_expression(k, &p.expression)?;
     let pk = ts.pk_names();
     if p.selected_only {
         let sel = tab.selection().ok_or("Select the rows first")?;
@@ -778,6 +778,8 @@ fn bulk_sql(tab: &Tab, s: &Session, p: &app::BulkPrompt) -> Result<String, Strin
             &sql::BulkScope::Keys { pk: &pk, rows: &rows },
         ))
     } else {
+        // The WHERE box holds what is typed, applied or not, and the preview runs at once.
+        sql::check_filter(k, &ts.filter)?;
         Ok(sql::bulk_update(
             k,
             &ts.schema,
@@ -1731,5 +1733,48 @@ pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Opti
             None
         }
         None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::{fake_session, table_tab};
+    use crate::db::Kind;
+
+    /// The UPDATE goes straight to a preview that runs it (rolled back) when it can't be read
+    /// as a SELECT: no filter or value may slip a second statement into it.
+    #[test]
+    fn bulk_updates_refuse_unsafe_filters_and_values() {
+        let (s, _jobs, _replies) = fake_session(Kind::Postgres);
+        let prompt = |expression: &str| app::BulkPrompt {
+            column: "name".into(),
+            expression: expression.into(),
+            selected_only: false,
+        };
+        let with_filter = |filter: &str| {
+            let mut tab = table_tab();
+            let TabKind::Table(ts) = &mut tab.kind else {
+                unreachable!("table_tab is a table")
+            };
+            ts.filter = filter.into();
+            tab
+        };
+        let ok = bulk_sql(&with_filter("id > 1"), &s, &prompt("upper(name)")).unwrap();
+        assert!(ok.ends_with("WHERE (id > 1);"), "{ok}");
+        for filter in [
+            "1=1) ; COMMIT; DELETE FROM t; UPDATE t SET name = name WHERE (1=1",
+            "x = 'abc",
+            "x = $$'$$) ; DELETE FROM t; SELECT * FROM t WHERE ($$'$$",
+        ] {
+            assert!(
+                bulk_sql(&with_filter(filter), &s, &prompt("0")).is_err(),
+                "{filter}"
+            );
+        }
+        for expression in ["'x", "'a\\'", "$$x$$", "1; DELETE FROM t"] {
+            let tab = with_filter("id > 1");
+            assert!(bulk_sql(&tab, &s, &prompt(expression)).is_err(), "{expression}");
+        }
     }
 }

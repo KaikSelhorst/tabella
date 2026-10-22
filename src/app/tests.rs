@@ -47,7 +47,7 @@ pub fn fake_session(kind: Kind) -> (Session, Receiver<Job>, FakeReplies) {
     (s, jobs, FakeReplies(replies))
 }
 
-pub(super) fn table_tab() -> Tab {
+pub fn table_tab() -> Tab {
     let col = |name: &str, ty: &str, pk| ColumnInfo {
         enum_values: Vec::new(),
         name: name.into(),

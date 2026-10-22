@@ -145,16 +145,13 @@ pub enum BulkScope<'a> {
 }
 
 /// What the "new value" of a bulk update may not contain: it must stay one expression inside
-/// one statement.
-pub fn check_expression(expr: &str) -> Result<(), String> {
+/// one statement, read the same way as the WHERE box (see `check_filter`).
+pub fn check_expression(kind: Kind, expr: &str) -> Result<(), String> {
     let e = expr.trim();
     if e.is_empty() {
         return Err("Type the new value: a SQL expression such as price * 1.1, upper(name) or NULL".into());
     }
-    if e.contains(';') || e.contains("--") || e.contains("/*") {
-        return Err("One expression only: no ';' and no comments".into());
-    }
-    Ok(())
+    check_fragment(kind, e, Fragment::Expression)
 }
 
 /// `UPDATE t SET col = <expression> WHERE …`, to be looked at (and previewed) before it runs.
@@ -259,7 +256,39 @@ pub fn and(filter: &str, cond: &str) -> String {
 /// backslash escapes). Comments and Postgres dollar quotes, which could hide a quote from this
 /// reading, aren't allowed at all.
 pub fn check_filter(kind: Kind, filter: &str) -> Result<(), String> {
-    let chars: Vec<char> = filter.chars().collect();
+    check_fragment(kind, filter, Fragment::Filter)
+}
+
+/// What a checked piece of text is, for the error messages.
+#[derive(Clone, Copy)]
+enum Fragment {
+    Filter,
+    Expression,
+}
+
+impl Fragment {
+    /// How the error calls it.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Filter => "filter",
+            Self::Expression => "new value",
+        }
+    }
+
+    /// What it must stay: one of these.
+    fn unit(self) -> &'static str {
+        match self {
+            Self::Filter => "condition",
+            Self::Expression => "expression",
+        }
+    }
+}
+
+/// `text`, pasted into a generated statement, can't end it or open a second one (see
+/// `check_filter`).
+fn check_fragment(kind: Kind, text: &str, fragment: Fragment) -> Result<(), String> {
+    let (what, one) = (fragment.name(), fragment.unit());
+    let chars: Vec<char> = text.chars().collect();
     let readings: &[bool] = if kind == Kind::Sqlite {
         &[false]
     } else {
@@ -280,17 +309,19 @@ pub fn check_filter(kind: Kind, filter: &str) -> Result<(), String> {
                 }
                 // Left open, it would close on a quote of the query built around it.
                 if i >= chars.len() {
-                    return Err(format!("The filter has an unclosed {c} quote."));
+                    return Err(format!("The {what} has an unclosed {c} quote."));
                 }
             } else if c == ';' {
-                return Err("The filter accepts a single condition: \";\" isn't allowed.".into());
+                return Err(format!("The {what} accepts a single {one}: \";\" isn't allowed."));
             } else if (c == '-' && next == Some('-'))
                 || (c == '/' && next == Some('*'))
                 || (kind == Kind::MySql && c == '#')
             {
-                return Err("Comments (--, /* */ or #) aren't allowed in the filter.".into());
+                return Err(format!("Comments (--, /* */ or #) aren't allowed in the {what}."));
             } else if kind == Kind::Postgres && c == '$' && dollar_quote_at(&chars, i) {
-                return Err("Dollar-quoted strings ($$...$$) aren't allowed in the filter.".into());
+                return Err(format!(
+                    "Dollar-quoted strings ($$...$$) aren't allowed in the {what}."
+                ));
             }
             i += 1;
         }
@@ -1826,7 +1857,7 @@ mod tests {
             let _ = (
                 check_filter(Kind::Postgres, s),
                 check_filter(Kind::MySql, s),
-                check_expression(s),
+                check_expression(Kind::MySql, s),
                 remove_condition(s, "x = 1"),
             );
             let _ = and(s, "x = 1");
@@ -1939,12 +1970,49 @@ mod tests {
 
     #[test]
     fn the_new_value_must_be_one_expression() {
-        assert!(check_expression("price * 1.1").is_ok());
-        assert!(check_expression("coalesce(x, 0) + 1").is_ok());
-        assert!(check_expression("   ").is_err());
-        assert!(check_expression("1; DROP TABLE t").is_err());
-        assert!(check_expression("1 -- comment").is_err());
-        assert!(check_expression("1 /* c */").is_err());
+        for k in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
+            assert!(check_expression(k, "price * 1.1").is_ok());
+            assert!(check_expression(k, "coalesce(x, 0) + 1").is_ok());
+            // A `;` inside a literal is just text.
+            assert!(check_expression(k, "'a;b'").is_ok());
+            assert!(check_expression(k, "   ").is_err());
+            assert!(check_expression(k, "1; DROP TABLE t").is_err());
+            assert!(check_expression(k, "1 -- comment").is_err());
+            assert!(check_expression(k, "1 /* c */").is_err());
+            // An open quote would swallow the WHERE and free the filter's own literals.
+            assert!(check_expression(k, "'x").is_err(), "{k:?}");
+        }
+        // `\'` ends the literal for one server setting only.
+        for k in [Kind::Postgres, Kind::MySql] {
+            assert!(check_expression(k, "'a\\'").is_err(), "{k:?}");
+        }
+        assert!(check_expression(Kind::Postgres, "$$x$$").is_err());
+        assert!(check_expression(Kind::MySql, "0 # x").is_err());
+    }
+
+    /// A bulk UPDATE built from a checked value and filter stays one statement, and so do the
+    /// reads its preview makes of it.
+    #[test]
+    fn checked_bulk_updates_stay_one_statement() {
+        // The splitter reads `\` as an escape, one of the two readings the check holds Postgres
+        // and MySQL to; SQLite reads it as text (and runs one statement per call anyway).
+        for k in [Kind::Postgres, Kind::MySql] {
+            crate::testgen::each_text(13, 3000, |text, g| {
+                let other = ["0", "'x'", "c || 'a;b'", "upper(c)"][g.below(4)];
+                for (expr, filter) in [(text, "a > 1"), (other, text), (text, text)] {
+                    if check_expression(k, expr).is_err() || check_filter(k, filter).is_err() {
+                        continue;
+                    }
+                    let sql = bulk_update(k, "s", "t", "c", expr, &BulkScope::Filter(filter));
+                    assert!(statement_ranges(&sql, false).len() <= 1, "{k:?}: {sql}");
+                    if let Some(q) = preview_queries(&sql) {
+                        for read in [q.count, q.sample] {
+                            assert!(statement_ranges(&read, false).len() <= 1, "{k:?}: {read}");
+                        }
+                    }
+                }
+            });
+        }
     }
 
     #[test]
