@@ -236,6 +236,10 @@ fn start_column_stats(tab: &mut Tab, s: &Session, col: usize) {
     let kind = values::column_kinds(res, cols)[col];
     match &tab.kind {
         TabKind::Table(ts) => {
+            if let Err(e) = sql::check_filter(k, &ts.filter) {
+                tab.error = Some(e);
+                return;
+            }
             let filter = ts.effective_filter(k);
             let ordered = matches!(kind, ValueKind::Number | ValueKind::Date);
             let (summary, top) = sql::column_stats(k, &ts.schema, &ts.table, &name, &filter, ordered);

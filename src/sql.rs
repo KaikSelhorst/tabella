@@ -248,28 +248,71 @@ pub fn and(filter: &str, cond: &str) -> String {
     }
 }
 
-/// The WHERE box is pasted into generated SELECT / COUNT queries, and Postgres runs every
-/// `;`-separated statement in one call: `1=1; DELETE FROM t; SELECT 1 AS id` would delete rows
-/// without any confirmation. So the filter must be a single condition: no `;` and no `--`
-/// outside string literals and quoted identifiers.
-pub fn check_filter(filter: &str) -> Result<(), String> {
+/// The WHERE box is pasted into generated SELECT / COUNT queries, and Postgres (MySQL too, with
+/// multi-statements) runs every `;`-separated statement in one call: `1=1; DELETE FROM t;
+/// SELECT 1 AS id` would delete rows without any confirmation. So the filter must be a single
+/// condition: no `;` outside string literals and quoted identifiers, and no comments.
+///
+/// Where a literal ends depends on the server: a backslash escapes the quote in Postgres `E''`
+/// strings and in MySQL by default, but not under `standard_conforming_strings` or
+/// `NO_BACKSLASH_ESCAPES`. So the filter is read both ways and must pass both (SQLite has no
+/// backslash escapes). Comments and Postgres dollar quotes, which could hide a quote from this
+/// reading, aren't allowed at all.
+pub fn check_filter(kind: Kind, filter: &str) -> Result<(), String> {
     let chars: Vec<char> = filter.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if matches!(c, '\'' | '"' | '`') {
-            i += 1;
-            while i < chars.len() && chars[i] != c {
+    let readings: &[bool] = if kind == Kind::Sqlite {
+        &[false]
+    } else {
+        &[false, true]
+    };
+    for &backslash_escapes in readings {
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            let next = chars.get(i + 1).copied();
+            if matches!(c, '\'' | '"' | '`') {
                 i += 1;
+                while i < chars.len() && chars[i] != c {
+                    if backslash_escapes && c != '`' && chars[i] == '\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                // Left open, it would close on a quote of the query built around it.
+                if i >= chars.len() {
+                    return Err(format!("The filter has an unclosed {c} quote."));
+                }
+            } else if c == ';' {
+                return Err("The filter accepts a single condition: \";\" isn't allowed.".into());
+            } else if (c == '-' && next == Some('-'))
+                || (c == '/' && next == Some('*'))
+                || (kind == Kind::MySql && c == '#')
+            {
+                return Err("Comments (--, /* */ or #) aren't allowed in the filter.".into());
+            } else if kind == Kind::Postgres && c == '$' && dollar_quote_at(&chars, i) {
+                return Err("Dollar-quoted strings ($$...$$) aren't allowed in the filter.".into());
             }
-        } else if c == ';' {
-            return Err("The filter accepts a single condition: \";\" isn't allowed.".into());
-        } else if c == '-' && chars.get(i + 1) == Some(&'-') {
-            return Err("Comments (--) aren't allowed in the filter.".into());
+            i += 1;
         }
-        i += 1;
     }
     Ok(())
+}
+
+/// A Postgres dollar quote (`$$`, `$tag$`) opens at `i`: not inside a name (`a$b` is one) and
+/// not a parameter (`$1`).
+fn dollar_quote_at(chars: &[char], i: usize) -> bool {
+    let name_char = |c: char| c.is_alphanumeric() || c == '_';
+    if i > 0 && (name_char(chars[i - 1]) || chars[i - 1] == '$') {
+        return false;
+    }
+    if chars.get(i + 1).is_some_and(char::is_ascii_digit) {
+        return false;
+    }
+    let mut j = i + 1;
+    while j < chars.len() && name_char(chars[j]) {
+        j += 1;
+    }
+    chars.get(j) == Some(&'$')
 }
 
 /// `INSERT` reproducing one row, for "copy as INSERT".
@@ -954,7 +997,8 @@ fn top_level_words(script: &str) -> Vec<(String, usize, usize)> {
 
 /// `(schema, table)` of a SELECT whose rows map one-to-one onto a table's rows: one table in
 /// FROM (an alias is fine), no joins, grouping, DISTINCT, set operations or CTEs. Names come
-/// unquoted.
+/// unquoted. What it selects is checked once the table's columns are known (see
+/// `result_matches_table`).
 pub fn editable_select(statement: &str) -> Option<(Option<String>, String)> {
     if statement_ranges(statement, false).len() != 1 {
         return None;
@@ -1022,15 +1066,137 @@ pub fn editable_select(statement: &str) -> Option<(Option<String>, String)> {
     }
 }
 
-/// `a.b`, `"a.x"."b"`: splits on dots outside quotes.
-fn split_dotted(name: &str) -> Vec<String> {
+/// What one item of a select list gives.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SelectItem {
+    /// `*` or `t.*`: every column of the table.
+    All,
+    /// `name`, `t."Name"`, `name AS name`: one column under its own name.
+    Column,
+    /// Anything else: an expression, or a column under another name.
+    Other,
+}
+
+/// The items of a SELECT's list, in order. `None` when it can't be read for sure (comments and
+/// backslashes, which servers read differently).
+pub fn select_items(statement: &str) -> Option<Vec<SelectItem>> {
+    let sql = statement.trim().trim_end_matches(';').trim_end();
+    let words = top_level_words(sql);
+    if words.first()?.0 != "SELECT" {
+        return None;
+    }
+    let from = words.iter().position(|(w, _, _)| w == "FROM")?;
+    let list: String = sql
+        .chars()
+        .skip(words[0].2)
+        .take(words[from].1 - words[0].2)
+        .collect();
+    if list.contains(['\\', '#']) || list.contains("--") || list.contains("/*") {
+        return None;
+    }
+    // Commas outside quotes and parentheses.
+    let mut items = vec![String::new()];
+    let (mut depth, mut quote) = (0i32, None);
+    for c in list.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"' | '`') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => depth -= 1,
+            (None, ',') if depth == 0 => {
+                items.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        items.last_mut().unwrap().push(c);
+    }
+    Some(items.iter().map(|i| select_item(i)).collect())
+}
+
+fn select_item(item: &str) -> SelectItem {
+    if item.contains(['\'', '(', ')']) {
+        return SelectItem::Other;
+    }
+    let quoted = |p: &str| p.starts_with(['"', '`']);
+    let is_name = |p: &str| match p.chars().next() {
+        Some(q @ ('"' | '`')) => p.len() >= 2 && p.ends_with(q),
+        Some(first) => {
+            (first.is_alphabetic() || first == '_')
+                && p.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+        }
+        None => false,
+    };
+    let words: Vec<String> = split_outside_quotes(item, char::is_whitespace)
+        .into_iter()
+        .filter(|w| !w.is_empty())
+        .collect();
+    let (name, alias) = match &words[..] {
+        [n] => (n, None),
+        [n, a] => (n, Some(a)),
+        [n, as_, a] if as_.eq_ignore_ascii_case("AS") => (n, Some(a)),
+        _ => return SelectItem::Other,
+    };
+    let parts = split_dotted(name);
+    let (last, path) = parts.split_last().expect("split_dotted gives one part at least");
+    if parts.len() > 3 || !path.iter().all(|p| is_name(p)) {
+        return SelectItem::Other;
+    }
+    if last == "*" {
+        return if alias.is_none() {
+            SelectItem::All
+        } else {
+            SelectItem::Other
+        };
+    }
+    // The same name: spelled alike, or both unquoted (folded alike by the server).
+    let same =
+        |a: &String| a == last || (!quoted(a) && !quoted(last) && is_name(a) && a.eq_ignore_ascii_case(last));
+    if is_name(last) && alias.is_none_or(same) {
+        SelectItem::Column
+    } else {
+        SelectItem::Other
+    }
+}
+
+/// Whether an editor's result can be edited as rows of `table` (its column names): every result
+/// column named like one of the table's must be that column. Edits find their row by the key
+/// columns' values and write a cell under its column's name, so `name AS id`, `id + 1 AS id` or
+/// `count(*) AS id` would aim them at another row or column; `upper(name) AS shout` is fine
+/// (that column just can't be edited). False too when the items don't line up with `result`.
+pub fn result_matches_table(items: &[SelectItem], table: &[String], result: &[String]) -> bool {
+    let mut i = 0;
+    for item in items {
+        match item {
+            SelectItem::All => {
+                let Some(all) = result.get(i..i + table.len()) else {
+                    return false;
+                };
+                if !all.iter().all(|c| table.contains(c)) {
+                    return false;
+                }
+                i += table.len();
+            }
+            SelectItem::Column => i += 1,
+            SelectItem::Other => match result.get(i) {
+                Some(name) if !table.contains(name) => i += 1,
+                _ => return false,
+            },
+        }
+    }
+    i == result.len()
+}
+
+/// `s` cut at each char `split` matches outside `"` and `` ` `` quotes.
+fn split_outside_quotes(s: &str, split: impl Fn(char) -> bool) -> Vec<String> {
     let mut parts = vec![String::new()];
     let mut quote = None;
-    for c in name.chars() {
+    for c in s.chars() {
         match (quote, c) {
             (None, '"' | '`') => quote = Some(c),
             (Some(q), c) if c == q => quote = None,
-            (None, '.') => {
+            (None, c) if split(c) => {
                 parts.push(String::new());
                 continue;
             }
@@ -1039,6 +1205,11 @@ fn split_dotted(name: &str) -> Vec<String> {
         parts.last_mut().unwrap().push(c);
     }
     parts
+}
+
+/// `a.b`, `"a.x"."b"`: splits on dots outside quotes.
+fn split_dotted(name: &str) -> Vec<String> {
+    split_outside_quotes(name, |c| c == '.')
 }
 
 /// Reads for "preview" of an UPDATE or DELETE, without running it: how many rows it would
@@ -1408,7 +1579,8 @@ pub fn distinct_values(
     let wh = if cond.trim().is_empty() {
         String::new()
     } else {
-        format!(" WHERE {cond}")
+        // Parenthesized so the filter stays one condition (see `check_filter`).
+        format!(" WHERE ({cond})")
     };
     format!(
         "SELECT {expr}, count(*) FROM {}{wh} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {}",
@@ -1456,39 +1628,61 @@ pub fn values_condition(
     })
 }
 
-/// `filter` without `cond`, when `cond` was added with `and` (as the whole filter, its last
-/// part or its first). `None` when it isn't there any more (the user edited the filter).
+/// `filter` without `cond`, when `cond` was added with `and`: anywhere in the chain `and`
+/// makes (`((f) AND c1) AND c2`), first, last or in between. `None` when it isn't there any
+/// more (the user edited the filter).
 pub fn remove_condition(filter: &str, cond: &str) -> Option<String> {
-    let (f, c) = (filter.trim(), cond.trim());
-    if f == c {
-        return Some(String::new());
-    }
-    if let Some(rest) = f.strip_suffix(&format!(" AND {c}")) {
-        return Some(unwrap_parens(rest).to_string());
-    }
-    // It was first, and something was added after it: "(cond) AND rest".
-    f.strip_prefix(&format!("({c}) AND "))
-        .map(|rest| rest.trim().to_string())
+    let mut parts = and_parts(filter);
+    let at = parts.iter().position(|p| p == cond.trim())?;
+    parts.remove(at);
+    Some(parts.iter().fold(String::new(), |f, p| and(&f, p)))
 }
 
-/// `(a)` → `a`, but `(a) AND (b)` stays.
-fn unwrap_parens(s: &str) -> &str {
-    let s = s.trim();
-    let Some(inner) = s.strip_prefix('(').and_then(|r| r.strip_suffix(')')) else {
-        return s;
-    };
-    let mut depth = 0i32;
-    for c in inner.chars() {
-        match c {
-            '(' => depth += 1,
-            ')' => depth -= 1,
+/// The conditions `and` joined, first to last: `((a) AND b) AND c` → `a`, `b`, `c`.
+fn and_parts(filter: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut rest = filter.trim().to_string();
+    while let Some((left, right)) = split_and(&rest) {
+        parts.push(right);
+        rest = left;
+    }
+    parts.push(rest);
+    parts.reverse();
+    parts
+}
+
+/// `(left) AND right` → `(left, right)`. Not when `right` has an OR of its own: `(a) AND b OR c`
+/// means `((a) AND b) OR c`.
+fn split_and(f: &str) -> Option<(String, String)> {
+    let chars: Vec<char> = f.chars().collect();
+    if chars.first() != Some(&'(') {
+        return None;
+    }
+    let (mut depth, mut quote, mut close) = (0, None, None);
+    for (i, &c) in chars.iter().enumerate() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"' | '`') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
             _ => {}
         }
-        if depth < 0 {
-            return s;
-        }
     }
-    inner
+    let close = close?;
+    let after: String = chars[close + 1..].iter().collect();
+    let right = after.strip_prefix(" AND ")?.trim();
+    if right.is_empty() || top_level_words(right).iter().any(|(w, _, _)| w == "OR") {
+        return None;
+    }
+    let left: String = chars[1..close].iter().collect();
+    Some((left.trim().to_string(), right.to_string()))
 }
 
 /// Referenced tables up to this many rows are loaded whole for the foreign-key picker and
@@ -1629,7 +1823,12 @@ mod tests {
                 parse_args(s),
                 parse_bool(s),
             );
-            let _ = (check_filter(s), check_expression(s), remove_condition(s, "x = 1"));
+            let _ = (
+                check_filter(Kind::Postgres, s),
+                check_filter(Kind::MySql, s),
+                check_expression(s),
+                remove_condition(s, "x = 1"),
+            );
             let _ = and(s, "x = 1");
         });
     }
@@ -1900,11 +2099,71 @@ mod tests {
 
     #[test]
     fn filter_must_be_one_condition() {
-        assert!(check_filter("id > 10 AND name LIKE 'a%'").is_ok());
-        assert!(check_filter("name = 'a;b' OR \"we;ird\" = 1").is_ok());
-        assert!(check_filter("1=1; DELETE FROM t; SELECT 1 AS id").is_err());
-        assert!(check_filter("1=1 -- ").is_err());
-        assert!(check_filter("x = 'it''s -- fine'").is_ok());
+        const KINDS: [Kind; 3] = [Kind::Postgres, Kind::MySql, Kind::Sqlite];
+        for k in KINDS {
+            assert!(check_filter(k, "id > 10 AND name LIKE 'a%'").is_ok());
+            assert!(check_filter(k, "name = 'a;b' OR \"we;ird\" = 1").is_ok());
+            assert!(check_filter(k, "1=1; DELETE FROM t; SELECT 1 AS id").is_err());
+            assert!(check_filter(k, "1=1 -- ").is_err());
+            assert!(check_filter(k, "x = 'it''s -- fine'").is_ok());
+            assert!(check_filter(k, "path = 'C:\\dir' AND x > 1").is_ok());
+            // A quote inside a comment hides the `;` from a reading that skips no comments.
+            let comment = "1=1 /*'*/); DELETE FROM t; SELECT 1 WHERE (1=1 /*'*/";
+            assert!(check_filter(k, comment).is_err(), "{k:?}");
+            // An open quote would close on one of the query's own.
+            for open in ["x = 'abc", "x = \"abc", "x = `abc", "x = 'it''s"] {
+                assert!(check_filter(k, open).is_err(), "{k:?} {open}");
+            }
+        }
+        for k in [Kind::Postgres, Kind::MySql] {
+            // `\'` ends the literal for one server setting and not for the other: the `;` is
+            // outside for one of them, so it's refused.
+            let escaped = "x = E'\\'') ; DELETE FROM t; SELECT * FROM t WHERE (''=''";
+            assert!(check_filter(k, escaped).is_err(), "{k:?}");
+            assert!(check_filter(k, "x = 'C:\\' OR y = ';'").is_err(), "{k:?}");
+        }
+        // SQLite reads `\` as any other char.
+        assert!(check_filter(Kind::Sqlite, "x = 'C:\\' OR y = ';'").is_ok());
+        // Dollar quotes are Postgres strings; `$1` and `a$b` are not.
+        let dollar = "x = $$'$$) ; DELETE FROM t; SELECT * FROM t WHERE ($$'$$";
+        assert!(check_filter(Kind::Postgres, dollar).is_err());
+        assert!(check_filter(Kind::Postgres, "x = $tag$a$tag$").is_err());
+        assert!(check_filter(Kind::Postgres, "a$b = 1 AND c = $1").is_ok());
+        // `#` starts a MySQL comment, but is an operator in Postgres.
+        assert!(check_filter(Kind::MySql, "1=1 # '\n; DELETE FROM t").is_err());
+        assert!(check_filter(Kind::Postgres, "data #>> '{a}' = 'x'").is_ok());
+    }
+
+    /// A filter that passes the check stays one statement in every query built around it, as
+    /// the editor splits scripts. Postgres is the one that runs every statement of a query
+    /// (and the splitter reads its `$$` quotes, which other engines don't have).
+    #[test]
+    fn checked_filters_stay_one_statement() {
+        let k = Kind::Postgres;
+        // The search and the key's name are quoted on their own; they must stay so next to
+        // any filter that passes.
+        let pk = ["a\";DELETE FROM t;--".to_string()];
+        crate::testgen::each_text(11, 3000, |f, _| {
+            if check_filter(k, f).is_err() {
+                return;
+            }
+            let q = PageQuery {
+                schema: "s",
+                table: "t",
+                filter: f,
+                order: &[],
+                pk: &pk,
+                page: 0,
+            };
+            for sql in [
+                select_page(k, &q),
+                count(k, "s", "t", f),
+                distinct_values(k, "s", "t", "\"c\"", f, ""),
+                distinct_values(k, "s", "t", "\"c\"", f, "';DELETE FROM t;--"),
+            ] {
+                assert!(statement_ranges(&sql, false).len() <= 1, "{sql}");
+            }
+        });
     }
 
     #[test]
@@ -2250,10 +2509,26 @@ mod tests {
             "(CAST(`x` AS CHAR) LIKE '%an%' ESCAPE '!')"
         );
         // Generated conditions always pass the WHERE-box check, whatever the value holds.
-        for v in ["a;b", "x -- y", "it's", "a\\'; DROP TABLE t; --"] {
-            for kind in [Kind::Postgres, Kind::MySql] {
-                let c = filter_condition(kind, "c", FilterOp::Eq, Some(v));
-                assert!(check_filter(&c).is_ok(), "{kind:?} {c}");
+        for v in [
+            "a;b",
+            "x -- y",
+            "it's",
+            "a\\'; DROP TABLE t; --",
+            "\\",
+            "C:\\';",
+            "$$;$$",
+            "# ;",
+            "/* ; */",
+        ] {
+            for kind in [Kind::Postgres, Kind::MySql, Kind::Sqlite] {
+                let some = |x: &str| Some(x.to_string());
+                for c in [
+                    filter_condition(kind, "c", FilterOp::Eq, Some(v)),
+                    filter_condition(kind, "c", FilterOp::Ne, Some(v)),
+                    values_condition(kind, "\"c\"", &[some(v), some("b")], &[some("a;")], false).unwrap(),
+                ] {
+                    assert!(check_filter(kind, &c).is_ok(), "{kind:?} {c}");
+                }
             }
         }
         assert_eq!(and("", "a = 1"), "a = 1");
@@ -2319,6 +2594,90 @@ mod tests {
         assert!(values.is_empty());
     }
 
+    /// Value conditions added and removed in any order leave the filter as if only the ones
+    /// still there had been added, whatever the user's own filter.
+    #[test]
+    fn value_conditions_come_and_go_in_any_order() {
+        let mut g = crate::testgen::Gen::new(5);
+        let conds: Vec<String> = (0..6)
+            .map(|i| match i % 3 {
+                0 => format!("\"c{i}\" IN ('a', ') AND (')"),
+                1 => format!("(\"c{i}\" NOT IN ('x') OR \"c{i}\" IS NULL)"),
+                _ => format!("\"c{i}\" IS NOT NULL"),
+            })
+            .collect();
+        for base in ["", "active", "a OR b", "(a) AND (b)", "x IN (1, 2) AND y"] {
+            for _ in 0..200 {
+                let mut filter = base.to_string();
+                let mut model: Vec<&String> = Vec::new();
+                for _ in 0..12 {
+                    let c = &conds[g.below(conds.len())];
+                    if let Some(i) = model.iter().position(|m| *m == c) {
+                        filter = remove_condition(&filter, c).unwrap_or_else(|| panic!("{c} in {filter}"));
+                        model.remove(i);
+                    } else {
+                        filter = and(&filter, c);
+                        model.push(c);
+                    }
+                    let expected = model.iter().fold(base.to_string(), |f, c| and(&f, c));
+                    assert_eq!(filter, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn editor_results_match_their_table_only_column_for_column() {
+        use SelectItem::{All, Column, Other};
+        let items = |s: &str| select_items(s).unwrap();
+        assert_eq!(items("SELECT * FROM t"), [All]);
+        assert_eq!(items("select c.*, id FROM t c"), [All, Column]);
+        assert_eq!(
+            items("SELECT id, c.\"Name\", s.t.x, id AS id, ID as id FROM t"),
+            [Column; 5]
+        );
+        assert_eq!(
+            items("SELECT name AS id, id + 1 AS id, count(*) AS n, 'a, b', f(a, b), id::text FROM t"),
+            [Other; 6]
+        );
+        assert_eq!(
+            items("SELECT \"id\" AS id, id \"ID\", id name FROM t"),
+            [Other; 3]
+        );
+        for unreadable in [
+            "SELECT 'a\\', id FROM t",
+            "SELECT id -- x\n, name FROM t",
+            "SELECT 1",
+        ] {
+            assert_eq!(select_items(unreadable), None, "{unreadable}");
+        }
+
+        let table: Vec<String> = ["id", "name", "active"].map(String::from).to_vec();
+        let fits = |sql: &str, result: &[&str]| {
+            let result: Vec<String> = result.iter().map(|c| c.to_string()).collect();
+            result_matches_table(&select_items(sql).unwrap(), &table, &result)
+        };
+        assert!(fits("SELECT * FROM t", &["id", "name", "active"]));
+        assert!(fits("SELECT id, name FROM t", &["id", "name"]));
+        assert!(fits(
+            "SELECT id, name, upper(name) AS shout FROM t",
+            &["id", "name", "shout"]
+        ));
+        assert!(fits("SELECT *, now() FROM t", &["id", "name", "active", "now"]));
+        // Another value under a table column's name: the edits would go astray.
+        assert!(!fits("SELECT name AS id, id AS name FROM t", &["id", "name"]));
+        assert!(!fits("SELECT id + 1 AS id, name FROM t", &["id", "name"]));
+        assert!(!fits("SELECT count(*) AS id FROM t", &["id"]));
+        assert!(!fits(
+            "SELECT *, upper(name) AS name FROM t",
+            &["id", "name", "active", "name"]
+        ));
+        assert!(!fits("SELECT id::text, name FROM t", &["id", "name"]));
+        // The items don't line up with what came back.
+        assert!(!fits("SELECT * FROM t", &["id", "name"]));
+        assert!(!fits("SELECT id FROM t", &["id", "name"]));
+    }
+
     #[test]
     fn value_filters() {
         let k = Kind::Postgres;
@@ -2326,8 +2685,13 @@ mod tests {
         let sql = distinct_values(k, "public", "customers", "\"state\"", "active", "s");
         assert_eq!(
             sql,
-            "SELECT \"state\", count(*) FROM \"public\".\"customers\" WHERE (active) AND CAST(\"state\" AS TEXT) ILIKE '%s%' ESCAPE '!' \
+            "SELECT \"state\", count(*) FROM \"public\".\"customers\" WHERE ((active) AND CAST(\"state\" AS TEXT) ILIKE '%s%' ESCAPE '!') \
              GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 1001"
+        );
+        // Without a search the filter is still one condition.
+        assert!(
+            distinct_values(k, "public", "customers", "\"state\"", "a OR b", "")
+                .contains(" WHERE (a OR b) GROUP BY 1")
         );
         let c = "\"state\"";
         assert_eq!(values_condition(k, c, &[v("NY"), v("CA")], &[], true), None);
@@ -2364,12 +2728,33 @@ mod tests {
             remove_condition(&and("a OR b", cond), cond).as_deref(),
             Some("a OR b")
         );
-        assert_eq!(remove_condition(&and(&and("(a) AND (b)", cond), "x"), cond), None);
+        assert_eq!(
+            remove_condition(&and(&and("(a) AND (b)", cond), "x"), cond).as_deref(),
+            Some("((a) AND (b)) AND x")
+        );
         assert_eq!(
             remove_condition(&and(cond, "x > 1"), cond).as_deref(),
             Some("x > 1")
         );
-        assert_eq!(unwrap_parens("(a) AND (b)"), "(a) AND (b)");
+        assert_eq!(remove_condition("active", cond), None, "not there any more");
+        // Three columns filtered: any of them can go, the first, the middle or the last.
+        let (a, b, c) = (
+            "\"a\" IN ('1')",
+            "(\"b\" IN ('2') OR \"b\" IS NULL)",
+            "\"c\" IS NOT NULL",
+        );
+        let f = and(&and(&and("active", a), b), c);
+        assert_eq!(remove_condition(&f, a), Some(and(&and("active", b), c)));
+        assert_eq!(remove_condition(&f, b), Some(and(&and("active", a), c)));
+        assert_eq!(remove_condition(&f, c), Some(and(&and("active", a), b)));
+        // `(x) AND y OR z` is `((x) AND y) OR z`: `y` isn't a condition of its own there.
+        assert_eq!(remove_condition(&format!("({a}) AND y OR z"), "y"), None);
+        assert_eq!(remove_condition(&format!("({a}) AND y OR z"), a), None);
+        // Quotes and parentheses inside the conditions don't cut them.
+        let q = "\"d\" IN (')', '(x) AND y')";
+        let f = and(&and(q, a), "y");
+        assert_eq!(remove_condition(&f, a), Some(and(q, "y")));
+        assert_eq!(remove_condition(&f, q), Some(and(a, "y")));
     }
 
     #[test]

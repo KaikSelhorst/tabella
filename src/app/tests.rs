@@ -359,17 +359,50 @@ fn read_only_tabs_ignore_edits_but_still_copy() {
     assert!(json.contains("\"id\": 7"));
 }
 
+/// The WHERE box holds what is typed, applied or not: no query built around it may run while
+/// it hides a second statement, whichever way it's done.
 #[test]
 fn unsafe_filters_never_reach_the_database() {
     let (s, jobs, _replies) = fake_session(Kind::Postgres);
-    let mut tab = table_tab();
-    if let TabKind::Table(ts) = &mut tab.kind {
-        ts.filter = "1=1; DELETE FROM t; SELECT 1 AS id".into();
+    let with_filter = |tab: &mut Tab, filter: &str| {
+        if let TabKind::Table(ts) = &mut tab.kind {
+            ts.filter = filter.into();
+        }
+    };
+    for filter in [
+        "1=1; DELETE FROM t; SELECT 1 AS id",
+        "1=1 /*'*/); DELETE FROM t; SELECT 1 WHERE (1=1 /*'*/",
+        "x = E'\\'') ; DELETE FROM t; SELECT * FROM t WHERE (''=''",
+        "x = $$'$$) ; DELETE FROM t; SELECT * FROM t WHERE ($$'$$",
+    ] {
+        let mut tabs = Vec::new();
+        let mut tab = table_tab();
+        with_filter(&mut tab, filter);
+        reload(&mut tab, &s);
+        tabs.push(tab);
+        for event in [
+            GridEvent::ColumnStats(2),
+            GridEvent::FilterValues(2),
+            GridEvent::Filter(0, 2, FilterOp::Eq),
+        ] {
+            let mut tab = table_tab();
+            with_filter(&mut tab, filter);
+            handle_grid_event(&mut tab, &s, event, true);
+            tabs.push(tab);
+        }
+        // Saving reads the page again, with the filter typed since the edit.
+        let mut tab = table_tab();
+        handle_grid_event(&mut tab, &s, GridEvent::Commit(0, 2, Some("beth".into())), true);
+        assert!(has_unsaved(&tab));
+        with_filter(&mut tab, filter);
+        save_changes(&mut tab, &s);
+        tabs.push(tab);
+
+        assert_eq!(jobs.try_iter().count(), 0, "{filter}");
+        for (i, tab) in tabs.iter().enumerate() {
+            assert!(tab.error.is_some() && !tab.busy(), "{filter}, case {i}");
+        }
     }
-    reload(&mut tab, &s);
-    handle_grid_event(&mut tab, &s, GridEvent::DeleteRow(0), true);
-    assert!(jobs.try_recv().is_err());
-    assert!(tab.error.is_some() && !tab.busy());
 }
 
 #[test]

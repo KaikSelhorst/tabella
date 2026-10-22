@@ -52,7 +52,7 @@ pub fn start_export(tab: &mut Tab, s: &Session, format: Format, whole_table: boo
     let k = s.cfg.kind;
     let (base, table_name, cols, source) = match &tab.kind {
         TabKind::Table(ts) if whole_table => {
-            if let Err(e) = sql::check_filter(&ts.filter) {
+            if let Err(e) = sql::check_filter(k, &ts.filter) {
                 tab.error = Some(e);
                 return;
             }

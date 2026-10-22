@@ -34,6 +34,11 @@ pub fn load_values(tab: &mut Tab, s: &Session) {
     let TabKind::Table(ts) = &mut tab.kind else { return };
     let Some(vf) = &ts.value_filter else { return };
     let k = s.cfg.kind;
+    // The WHERE box holds what is typed, applied or not.
+    if let Err(e) = sql::check_filter(k, &ts.filter) {
+        tab.error = Some(e);
+        return;
+    }
     let mut filter = ts.filter.clone();
     if let Some(own) = ts.value_conds.iter().find(|v| v.column == vf.column)
         && let Some(rest) = sql::remove_condition(&filter, &own.cond)
@@ -283,6 +288,11 @@ pub fn save_changes(tab: &mut Tab, s: &Session) {
     };
     ts.confirm_save = false;
     if ts.changes.is_empty() {
+        return;
+    }
+    // The page read again after saving takes the WHERE box as it is now.
+    if is_table && let Err(e) = sql::check_filter(s.cfg.kind, &ts.filter) {
+        tab.error = Some(e);
         return;
     }
     let stmts = ts.change_statements(s.cfg.kind);

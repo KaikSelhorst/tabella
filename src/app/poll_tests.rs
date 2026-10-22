@@ -886,7 +886,7 @@ fn value_filter_round_trip() {
     };
     let s = app.session.as_ref().unwrap();
     open_value_filter(&mut app.tabs[0], s, "state");
-    assert!(distinct(&jobs).contains("WHERE active GROUP BY 1"));
+    assert!(distinct(&jobs).contains("WHERE (active) GROUP BY 1"));
     reply(&replies);
     app.poll();
     fn t(app: &mut App) -> &mut TableState {
@@ -909,7 +909,7 @@ fn value_filter_round_trip() {
     let s = app.session.as_ref().unwrap();
     open_value_filter(&mut app.tabs[0], s, "state");
     assert!(
-        distinct(&jobs).contains("WHERE active GROUP BY 1"),
+        distinct(&jobs).contains("WHERE (active) GROUP BY 1"),
         "its own condition is left out"
     );
     let vf = t(&mut app).value_filter.as_ref().unwrap();
@@ -921,6 +921,168 @@ fn value_filter_round_trip() {
     apply_value_filter(&mut app.tabs[0], s);
     assert_eq!(t(&mut app).filter, "active");
     assert!(t(&mut app).value_conds.is_empty());
+}
+
+/// Three columns filtered by value: the one in the middle changes, its list leaves only its
+/// own condition out, and none of the others is lost or kept twice.
+#[test]
+fn value_filters_on_several_columns_change_in_any_order() {
+    let (s, jobs, replies) = fake_session(Kind::Postgres);
+    let mut app = app_with(s);
+    app.open_table_filtered("public", "customers", "active".into());
+    let tab = app.tabs[0].id;
+    fn t(app: &mut App) -> &mut TableState {
+        match &mut app.tabs[0].kind {
+            TabKind::Table(ts) => ts,
+            _ => unreachable!(),
+        }
+    }
+    // Opens the column's filter, answers with values a, b and c, and applies with `hide`
+    // unchecked. Returns the list query.
+    let filter_column = |app: &mut App, column: &str, hide: &[&str]| -> String {
+        let s = app.session.as_ref().unwrap();
+        open_value_filter(&mut app.tabs[0], s, column);
+        let sql = jobs
+            .try_iter()
+            .find_map(|j| match j {
+                Job::Distinct { sql, .. } => Some(sql),
+                _ => None,
+            })
+            .expect("a Distinct job");
+        let row = |v: &str| vec![Some(v.to_string()), Some("1".to_string())];
+        replies
+            .send(Reply::Distinct {
+                tab,
+                res: Ok(QueryResult {
+                    rows: vec![row("a"), row("b"), row("c")].into(),
+                    ..Default::default()
+                }),
+            })
+            .unwrap();
+        app.poll();
+        let vf = t(app).value_filter.as_mut().unwrap();
+        vf.unchecked = hide.iter().map(|v| Some(v.to_string())).collect();
+        let s = app.session.as_ref().unwrap();
+        apply_value_filter(&mut app.tabs[0], s);
+        sql
+    };
+    filter_column(&mut app, "x", &["a"]);
+    filter_column(&mut app, "y", &["b"]);
+    filter_column(&mut app, "z", &["c"]);
+    // The whole list is known: the unchecked value is the shorter way to say it.
+    let (x, z) = ("\"x\" NOT IN ('a')", "\"z\" NOT IN ('c')");
+    assert_eq!(
+        t(&mut app).filter,
+        sql::and(&sql::and(&sql::and("active", x), "\"y\" NOT IN ('b')"), z)
+    );
+
+    // The middle one: its list shows every value again, and the new condition replaces it.
+    let list = filter_column(&mut app, "y", &["a"]);
+    assert!(
+        list.contains(&format!(
+            " WHERE ({}) GROUP BY",
+            sql::and(&sql::and("active", x), z)
+        )),
+        "{list}"
+    );
+    assert_eq!(
+        t(&mut app).filter,
+        sql::and(&sql::and(&sql::and("active", x), z), "\"y\" NOT IN ('a')")
+    );
+    // The first one, checked all again: gone.
+    filter_column(&mut app, "x", &[]);
+    assert_eq!(
+        t(&mut app).filter,
+        sql::and(&sql::and("active", z), "\"y\" NOT IN ('a')")
+    );
+    let columns: Vec<String> = t(&mut app).value_conds.iter().map(|v| v.column.clone()).collect();
+    assert_eq!(columns, ["z", "y"]);
+}
+
+/// An editor SELECT that puts another value under a table column's name (`name AS id`) can't
+/// be edited: the edits would find their row by the wrong key. Expressions under names of their
+/// own leave the rest editable.
+#[test]
+fn editor_results_with_renamed_columns_stay_read_only() {
+    for (sql, columns, editable) in [
+        (
+            "SELECT name AS id, id AS name FROM customers",
+            &["id", "name"][..],
+            false,
+        ),
+        ("SELECT id + 1 AS id, name FROM customers", &["id", "name"], false),
+        (
+            "SELECT *, upper(name) AS name FROM customers",
+            &["id", "name", "name"],
+            false,
+        ),
+        (
+            "SELECT id, name, upper(name) AS shout FROM customers",
+            &["id", "name", "shout"],
+            true,
+        ),
+        ("SELECT * FROM customers", &["id", "name"], true),
+    ] {
+        let (mut s, jobs, replies) = fake_session(Kind::Postgres);
+        s.tables = vec![TableRef {
+            schema: "public".into(),
+            name: "customers".into(),
+            is_view: false,
+            estimate: None,
+            search_key: "customers".into(),
+            size: None,
+        }];
+        let mut app = app_with(s);
+        app.open_sql(String::new());
+        run_sql(&mut app.tabs[0], app.session.as_ref().unwrap(), sql.into());
+        let tab = app.tabs[0].id;
+        let rows = QueryResult {
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            rows: vec![
+                columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| Some(format!("v{i}")))
+                    .collect::<Vec<_>>(),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        replies
+            .send(Reply::Rows {
+                tab,
+                res: Box::new(Ok(rows)),
+                notice: None,
+            })
+            .unwrap();
+        app.poll();
+        let col = |name: &str, pk| ColumnInfo {
+            enum_values: Vec::new(),
+            name: name.into(),
+            data_type: "text".into(),
+            pk,
+            nullable: true,
+            has_default: false,
+            references: None,
+        };
+        replies
+            .send(Reply::Columns {
+                tab,
+                res: Ok(vec![col("id", true), col("name", false)]),
+                incoming: vec![],
+            })
+            .unwrap();
+        app.poll();
+        let s = app.session.as_ref().unwrap();
+        let t = &mut app.tabs[0];
+        assert_eq!(editable_ref(&t.kind).is_some(), editable, "{sql}");
+        handle_grid_event(t, s, GridEvent::Commit(0, 1, Some("beth".into())), true);
+        assert_eq!(has_unsaved(t), editable, "{sql}");
+        while jobs.try_recv().is_ok() {}
+        save_changes(t, s);
+        let batch = jobs.try_iter().any(|j| matches!(j, Job::Batch { .. }));
+        assert_eq!(batch, editable, "{sql}");
+    }
 }
 
 /// Progress keeps the tab busy, the end frees it; a closed tab's reply is dropped; the

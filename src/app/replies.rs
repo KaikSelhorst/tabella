@@ -409,7 +409,15 @@ fn on_tab_reply(t: &mut Tab, s: &Session, reply: Reply, cx: &mut TabReplyCx) {
                     ts.incoming = incoming;
                 }
                 (Ok(c), TabKind::Sql(ed)) => {
-                    if let Some(src) = &mut ed.source {
+                    // Only when each result column named like a table column is that column:
+                    // `name AS id` would aim the edits at another row.
+                    let names: Vec<String> = c.iter().map(|col| col.name.clone()).collect();
+                    let result = t.result.as_ref().map_or(&[][..], |r| &r.columns[..]);
+                    let fits = sql::select_items(&ed.source_query)
+                        .is_some_and(|items| sql::result_matches_table(&items, &names, result));
+                    if !fits {
+                        ed.source = None;
+                    } else if let Some(src) = &mut ed.source {
                         src.cols = c;
                         src.incoming = incoming;
                     }

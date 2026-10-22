@@ -30,7 +30,7 @@ pub fn reload(tab: &mut Tab, s: &Session) {
         ));
         return;
     }
-    if let Err(e) = sql::check_filter(&ts.filter) {
+    if let Err(e) = sql::check_filter(s.cfg.kind, &ts.filter) {
         tab.error = Some(e);
         return;
     }
@@ -62,7 +62,7 @@ pub(super) fn request_count(tab: u64, ts: &mut TableState, s: &Session) {
 /// must touch exactly one row; otherwise the user is told the row changed elsewhere.
 pub fn exec(tab: &mut Tab, s: &Session, stmt: Stmt, expect_one: bool) {
     let TabKind::Table(ts) = &mut tab.kind else { return };
-    if let Err(e) = sql::check_filter(&ts.filter) {
+    if let Err(e) = sql::check_filter(s.cfg.kind, &ts.filter) {
         tab.error = Some(e);
         return;
     }

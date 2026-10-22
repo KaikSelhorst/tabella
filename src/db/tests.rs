@@ -827,6 +827,34 @@ fn roundtrip(kind: Kind, port: u16, user: &str, pass: &str, db: &str) {
             .query(&format!("SELECT count(*) FROM dbl_t WHERE {cond}"))
             .unwrap();
         assert_eq!(n.rows.cell(0, 0), list.rows.cell(0, 1), "{kind:?}: {cond}");
+        // Between the user's filter and another condition, it can be taken out again; each
+        // filter still runs as one condition, the list query too.
+        use crate::sql::{and, remove_condition};
+        let (own, other) = ("id >= 0 OR id < 0", "id IS NOT NULL");
+        let all = and(&and(own, &cond), other);
+        let rest = remove_condition(&all, &cond).unwrap();
+        assert_eq!(rest, and(own, other), "{kind:?}");
+        let count = |c: &mut Conn, filter: &str| {
+            let sql = crate::sql::count(kind, schema, "dbl_t", filter);
+            c.query(&sql)
+                .unwrap_or_else(|e| panic!("{kind:?}: {sql}: {e}"))
+                .rows
+                .cell(0, 0)
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            count(&mut c, &all),
+            n.rows.cell(0, 0).map(str::to_owned),
+            "{kind:?}"
+        );
+        let every = c.query("SELECT count(*) FROM dbl_t").unwrap();
+        assert_eq!(
+            count(&mut c, &rest),
+            every.rows.cell(0, 0).map(str::to_owned),
+            "{kind:?}"
+        );
+        let sql = crate::sql::distinct_values(kind, schema, "dbl_t", &expr, &rest, "");
+        c.query(&sql).unwrap_or_else(|e| panic!("{kind:?}: {sql}: {e}"));
     }
     // The foreign-key picker's queries run as they are (the MySQL time-limit hint too).
     {
