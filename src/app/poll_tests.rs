@@ -78,6 +78,15 @@ fn a_bulk_update_opens_previewed_in_an_editor() {
     );
     assert!(jobs.try_iter().any(|j| matches!(j, Job::Preview { .. })));
     assert!(tab.busy(), "waiting for the preview");
+
+    // More than one statement opens in the editor, to be read, but nothing runs.
+    let sql = "UPDATE t SET a = 0 WHERE (1=1) ; COMMIT; DELETE FROM t; UPDATE t SET a = a WHERE (1=1);";
+    app.open_update_preview(sql.to_string());
+    let tab = app.tabs.last().unwrap();
+    assert_eq!(tab.editor().unwrap().text, sql);
+    assert!(tab.editor().unwrap().preview.is_none());
+    assert!(!tab.busy());
+    assert_eq!(jobs.try_iter().count(), 0);
 }
 
 /// Starring is per connection and survives toggling the same table twice.

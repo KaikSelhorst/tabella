@@ -663,6 +663,11 @@ impl App {
     /// the editor's own "Run" afterwards.
     pub fn open_update_preview(&mut self, sql: String) {
         self.open_sql(sql.clone());
+        // The preview may run the statement (rolled back): only one UPDATE or DELETE, like
+        // the editor's own Preview.
+        if !previewable(&sql) {
+            return;
+        }
         if let (Some(s), Some(tab)) = (&self.session, self.tabs.last_mut()) {
             preview(tab, s, sql);
         }
