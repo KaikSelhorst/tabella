@@ -451,8 +451,10 @@ mod tests {
         // ssh ends with the thread that started it, as it would with the app killed outright.
         #[cfg(target_os = "linux")]
         {
-            let (ssh2, host) = (ssh.clone(), cfg.host.clone());
+            let (ssh2, host, hosts) = (ssh.clone(), cfg.host.clone(), dir.join("known_hosts"));
             let pid = std::thread::spawn(move || {
+                // The override is per thread: without it ssh would use the user's known_hosts.
+                use_known_hosts_in_this_thread(hosts);
                 let t = Tunnel::open(&ssh2, &host, 5432).expect("tunnel");
                 let pid = t.child.id();
                 // Not dropped: only the thread's end may stop it.
