@@ -1,7 +1,7 @@
 # tabella
 
-Lightweight database client for **PostgreSQL**, **MySQL** (and MariaDB) and **SQLite**, written
-in Rust with [egui](https://github.com/emilk/egui). A single executable, no runtime.
+Lightweight database client for **PostgreSQL**, **MySQL** and **SQLite**, written in Rust with
+[egui](https://github.com/emilk/egui). A single executable, no runtime.
 
 ![A table open in tabella, with the row detail panel](docs/screenshots/table.png)
 
