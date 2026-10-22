@@ -1132,13 +1132,48 @@ pub struct ScriptRisk {
 pub fn script_risk(script: &str) -> ScriptRisk {
     const READS: &[&str] = &["SELECT", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "VALUES", "TABLE"];
     const MODIFIES: &[&str] = &["INSERT", "UPDATE", "DELETE", "MERGE"];
+    // Functions a SELECT can call that change something: sequences, locks, other sessions, files,
+    // notifications. (A user's own function can do anything; only the server's grants tell.)
+    const SIDE_EFFECTS: &[&str] = &[
+        "NEXTVAL",
+        "SETVAL",
+        "PG_ADVISORY_LOCK",
+        "PG_ADVISORY_XACT_LOCK",
+        "PG_TRY_ADVISORY_LOCK",
+        "PG_TRY_ADVISORY_XACT_LOCK",
+        "PG_ADVISORY_UNLOCK",
+        "PG_ADVISORY_UNLOCK_ALL",
+        "PG_TERMINATE_BACKEND",
+        "PG_CANCEL_BACKEND",
+        "PG_RELOAD_CONF",
+        "PG_ROTATE_LOGFILE",
+        "PG_SWITCH_WAL",
+        "PG_CREATE_RESTORE_POINT",
+        "PG_NOTIFY",
+        "PG_LOGICAL_EMIT_MESSAGE",
+        "LO_IMPORT",
+        "LO_EXPORT",
+        "LO_CREATE",
+        "LO_UNLINK",
+        "DBLINK_EXEC",
+        "GET_LOCK",
+        "RELEASE_LOCK",
+        "RELEASE_ALL_LOCKS",
+    ];
     let mut risk = ScriptRisk::default();
     for words in statement_words(script) {
         let first = words[0].as_str();
         let has = |w: &str| words.iter().any(|x| x == w);
+        let follows = |a: &str, b: &[&str]| words.windows(2).any(|p| p[0] == a && b.contains(&p[1].as_str()));
         // WITH ... is a read unless one of its parts modifies data (Postgres allows that).
         let read = READS.contains(&first) || (first == "WITH" && !MODIFIES.iter().any(|m| has(m)));
-        if !read {
+        // Reads that still change something: SELECT INTO (a new table, or variables), locking
+        // reads (their locks need the transaction), and calls with side effects.
+        let changes = has("INTO")
+            || follows("FOR", &["UPDATE", "SHARE", "NO", "KEY"])
+            || follows("LOCK", &["IN"])
+            || words.iter().any(|w| SIDE_EFFECTS.contains(&w.as_str()));
+        if !read || changes {
             risk.writes = true;
         }
         match first {
@@ -1837,6 +1872,17 @@ mod tests {
         assert!(script_risk("SELECT set_config('default_transaction_read_only', 'off', false)").writes);
         assert!(script_risk("select \"SET_CONFIG\"('x', 'y', false)").writes);
         assert!(script_risk("SELECT * FROM t INTO OUTFILE '/tmp/x'").writes);
+        assert!(script_risk("SELECT * INTO copy FROM t").writes);
+        assert!(script_risk("select * from t where id = 1 for update").writes);
+        assert!(script_risk("SELECT * FROM t FOR NO KEY UPDATE").writes);
+        assert!(script_risk("SELECT * FROM t LOCK IN SHARE MODE").writes);
+        assert!(script_risk("select nextval('orders_id_seq')").writes);
+        assert!(script_risk("SELECT pg_terminate_backend(42)").writes);
+        assert!(script_risk("SELECT GET_LOCK('x', 1)").writes);
+        assert!(
+            !script_risk("SELECT nextval_note, \"for\" FROM t").writes,
+            "names that only look alike"
+        );
         assert_eq!(script_risk("select ';' ; truncate t").dangers, ["TRUNCATE"]);
     }
 
