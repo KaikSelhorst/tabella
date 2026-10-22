@@ -91,13 +91,13 @@ impl Writer {
             }
             sheet.set_freeze_panes(1, 0).map_err(xlsx_err)?;
             // Fail now, not after reading the whole table, if the file can't be created.
-            File::create(path)?;
+            crate::store::create_private(path)?;
             Sink::Xlsx {
                 sheet: Box::new(sheet),
                 path: path.to_path_buf(),
             }
         } else {
-            let mut out = BufWriter::new(File::create(path)?);
+            let mut out = BufWriter::new(crate::store::create_private(path)?);
             match format {
                 Format::Csv => writeln!(
                     out,
@@ -158,7 +158,9 @@ impl Writer {
                 sheet.autofit();
                 let mut book = rust_xlsxwriter::Workbook::new();
                 book.push_worksheet(*sheet);
-                book.save(&path).map_err(xlsx_err)?;
+                // Into the private file made at the start (`save` would create it anew).
+                book.save_to_writer(crate::store::create_private(&path)?)
+                    .map_err(xlsx_err)?;
             }
             Sink::Text(mut out) => {
                 if self.format == Format::Json {
@@ -500,6 +502,28 @@ mod tests {
         let mut w = Writer::create(path, format, Kind::Sqlite, table, res, info).unwrap();
         w.rows(&res.rows).unwrap();
         w.finish().unwrap()
+    }
+
+    /// Table data is no one else's business: every format ends up readable by the user only,
+    /// also over a file that was readable by others (XLSX is written twice, see `finish`).
+    #[test]
+    #[cfg(unix)]
+    fn exported_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut g = crate::testgen::Gen::new(7);
+        let (res, info) = random_result(&mut g);
+        for format in Format::ALL {
+            let path = std::env::temp_dir().join(format!(
+                "tabella-export-private-{}-{format:?}",
+                std::process::id()
+            ));
+            std::fs::write(&path, "").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            write(&path, format, &res, &info, "t");
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "{format:?}");
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     /// Exported files read back to the same values: CSV (text a spreadsheet would run as a

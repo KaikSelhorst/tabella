@@ -1109,3 +1109,73 @@ fn connection_failures_explained() {
     my.user = "root".into();
     assert_eq!(why(my), Some("Wrong user or password."));
 }
+
+/// MySQL through an SSH tunnel only knows 127.0.0.1: the server's name can't be checked, but its
+/// certificate still must come from a trusted CA (not "accept invalid" in disguise).
+#[test]
+fn mysql_tls_through_a_tunnel_still_checks_the_certificate() {
+    let ssl = |cfg: &ConnConfig, via| mysql::Opts::from(my_opts(cfg, via)).get_ssl_opts().cloned();
+    let mut cfg = ConnConfig {
+        host: "db.example.com".into(),
+        ..ConnConfig::new(Kind::MySql)
+    };
+    assert!(ssl(&cfg, None).is_none());
+    cfg.ssl = true;
+    let direct = ssl(&cfg, None).unwrap();
+    assert!(!direct.skip_domain_validation() && !direct.accept_invalid_certs());
+    let tunneled = ssl(&cfg, Some(40000)).unwrap();
+    assert!(tunneled.skip_domain_validation() && !tunneled.accept_invalid_certs());
+    cfg.ssl_insecure = true;
+    assert!(ssl(&cfg, None).unwrap().accept_invalid_certs());
+}
+
+/// The object list on a busy server: other sessions creating and dropping tables (with their
+/// sequences and views) meanwhile never fail it.
+#[test]
+#[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
+fn postgres_objects_while_others_drop_tables() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let cfg = ConnConfig {
+        password: "pw".into(),
+        database: "postgres".into(),
+        host: "127.0.0.1".into(),
+        port: 55432,
+        user: "postgres".into(),
+        ..ConnConfig::new(Kind::Postgres)
+    };
+    let mut c = Conn::connect(&cfg, None).expect("connect");
+    c.query("DROP SCHEMA IF EXISTS dbl_churn CASCADE").unwrap();
+    c.query("CREATE SCHEMA dbl_churn").unwrap();
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let churn = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut c = Conn::connect(&cfg, None).expect("connect");
+            let mut i = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                c.query(&format!(
+                    "CREATE TABLE dbl_churn.t{i} (id serial PRIMARY KEY); \
+                     CREATE VIEW dbl_churn.v{i} AS SELECT id FROM dbl_churn.t{i}"
+                ))
+                .unwrap();
+                // Dropped in a transaction that takes a while: a list started meanwhile still
+                // sees the objects, and would wait for them and find them gone.
+                c.query(&format!(
+                    "BEGIN; DROP TABLE dbl_churn.t{i} CASCADE; SELECT pg_sleep(0.05); COMMIT"
+                ))
+                .unwrap();
+                i += 1;
+            }
+            i
+        })
+    };
+    let started = std::time::Instant::now();
+    let mut lists = 0;
+    while started.elapsed() < std::time::Duration::from_secs(3) {
+        c.objects().unwrap_or_else(|e| panic!("after {lists} lists: {e}"));
+        lists += 1;
+    }
+    stop.store(true, Ordering::Relaxed);
+    assert!(churn.join().unwrap() > 0);
+    c.query("DROP SCHEMA dbl_churn CASCADE").unwrap();
+}

@@ -1149,3 +1149,123 @@ fn export_postgres() {
 fn export_mysql() {
     export_whole_table(Kind::MySql, 53306, "test");
 }
+
+/// The worker's other jobs on a SQLite file: a grid edit (and one whose row is gone), a value
+/// search across tables, and a dump; and search and dump stopped by their cancel flag.
+#[test]
+fn edits_searches_and_dumps_through_the_worker() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+    let cfg = crate::sqlite::tests::sample_db("worker-jobs");
+    let Spawned { jobs, replies, .. } = spawn(cfg.clone(), Arc::new(|| {}));
+    // Replies other than the one looked for (progress, transaction state) are collected.
+    let next = |want: &dyn Fn(&Reply) -> bool| -> (Reply, Vec<Reply>) {
+        let mut before = Vec::new();
+        loop {
+            let r = replies
+                .recv_timeout(Duration::from_secs(10))
+                .expect("worker reply")
+                .reply;
+            if want(&r) {
+                return (r, before);
+            }
+            before.push(r);
+        }
+    };
+    next(&|r| matches!(r, Reply::Connected(_)));
+
+    let edit = |id: &str| Job::Exec {
+        tab: 1,
+        stmt: crate::sql::Stmt::new("UPDATE customer SET name = ")
+            .value(Some("Zed"))
+            .sql(" WHERE id = ")
+            .value(Some(id)),
+        refresh: "SELECT name FROM customer ORDER BY id".into(),
+        expect_one: true,
+    };
+    jobs.send(edit("1")).unwrap();
+    let Reply::Rows { res, notice, .. } = next(&|r| matches!(r, Reply::Rows { .. })).0 else {
+        unreachable!()
+    };
+    let page = res.unwrap();
+    assert_eq!(
+        (page.rows.cell(0, 0), notice),
+        (Some("Zed"), None),
+        "the page comes back edited"
+    );
+    jobs.send(edit("99")).unwrap();
+    let Reply::Rows { notice, .. } = next(&|r| matches!(r, Reply::Rows { .. })).0 else {
+        unreachable!()
+    };
+    assert!(notice.is_some_and(|n| n.contains("No rows were changed")));
+
+    let target = |table: &str| crate::search::SearchTarget {
+        schema: "main".into(),
+        table: table.into(),
+        columns: vec!["name".into(), "email".into()],
+    };
+    let search = |cancel: bool| Job::SearchValue {
+        tab: 2,
+        term: "beth".into(),
+        exact: false,
+        targets: vec![target("nope"), target("customer")],
+        cancel: Arc::new(AtomicBool::new(cancel)),
+    };
+    jobs.send(search(false)).unwrap();
+    let (done, progress) = next(&|r| matches!(r, Reply::SearchDone { .. }));
+    assert!(matches!(
+        done,
+        Reply::SearchDone {
+            cancelled: false,
+            lost: false,
+            ..
+        }
+    ));
+    let found: Vec<_> = progress
+        .iter()
+        .filter_map(|r| match r {
+            Reply::SearchProgress { hit, error, .. } => Some((hit.clone(), error.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(found.len(), 2, "one per table, the failing one too");
+    assert!(
+        found[0].1.as_deref().is_some_and(|e| e.contains("nope")),
+        "{found:?}"
+    );
+    let hit = found[1].0.as_ref().expect("found in customer");
+    assert_eq!((hit.table.as_str(), hit.rows), ("customer", 1));
+    jobs.send(search(true)).unwrap();
+    let (done, progress) = next(&|r| matches!(r, Reply::SearchDone { .. }));
+    assert!(matches!(done, Reply::SearchDone { cancelled: true, .. }));
+    assert!(!progress.iter().any(|r| matches!(r, Reply::SearchProgress { .. })));
+
+    let path = std::env::temp_dir().join(format!("tabella-worker-dump-{}.sql", std::process::id()));
+    let dump = |cancel: bool| Job::Dump {
+        tab: 3,
+        spec: crate::dump::DumpSpec {
+            path: path.clone(),
+            tables: vec![("main".into(), "customer".into())],
+            objects_of: vec![],
+            structure: true,
+            data: true,
+            drop: false,
+        },
+        cancel: Arc::new(AtomicBool::new(cancel)),
+    };
+    jobs.send(dump(false)).unwrap();
+    let Reply::DumpDone { progress, res, .. } = next(&|r| matches!(r, Reply::DumpDone { .. })).0 else {
+        unreachable!()
+    };
+    assert_eq!(res.unwrap(), path);
+    assert_eq!((progress.tables, progress.rows), (1, 2));
+    assert!(std::fs::read_to_string(&path).unwrap().contains("Zed"));
+    jobs.send(dump(true)).unwrap();
+    let Reply::DumpDone { res, .. } = next(&|r| matches!(r, Reply::DumpDone { .. })).0 else {
+        unreachable!()
+    };
+    assert_eq!(res.unwrap_err().to_string(), "cancelled");
+    assert!(!path.exists(), "a cancelled dump leaves no partial file");
+    drop(jobs);
+    let _ = std::fs::remove_file(&cfg.database);
+}

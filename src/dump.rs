@@ -73,7 +73,7 @@ fn write_dump(
     report: &impl Fn(DumpProgress),
 ) -> DbResult<DumpProgress> {
     let k = conn.kind();
-    let file = std::fs::File::create(&spec.path)
+    let file = crate::store::create_private(&spec.path)
         .map_err(|e| DbError::Other(format!("couldn't create {}: {e}", spec.path.display())))?;
     let mut out = Out {
         w: BufWriter::with_capacity(1 << 20, file),
@@ -872,6 +872,13 @@ mod tests {
             .map(|t| (t.schema, t.name))
             .collect();
         let path = std::env::temp_dir().join(format!("tabella-dump-sqlite-{}.sql", std::process::id()));
+        #[cfg(unix)]
+        {
+            // Over a file others can read (a dump left by an earlier run would already be private).
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&path, "").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
         let spec = DumpSpec {
             path: path.clone(),
             tables,
@@ -882,6 +889,12 @@ mod tests {
         };
         let p = dump(&mut c, &spec, &AtomicBool::new(false), |_| {}).unwrap();
         assert_eq!((p.tables, p.rows), (2, 5));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "a dump holds the data: the user's only");
+        }
 
         let target = crate::db::ConnConfig {
             database: format!("{}-copy.db", cfg.database),

@@ -19,7 +19,7 @@ struct TabReplyCx<'a> {
 impl App {
     /// Applies every reply that arrived since the last frame.
     pub fn poll(&mut self) {
-        if crate::crash::take_unguarded() {
+        if crate::crash::take_unguarded(&mut self.unguarded_seen) {
             self.notice = Notice::error(format!(
                 "Part of tabella stopped after an {}. Restarting it is safest.",
                 crate::crash::internal_error()

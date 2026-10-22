@@ -220,6 +220,30 @@ mod tests {
         );
     }
 
+    /// A deleted connection's password goes too: under its id, and under its name where older
+    /// versions kept it.
+    #[test]
+    fn forgetting_a_connection_removes_its_password() {
+        let dir = std::env::temp_dir().join(format!("tabella-config-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = SecretStore::vault_at(dir.join("vault.json"));
+        store.vault_mut().unwrap().create("good-master-password").unwrap();
+        let mut c = ConnConfig::new(Kind::Postgres);
+        c.id = new_id();
+        c.name = "prod".into();
+        store.set(&c.id, "by-id").unwrap();
+        store.set(&c.name, "by-name").unwrap();
+        store.set("other", "kept").unwrap();
+        forget(&c, &mut store).unwrap();
+        assert!(store.get(&c.id).is_none() && store.get(&c.name).is_none());
+        assert_eq!(store.get("other").as_deref().map(String::as_str), Some("kept"));
+        // Forgetting one that was never stored is fine.
+        forget(&ConnConfig::new(Kind::MySql), &mut store).unwrap();
+        let raw = std::fs::read_to_string(dir.join("vault.json")).unwrap();
+        assert!(!raw.contains(&c.id), "gone from the file too");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn ids_and_names() {
         let a = new_id();

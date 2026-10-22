@@ -468,7 +468,13 @@ fn my_opts(cfg: &ConnConfig, via: Option<u16>) -> mysql::OptsBuilder {
         b = b.db_name(Some(cfg.database.clone()));
     }
     if cfg.ssl {
-        let opts = mysql::SslOpts::default().with_danger_accept_invalid_certs(cfg.ssl_insecure);
+        // Through the tunnel the client only knows 127.0.0.1, so it can't check the server's name
+        // (the driver can't connect to one address and verify another, as Postgres does): the
+        // certificate must still come from a trusted CA, but may name any host. Without this the
+        // only way through would be accepting any certificate at all.
+        let opts = mysql::SslOpts::default()
+            .with_danger_accept_invalid_certs(cfg.ssl_insecure)
+            .with_danger_skip_domain_validation(via.is_some());
         b = b.ssl_opts(Some(opts));
     }
     b
@@ -554,7 +560,9 @@ impl Conn {
             return Ok(conn);
         }
         if cfg.read_only {
-            // Enforced by the server, so the SQL editor can't write either.
+            // The server's default for the session's transactions: also covers the SQL editor, but
+            // a statement can still turn it off (the editor refuses those, see
+            // `sql::script_risk`). Only a user without write grants is read-only for sure.
             conn.query(match cfg.kind {
                 Kind::Postgres => "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
                 Kind::MySql | Kind::Sqlite => "SET SESSION TRANSACTION READ ONLY",

@@ -56,13 +56,19 @@ impl<S: Fn(Reply)> Worker<'_, S> {
         // Should its code panic, the tab still gets an answer and the app stays up.
         let crashed = job.failed(|| DbError::Other(crate::crash::internal_error()));
         self.running.start(job.tab());
-        let reply = match crate::crash::guard(|| self.handle(job)) {
-            Ok(reply) => reply,
-            Err(_) => {
-                // Whatever the connection was doing was cut halfway: it can't be trusted.
-                self.running.set_tab(None);
-                alive = self.reconnect();
-                crashed
+        // A cancel that came while the connection was checked or replaced (seconds, when
+        // reconnecting) found nothing running to stop: the mark it left still stops the job.
+        let reply = if job.skippable() && self.cancels.skips(job.tab(), taken) {
+            job.failed(|| DbError::Other("cancelled".into()))
+        } else {
+            match crate::crash::guard(|| self.handle(job)) {
+                Ok(reply) => reply,
+                Err(_) => {
+                    // Whatever the connection was doing was cut halfway: it can't be trusted.
+                    self.running.set_tab(None);
+                    alive = self.reconnect();
+                    crashed
+                }
             }
         };
         // A job that found the connection dead (MySQL can't tell beforehand): it is replaced

@@ -191,6 +191,24 @@ mod tests {
         }
     }
 
+    /// What the tools can't do is refused before looking for them.
+    #[test]
+    fn refused_before_running_anything() {
+        let mut c = cfg(Kind::Postgres);
+        c.ssh = Some(crate::db::SshConfig {
+            host: "bastion".into(),
+            port: 22,
+            user: "me".into(),
+            key_path: String::new(),
+        });
+        let file = Path::new("/nonexistent/shop.dump");
+        assert!(matches!(run(&c, Op::Backup, file), Err(BackupError::ViaSsh)));
+        assert!(matches!(
+            run(&cfg(Kind::Sqlite), Op::Restore, file),
+            Err(BackupError::Sqlite)
+        ));
+    }
+
     #[test]
     fn commands_carry_the_password_in_the_environment_only() {
         for (kind, op, file, program) in [

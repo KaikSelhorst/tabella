@@ -281,8 +281,11 @@ impl Conn {
                 .map(cells)
                 .collect::<DbResult<_>>()?,
             Kind::Postgres => {
+                // Straight from the catalogs, without views like pg_sequences that open every
+                // object (its last_value): one dropped meanwhile by another session would fail the
+                // whole list. A function dropped meanwhile just has no arguments to show.
                 let sql = "SELECT n.nspname, p.proname, CASE p.prokind WHEN 'p' THEN 'p' ELSE 'f' END, \
-                     pg_get_function_identity_arguments(p.oid), '', p.oid::text \
+                     coalesce(pg_get_function_identity_arguments(p.oid), ''), '', p.oid::text \
                      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
                      WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND p.prokind IN ('f', 'p') \
                      AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') \
@@ -291,12 +294,14 @@ impl Conn {
                      FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
                      WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
                      UNION ALL \
-                     SELECT schemaname, viewname, 'v', '', '', '' FROM pg_views v \
-                     WHERE schemaname NOT IN ('pg_catalog', 'information_schema') \
-                     AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.deptype = 'e' \
-                       AND d.objid = (quote_ident(v.schemaname) || '.' || quote_ident(v.viewname))::regclass) \
+                     SELECT n.nspname, c.relname, 'v', '', '', '' \
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE c.relkind = 'v' AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+                     AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.deptype = 'e' AND d.objid = c.oid) \
                      UNION ALL \
-                     SELECT schemaname, sequencename, 's', '', '', '' FROM pg_sequences \
+                     SELECT n.nspname, c.relname, 's', '', '', '' \
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE c.relkind = 'S' AND NOT pg_is_other_temp_schema(n.oid) \
                      ORDER BY 1, 3, 2";
                 self.query_limit(sql, 100_000)?
                     .rows

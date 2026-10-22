@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use argon2::Argon2;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use chacha20poly1305::aead::{Aead, Generate, Key, KeyInit};
+use chacha20poly1305::aead::{Aead, Generate, Key, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,10 @@ const OLD_SERVICE: &str = "dblite";
 /// Encrypted with the vault key to tell a wrong master password from a corrupted file. Still the
 /// old name: changing it would make every existing vault refuse its master password.
 const CHECK: &[u8] = b"dblite-vault-ok";
+/// The vault format. 1: each password is bound to its connection (see `entry_aad`), and the check
+/// to the version, so a file set back to 0 refuses the master password instead of opening
+/// unbound entries. 0 (before): nothing bound, moved over when unlocked.
+const VERSION: u32 = 1;
 
 /// A password in memory: wiped when dropped, and `Debug` never shows it. Reads as a `String`.
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,6 +216,8 @@ pub enum VaultError {
 
 #[derive(Serialize, Deserialize, Default)]
 struct VaultFile {
+    #[serde(default)]
+    version: u32,
     salt: String,
     check: Sealed,
     entries: BTreeMap<String, Sealed>,
@@ -331,8 +337,9 @@ impl Vault {
             return Err(VaultError::CreatedElsewhere);
         }
         if create {
-            let check = seal(&cipher, CHECK)?;
+            let check = seal(&cipher, CHECK, &check_aad(VERSION))?;
             self.file = Some(VaultFile {
+                version: VERSION,
                 salt: B64.encode(salt),
                 check,
                 entries: BTreeMap::new(),
@@ -341,13 +348,34 @@ impl Vault {
             return Ok(self.save()?);
         }
         let file = self.file.as_ref().ok_or(VaultError::NotCreated)?;
-        match open(&cipher, &file.check) {
+        match open(&cipher, &file.check, &check_aad(file.version)) {
             Some(v) if *v == CHECK => {
                 self.cipher = Some(cipher);
-                Ok(())
+                self.upgrade()
             }
             _ => Err(VaultError::WrongPassword),
         }
+    }
+
+    /// Seals an older vault's passwords again, each bound to its connection, once unlocked.
+    fn upgrade(&mut self) -> Result<(), VaultError> {
+        let (Some(cipher), Some(file)) = (&self.cipher, &mut self.file) else {
+            return Ok(());
+        };
+        if file.version >= VERSION {
+            return Ok(());
+        }
+        for (name, sealed) in &mut file.entries {
+            // One that doesn't open (damaged) stays as it is: it won't open later either.
+            if let Some(plain) = open(cipher, sealed, &entry_aad(file.version, name)) {
+                *sealed = seal(cipher, &plain, &entry_aad(VERSION, name))?;
+            }
+        }
+        file.check = seal(cipher, CHECK, &check_aad(VERSION))?;
+        file.version = VERSION;
+        // Not written now (a full disk): unlocked all the same, the next save writes it.
+        let _ = self.save();
+        Ok(())
     }
 
     /// Sets up a new vault with this master password (blocking; the UI uses `kdf_job`).
@@ -365,16 +393,19 @@ impl Vault {
 
     fn get(&self, name: &str) -> Option<String> {
         let cipher = self.cipher.as_ref()?;
-        let sealed = self.file.as_ref()?.entries.get(name)?;
+        let file = self.file.as_ref()?;
+        let sealed = file.entries.get(name)?;
+        let mut plain = open(cipher, sealed, &entry_aad(file.version, name))?;
         // Takes the buffer over: the plain text isn't copied, and leaves with the caller.
-        String::from_utf8(std::mem::take(&mut *open(cipher, sealed)?)).ok()
+        String::from_utf8(std::mem::take(&mut *plain)).ok()
     }
 
     fn set(&mut self, name: &str, password: &str) -> Result<(), SecretError> {
         let (Some(cipher), Some(file)) = (&self.cipher, &mut self.file) else {
             return Err(SecretError::Locked);
         };
-        let sealed = seal(cipher, password.as_bytes()).map_err(|_| SecretError::Unavailable)?;
+        let aad = entry_aad(file.version, name);
+        let sealed = seal(cipher, password.as_bytes(), &aad).map_err(|_| SecretError::Unavailable)?;
         file.entries.insert(name.to_string(), sealed);
         self.save().map_err(|_| SecretError::Unavailable)
     }
@@ -428,10 +459,28 @@ fn merge_vaults(
     }
 }
 
-fn seal(cipher: &ChaCha20Poly1305, plain: &[u8]) -> Result<Sealed, VaultError> {
+/// What a password is bound to: its connection, so a sealed password moved under another
+/// connection's name in the file no longer opens. Nothing in a version 0 vault.
+fn entry_aad(version: u32, name: &str) -> Vec<u8> {
+    if version == 0 {
+        Vec::new()
+    } else {
+        format!("entry:{name}").into_bytes()
+    }
+}
+
+fn check_aad(version: u32) -> Vec<u8> {
+    if version == 0 {
+        Vec::new()
+    } else {
+        format!("check:{version}").into_bytes()
+    }
+}
+
+fn seal(cipher: &ChaCha20Poly1305, plain: &[u8], aad: &[u8]) -> Result<Sealed, VaultError> {
     let nonce = Nonce::generate();
     let data = cipher
-        .encrypt(&nonce, plain)
+        .encrypt(&nonce, Payload { msg: plain, aad })
         .map_err(|_| VaultError::Encryption)?;
     Ok(Sealed {
         nonce: B64.encode(nonce),
@@ -439,12 +488,13 @@ fn seal(cipher: &ChaCha20Poly1305, plain: &[u8]) -> Result<Sealed, VaultError> {
     })
 }
 
-/// `None` for a wrong key or tampered data (the AEAD tag doesn't match).
-fn open(cipher: &ChaCha20Poly1305, sealed: &Sealed) -> Option<Zeroizing<Vec<u8>>> {
+/// `None` for a wrong key, tampered data or another `aad` (the AEAD tag doesn't match).
+fn open(cipher: &ChaCha20Poly1305, sealed: &Sealed, aad: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
     let nonce = B64.decode(&sealed.nonce).ok()?;
     let nonce = Nonce::try_from(nonce.as_slice()).ok()?;
+    let data = B64.decode(&sealed.data).ok()?;
     cipher
-        .decrypt(&nonce, B64.decode(&sealed.data).ok()?.as_ref())
+        .decrypt(&nonce, Payload { msg: &data, aad })
         .ok()
         .map(Zeroizing::new)
 }
@@ -518,6 +568,7 @@ mod os {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn secret_edits_like_a_string() {
@@ -614,6 +665,155 @@ mod tests {
         data[0] ^= 1;
         sealed.data = B64.encode(data);
         assert_eq!(v.get("dev"), None);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_password_moved_to_another_connection_does_not_open() {
+        let (mut v, path) = temp_vault();
+        v.create("good-master-password").unwrap();
+        v.set("prod", "prod-secret").unwrap();
+        v.set("dev", "dev-secret").unwrap();
+        let file = v.file.as_mut().unwrap();
+        let prod = file.entries["prod"].clone();
+        file.entries.insert("dev".into(), prod);
+        assert_eq!(v.get("dev"), None);
+        assert_eq!(v.get("prod").as_deref(), Some("prod-secret"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A vault from before the passwords were bound to their connection: opens as it did, and
+    /// is sealed the new way on unlock (set back to the old version, it no longer opens).
+    #[test]
+    fn an_older_vault_is_upgraded_on_unlock() {
+        let (_, path) = temp_vault();
+        write_version_0(&path, "good-master-password", &[("dev", "old-secret")]);
+
+        let mut again = Vault::load(Some(path.clone()));
+        again.unlock("good-master-password").unwrap();
+        assert_eq!(again.get("dev").as_deref(), Some("old-secret"));
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["version"], VERSION);
+
+        let mut back: serde_json::Value = raw;
+        back["version"] = 0.into();
+        std::fs::write(&path, back.to_string()).unwrap();
+        let mut downgraded = Vault::load(Some(path.clone()));
+        assert!(matches!(
+            downgraded.unlock("good-master-password"),
+            Err(VaultError::WrongPassword)
+        ));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// What `window` last read or wrote, to bring back before it saves (see
+    /// `store::last_seen_by_this_window`).
+    fn memory(window: &Vault) -> serde_json::Value {
+        serde_json::to_value(window.file.as_ref().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn two_windows_keep_each_others_passwords() {
+        let (mut a, path) = temp_vault();
+        a.create("good-master-password").unwrap();
+        a.set("one", "1").unwrap();
+        let mut b = Vault::load(Some(path.clone()));
+        b.unlock("good-master-password").unwrap();
+        let b_saw = memory(&b);
+
+        a.set("from-a", "A").unwrap();
+        store::last_seen_by_this_window(&path, &b_saw);
+        b.set("from-b", "B").unwrap();
+        assert_eq!(b.get("from-a").as_deref(), Some("A"), "b takes in a's password");
+
+        let mut fresh = Vault::load(Some(path.clone()));
+        fresh.unlock("good-master-password").unwrap();
+        for (name, password) in [("one", "1"), ("from-a", "A"), ("from-b", "B")] {
+            assert_eq!(fresh.get(name).as_deref(), Some(password), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Two windows that each created a vault, unaware of the other: their passwords open with
+    /// different keys and can't be mixed. The one saving keeps its own vault whole.
+    #[test]
+    fn a_vault_with_another_key_is_not_mixed_in() {
+        let (mut a, path) = temp_vault();
+        a.create("first-master-password").unwrap();
+        let (mut other, other_path) = temp_vault();
+        other.create("other-master-password").unwrap();
+        other.set("theirs", "T").unwrap();
+        std::fs::copy(&other_path, &path).unwrap();
+
+        a.set("dev", "D").unwrap();
+        let mut fresh = Vault::load(Some(path.clone()));
+        assert!(fresh.unlock("other-master-password").is_err());
+        fresh.unlock("first-master-password").unwrap();
+        assert_eq!(fresh.get("dev").as_deref(), Some("D"));
+        assert!(!fresh.has("theirs"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(other_path.parent().unwrap());
+    }
+
+    #[test]
+    fn refresh_finds_a_vault_created_elsewhere() {
+        let (mut a, path) = temp_vault();
+        let mut b = Vault::load(Some(path.clone()));
+        a.create("good-master-password").unwrap();
+        a.set("dev", "D").unwrap();
+        assert!(!b.exists());
+        b.refresh().unwrap();
+        assert!(b.exists() && b.has("dev") && !b.is_unlocked());
+        b.unlock("good-master-password").unwrap();
+        assert_eq!(b.get("dev").as_deref(), Some("D"));
+
+        // Unlocked, it picks up the passwords saved elsewhere since.
+        let b_saw = memory(&b);
+        a.set("later", "L").unwrap();
+        store::last_seen_by_this_window(&path, &b_saw);
+        b.refresh().unwrap();
+        assert_eq!(b.get("later").as_deref(), Some("L"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Writes a vault the way versions before 1 did: nothing bound to the connection.
+    fn write_version_0(path: &Path, master: &str, entries: &[(&str, &str)]) {
+        let mut v = Vault::load(Some(path.to_path_buf()));
+        v.create(master).unwrap();
+        let cipher = v.cipher.as_ref().unwrap();
+        let file = v.file.as_mut().unwrap();
+        file.version = 0;
+        file.check = seal(cipher, CHECK, &[]).unwrap();
+        for (name, password) in entries {
+            file.entries
+                .insert(name.to_string(), seal(cipher, password.as_bytes(), &[]).unwrap());
+        }
+        v.save().unwrap();
+    }
+
+    /// Two windows open on an older vault, both upgrading it on unlock: the passwords stay, and
+    /// both keep saving to it.
+    #[test]
+    fn two_windows_upgrading_the_same_vault() {
+        let (_, path) = temp_vault();
+        write_version_0(&path, "good-master-password", &[("dev", "old-secret")]);
+        let mut a = Vault::load(Some(path.clone()));
+        let mut b = Vault::load(Some(path.clone()));
+        let b_saw = memory(&b);
+        a.unlock("good-master-password").unwrap();
+        store::last_seen_by_this_window(&path, &b_saw);
+        b.unlock("good-master-password").unwrap();
+        let b_saw = memory(&b);
+        a.set("from-a", "A").unwrap();
+        store::last_seen_by_this_window(&path, &b_saw);
+        b.set("from-b", "B").unwrap();
+
+        let mut fresh = Vault::load(Some(path.clone()));
+        fresh.unlock("good-master-password").unwrap();
+        assert_eq!(fresh.file.as_ref().unwrap().version, VERSION);
+        for (name, password) in [("dev", "old-secret"), ("from-a", "A"), ("from-b", "B")] {
+            assert_eq!(fresh.get(name).as_deref(), Some(password), "{name}");
+        }
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

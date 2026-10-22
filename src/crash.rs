@@ -7,15 +7,16 @@
 use std::cell::Cell;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 thread_local! {
     /// Inside `guard` on this thread: the panic is caught and reported by the caller.
     static GUARDED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// A thread of the app died of a panic nothing caught.
-static UNGUARDED: AtomicBool = AtomicBool::new(false);
+/// How many of the app's threads died of a panic nothing caught. A count, not a flag: each
+/// reader keeps the last one it saw, so one reading never hides a panic from another.
+static UNGUARDED: AtomicU64 = AtomicU64::new(0);
 
 const LOG: &str = "crash.log";
 /// Left by a panic on the window's own thread (the one that ends the app), until the next start.
@@ -56,7 +57,7 @@ pub fn install() {
                 let _ = std::fs::write(p, "");
             }
         } else {
-            UNGUARDED.store(true, Ordering::SeqCst);
+            UNGUARDED.fetch_add(1, Ordering::SeqCst);
         }
     }));
 }
@@ -85,10 +86,16 @@ pub fn internal_error() -> String {
     format!("internal error in tabella (details in {log})")
 }
 
-/// Whether one of the app's threads died of a panic since the last call: the window goes on, but
-/// whatever that thread did (a connection, saving the history) has stopped.
-pub fn take_unguarded() -> bool {
-    UNGUARDED.swap(false, Ordering::SeqCst)
+/// Whether one of the app's threads died of a panic since `seen` (which moves on): the window goes
+/// on, but whatever that thread did (a connection, saving the history) has stopped.
+pub fn take_unguarded(seen: &mut u64) -> bool {
+    let now = UNGUARDED.load(Ordering::SeqCst);
+    std::mem::replace(seen, now) != now
+}
+
+/// Where `take_unguarded` starts counting from.
+pub fn unguarded_so_far() -> u64 {
+    UNGUARDED.load(Ordering::SeqCst)
 }
 
 #[cfg(test)]
@@ -111,9 +118,11 @@ mod tests {
         assert!(!GUARDED.get(), "unguarded again after");
         let log = std::fs::read_to_string(dir.join(LOG)).unwrap();
         assert!(log.contains("boom"), "{log}");
+        let mut seen = unguarded_so_far();
         let worker = std::thread::Builder::new().name("worker".into());
         let _ = worker.spawn(|| panic!("lost")).unwrap().join();
-        assert!(take_unguarded());
+        assert!(take_unguarded(&mut seen));
+        assert!(!take_unguarded(&mut seen), "told once");
         // The window's own thread dying is told at the next start, once.
         std::fs::write(dir.join(PENDING), "").unwrap();
         assert!(take_previous().unwrap().contains("closed unexpectedly"));

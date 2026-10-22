@@ -237,6 +237,12 @@ fn remember<T: Serialize + ?Sized>(path: &Path, value: &T) {
     }
 }
 
+/// Tests: another window's memory of `path` (each window is its own process; tests share one).
+#[cfg(test)]
+pub fn last_seen_by_this_window<T: Serialize + ?Sized>(path: &Path, value: &T) {
+    remember(path, value);
+}
+
 fn forget(path: &Path) {
     bases().remove(path);
 }
@@ -359,6 +365,26 @@ fn merge_lists(base: &[Value], ours: &[Value], theirs: &[Value]) -> Vec<Value> {
     out
 }
 
+/// Creates (or truncates) a file only the current user can read: mode 600 on unix, also when it
+/// already existed. For files holding database contents (exports, dumps) as much as for ours.
+pub fn create_private(path: &Path) -> std::io::Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(path)?;
+    #[cfg(unix)]
+    {
+        // `mode` only applies to new files; tighten an existing one too.
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 /// Writes a file only the current user can read: created with mode 600 on unix (so it is never
 /// briefly world-readable). On Windows the per-user AppData folder is already private.
 ///
@@ -371,21 +397,8 @@ pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
     let written = (|| {
-        let mut file = opts.open(&tmp)?;
-        #[cfg(unix)]
-        {
-            // `mode` only applies to new files; tighten a leftover temp file too.
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
+        let mut file = create_private(&tmp)?;
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
         // Replaces the old file in one step (on Windows too).
@@ -443,6 +456,46 @@ mod tests {
             std::fs::read_to_string(dir.join("favorites.json.bak")).unwrap(),
             "[{\"half a file"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An export over a file others could read: emptied, and only ours from then on.
+    #[test]
+    #[cfg(unix)]
+    fn create_private_tightens_an_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("private");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("out.csv");
+        std::fs::write(&file, "old contents").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        create_private(&file).unwrap().write_all(b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A window's own state (its tabs): the last window closed wins outright, nothing merged in.
+    #[test]
+    fn replace_keeps_only_the_last_window() {
+        let dir = temp_dir("replace");
+        use_dir_in_this_thread(dir.clone());
+        replace("session.json", &vec!["a's tab".to_string()]).unwrap();
+        // b, which started before a saved, closes last.
+        remember(&path("session.json").unwrap(), &Vec::<String>::new());
+        replace("session.json", &vec!["b's tab".to_string()]).unwrap();
+        let l: Loaded<Vec<String>> = load("session.json");
+        assert_eq!(l.value, ["b's tab"]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(path("session.json").unwrap())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

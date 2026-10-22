@@ -337,6 +337,8 @@ pub struct App {
     /// once.
     pub schema_focus: Option<String>,
     pub notice: Option<Notice>,
+    /// Panics of the app's threads already announced (see `crash::take_unguarded`).
+    unguarded_seen: u64,
     pub fps: Fps,
     pub library: Library,
     /// Foreign keys followed (and other jumps to a filtered table), for "Back".
@@ -472,6 +474,7 @@ impl App {
             filter: String::new(),
             schema_focus: None,
             notice: None,
+            unguarded_seen: crate::crash::unguarded_so_far(),
             fps: Fps {
                 max: false,
                 show: false,
@@ -786,3 +789,12 @@ pub mod tests;
 
 #[cfg(test)]
 mod poll_tests;
+
+#[cfg(test)]
+mod connection_tests;
+
+#[cfg(test)]
+mod cancel_tests;
+
+#[cfg(test)]
+mod sync_tests;

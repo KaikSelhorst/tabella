@@ -41,10 +41,24 @@ pub fn open(cfg: &ConnConfig) -> DbResult<Connection> {
 
 /// Creates an empty database file (the form's "Create new file").
 pub fn create(path: &str) -> DbResult<()> {
-    if std::path::Path::new(path).exists() {
-        return Err(DbError::Other(format!("a file already exists at {path}")));
+    // In one step, so a file appearing meanwhile is never taken over. SQLite reads an empty file
+    // as a new database.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(DbError::Other(format!("a file already exists at {path}")));
+        }
+        Err(e) => return Err(DbError::Other(format!("couldn't create {path}: {e}"))),
     }
-    let c = Connection::open(path)?;
+    // A plain path, not a `file:` URI (`Connection::open` would read one).
+    let c = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
     // SQLite writes nothing until there is something to write.
     c.execute_batch("PRAGMA user_version = 0; VACUUM")?;
     Ok(())
@@ -198,6 +212,37 @@ pub(crate) mod tests {
         )
         .unwrap();
         c
+    }
+
+    /// "Create new file" never takes over a file that is already there, and makes a database
+    /// that opens like any other.
+    #[test]
+    fn create_refuses_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!("tabella-sqlite-create-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("new.db").display().to_string();
+        let _ = std::fs::remove_file(&path);
+        create(&path).unwrap();
+        let cfg = ConnConfig {
+            database: path.clone(),
+            ..ConnConfig::new(crate::db::Kind::Sqlite)
+        };
+        open(&cfg)
+            .unwrap()
+            .execute_batch("CREATE TABLE kept (x)")
+            .unwrap();
+
+        let err = create(&path).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+        let c = open(&cfg).unwrap();
+        assert_eq!(
+            query(&c, "SELECT name FROM sqlite_master", 10)
+                .unwrap()
+                .rows
+                .cell(0, 0),
+            Some("kept")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
