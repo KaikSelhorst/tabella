@@ -489,7 +489,7 @@ pub(crate) mod tests {
         c.query("CREATE TABLE dst (a TEXT, b TEXT, c TEXT)").unwrap();
         let path = std::env::temp_dir().join(format!("tabella-import-any-{}.csv", std::process::id()));
         for round in 0..60 {
-            let delimiter = [b',', b';', b'\t'][round % 3];
+            let delimiter = b",;\t"[round % 3];
             let rows: Vec<Vec<String>> = (0..g.below(30))
                 .map(|_| (0..1 + g.below(3)).map(|_| g.text_of(3)).collect())
                 .collect();
