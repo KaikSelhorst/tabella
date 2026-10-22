@@ -35,20 +35,25 @@ impl Kind {
         }
     }
 
-    /// A string literal for display, clipboard text and the Postgres execution path.
+    /// A string literal that reads back as `s` whatever the server's settings: run in filters,
+    /// searches and dumps, and written to exported files.
     ///
     /// Postgres: with a backslash present this uses the `E'...'` form (like libpq's
     /// `PQescapeLiteral`), which reads the same whatever `standard_conforming_strings` is set to.
-    /// MySQL: escapes backslashes, which is wrong under `NO_BACKSLASH_ESCAPES`, so MySQL never
-    /// executes these; its statements bind values as parameters instead (see `sql::Stmt`).
+    /// MySQL: a backslash means one thing by default and another under `NO_BACKSLASH_ESCAPES`
+    /// (a dump read back on such a server would double them), so text with one goes as UTF-8
+    /// hex, which no mode reads differently.
     pub fn quote_str(self, s: &str) -> String {
         match self {
             Kind::Postgres if s.contains('\\') => {
                 format!("E'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
             }
+            Kind::MySql if s.contains('\\') => {
+                let hex: String = s.bytes().map(|b| format!("{b:02X}")).collect();
+                format!("_utf8mb4 X'{hex}'")
+            }
             // SQLite has no backslash escapes at all.
-            Kind::Postgres | Kind::Sqlite => format!("'{}'", s.replace('\'', "''")),
-            Kind::MySql => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''")),
+            Kind::Postgres | Kind::Sqlite | Kind::MySql => format!("'{}'", s.replace('\'', "''")),
         }
     }
 

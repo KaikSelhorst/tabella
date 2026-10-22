@@ -1179,3 +1179,96 @@ fn postgres_objects_while_others_drop_tables() {
     assert!(churn.join().unwrap() > 0);
     c.query("DROP SCHEMA dbl_churn CASCADE").unwrap();
 }
+
+/// Literals and search patterns read back as written whatever the server's settings: the
+/// filters, searches and dumps that run them must find and store exactly these values.
+fn literals_read_back(c: &mut Conn, kind: Kind, settings: &[&str]) {
+    let values = [
+        r"a\",
+        r"a\b",
+        r"\'",
+        "it's",
+        r"x\'; DROP TABLE t; --",
+        "50%",
+        "a_b",
+        "x!y",
+        "café 🚀",
+        "",
+    ];
+    let temp = if kind == Kind::Postgres {
+        "TEMP"
+    } else {
+        "TEMPORARY"
+    };
+    let temp = if kind == Kind::Sqlite { "TEMP" } else { temp };
+    c.query("DROP TABLE IF EXISTS dbl_lit").unwrap();
+    c.query(&format!("CREATE {temp} TABLE dbl_lit (v VARCHAR(50))"))
+        .unwrap();
+    for v in values {
+        c.query(&format!("INSERT INTO dbl_lit VALUES ({})", kind.quote_str(v)))
+            .unwrap();
+    }
+    for setting in settings.iter().copied().chain([""]) {
+        if !setting.is_empty() {
+            c.query(setting).unwrap();
+        }
+        for v in values {
+            let back = c.query(&format!("SELECT {}", kind.quote_str(v))).unwrap();
+            assert_eq!(back.rows.cell(0, 0), Some(v), "{kind:?} {setting:?}");
+        }
+        for term in ["50%", "%", "_", r"\", "!", "x!y", "a_b", r"a\b"] {
+            let cond = crate::sql::search_condition(kind, &["v".into()], term);
+            let found = c
+                .query(&format!("SELECT v FROM dbl_lit WHERE {cond} ORDER BY v"))
+                .unwrap_or_else(|e| panic!("{kind:?} {setting:?} {term:?}: {e}"));
+            let mut found: Vec<&str> = (0..found.rows.len())
+                .filter_map(|i| found.rows.cell(i, 0))
+                .collect();
+            found.sort_unstable();
+            let mut want: Vec<&str> = values.iter().copied().filter(|v| v.contains(term)).collect();
+            want.sort_unstable();
+            assert_eq!(found, want, "{kind:?} {setting:?} searching {term:?}");
+        }
+    }
+    c.query("DROP TABLE dbl_lit").unwrap();
+}
+
+#[test]
+fn sqlite_literals_read_back() {
+    let cfg = crate::sqlite::tests::sample_db("literals");
+    let mut c = Conn::connect(&cfg, None).unwrap();
+    literals_read_back(&mut c, Kind::Sqlite, &[]);
+    let _ = std::fs::remove_file(&cfg.database);
+}
+
+#[test]
+#[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
+fn server_literals_read_back() {
+    let connect = |kind, port, user: &str, db: &str| {
+        let cfg = ConnConfig {
+            password: "pw".into(),
+            database: db.into(),
+            host: "127.0.0.1".into(),
+            port,
+            user: user.into(),
+            ..ConnConfig::new(kind)
+        };
+        Conn::connect(&cfg, None).expect("connect")
+    };
+    literals_read_back(
+        &mut connect(Kind::Postgres, 55432, "postgres", "postgres"),
+        Kind::Postgres,
+        &[
+            "SET standard_conforming_strings = off",
+            "SET standard_conforming_strings = on",
+        ],
+    );
+    literals_read_back(
+        &mut connect(Kind::MySql, 53306, "root", "test"),
+        Kind::MySql,
+        &[
+            "SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')",
+            "SET SESSION sql_mode = REPLACE(@@sql_mode, 'NO_BACKSLASH_ESCAPES', '')",
+        ],
+    );
+}

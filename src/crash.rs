@@ -43,11 +43,15 @@ pub fn install() {
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .and_then(|mut f| f.write_all(text.as_bytes()));
+            // Private like the other files: a panic's message can quote the text it choked on.
+            let mut opts = std::fs::OpenOptions::new();
+            opts.create(true).append(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let _ = opts.open(path).and_then(|mut f| f.write_all(text.as_bytes()));
         }
         if GUARDED.get() {
             return;
@@ -118,6 +122,12 @@ mod tests {
         assert!(!GUARDED.get(), "unguarded again after");
         let log = std::fs::read_to_string(dir.join(LOG)).unwrap();
         assert!(log.contains("boom"), "{log}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join(LOG)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "a panic's message can quote data");
+        }
         let mut seen = unguarded_so_far();
         let worker = std::thread::Builder::new().name("worker".into());
         let _ = worker.spawn(|| panic!("lost")).unwrap().join();

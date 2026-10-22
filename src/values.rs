@@ -633,7 +633,8 @@ mod tests {
             "no NULL, quotes escaped"
         );
         let (my, _) = to_in_list(Kind::MySql, &res, 1, 2..=2, ValueKind::Text);
-        assert_eq!(my, "('a\\\\b')");
+        // `a\b` as hex: the same under any sql_mode.
+        assert_eq!(my, "(_utf8mb4 X'615C62')");
         // A number column holding something odd keeps it quoted.
         let (odd, _) = to_in_list(Kind::Postgres, &res, 1, 0..=0, ValueKind::Number);
         assert_eq!(odd, "('O''Neil')");

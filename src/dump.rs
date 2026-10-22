@@ -723,6 +723,86 @@ mod tests {
         round_trip(Kind::MySql, 53306);
     }
 
+    /// MySQL with `NO_BACKSLASH_ESCAPES`, keys holding backslashes, more rows than a page: the
+    /// dump pages on from the right key (it used to read the last one back as another value and
+    /// take rows again), and the file reads back the same on such a server.
+    #[test]
+    #[ignore = "needs the test databases: docker compose --profile test up -d --wait"]
+    fn mysql_backslashes_under_no_backslash_escapes() {
+        use crate::db::ConnConfig;
+        let mut cfg = ConnConfig::new(Kind::MySql);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 53306;
+        cfg.password = "pw".into();
+        cfg.database = "test".into();
+        let mut c = Conn::connect(&cfg, None).expect("connect");
+        let q = |c: &mut Conn, sql: &str| c.query(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+        let total = CHUNK + 3;
+        for sql in [
+            "DROP DATABASE IF EXISTS dbl_bs".to_string(),
+            "CREATE DATABASE dbl_bs".into(),
+            "CREATE TABLE dbl_bs.k (id VARCHAR(20) PRIMARY KEY, v TEXT)".into(),
+            "SET SESSION cte_max_recursion_depth = 20000".into(),
+            format!(
+                "INSERT INTO dbl_bs.k WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s \
+                 WHERE n < {total}) SELECT CONCAT('k', CHAR(92), LPAD(n, 5, '0')), CONCAT(CHAR(92), n, '''') FROM s"
+            ),
+            "SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')".into(),
+        ] {
+            q(&mut c, &sql);
+        }
+        let fingerprint = |c: &mut Conn| {
+            let r = q(c, "SELECT COUNT(*), SUM(CRC32(CONCAT(id, '|', v))) FROM dbl_bs.k");
+            format!("{:?}/{:?}", r.rows.cell(0, 0), r.rows.cell(0, 1))
+        };
+        let before = fingerprint(&mut c);
+        let path = std::env::temp_dir().join(format!("tabella-dump-bs-{}.sql", std::process::id()));
+        let spec = DumpSpec {
+            path: path.clone(),
+            tables: vec![("dbl_bs".into(), "k".into())],
+            objects_of: vec![],
+            structure: true,
+            data: true,
+            drop: false,
+        };
+        // Paging from a wrong key can go round forever: stopped, it fails instead of hanging.
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let watchdog = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                if finished.recv_timeout(std::time::Duration::from_secs(30)).is_err() {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            })
+        };
+        let p = dump(&mut c, &spec, &cancel, |_| {});
+        drop(done);
+        watchdog.join().unwrap();
+        let p = p.unwrap_or_else(|e| panic!("the dump never ended ({e}): it pages from a wrong key"));
+        assert_eq!(p.rows, total as u64, "each row once");
+
+        q(&mut c, "DROP DATABASE dbl_bs");
+        q(&mut c, "CREATE DATABASE dbl_bs");
+        q(&mut c, "USE dbl_bs");
+        let mut tx = crate::worker::TxState::default();
+        let (_, err, _) = crate::worker::run_script(
+            &mut c,
+            &mut tx,
+            false,
+            &path,
+            false,
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        if let Some(e) = err {
+            panic!("line {}: {}\n{}", e.line, e.message, e.statement);
+        }
+        assert_eq!(fingerprint(&mut c), before, "read back the same");
+        q(&mut c, "DROP DATABASE dbl_bs");
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// A real database, by hand: `TABELLA_DUMP_CHECK=host:port:user:password:database:schema`
     /// (Postgres). Exports the schema, restores it into a new database `dbl_restore` on the
     /// same server, compares row counts and a checksum per table, then drops `dbl_restore`.

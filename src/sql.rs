@@ -206,14 +206,23 @@ pub fn bulk_update(
     sql
 }
 
+/// `term` anywhere in `col`, its `%` and `_` taken literally. The escape is `!`, not the usual
+/// backslash, which MySQL reads differently under `NO_BACKSLASH_ESCAPES`.
 fn contains(kind: Kind, col: &str, term: &str) -> String {
-    let pattern = kind.quote_str(&format!("%{term}%"));
+    let mut escaped = String::with_capacity(term.len());
+    for c in term.chars() {
+        if matches!(c, '!' | '%' | '_') {
+            escaped.push('!');
+        }
+        escaped.push(c);
+    }
+    let pattern = kind.quote_str(&format!("%{escaped}%"));
     match kind {
-        Kind::Postgres => format!("CAST({col} AS TEXT) ILIKE {pattern}"),
+        Kind::Postgres => format!("CAST({col} AS TEXT) ILIKE {pattern} ESCAPE '!'"),
         // MySQL compares case-insensitively with the default collations.
-        Kind::MySql => format!("CAST({col} AS CHAR) LIKE {pattern}"),
+        Kind::MySql => format!("CAST({col} AS CHAR) LIKE {pattern} ESCAPE '!'"),
         // SQLite's LIKE ignores case (for ASCII letters).
-        Kind::Sqlite => format!("CAST({col} AS TEXT) LIKE {pattern}"),
+        Kind::Sqlite => format!("CAST({col} AS TEXT) LIKE {pattern} ESCAPE '!'"),
     }
 }
 
@@ -618,14 +627,17 @@ pub fn bind_params(kind: Kind, script: &str, value: impl Fn(&str) -> String) -> 
         out.extend(&chars[at..a]);
         let v = value(&name);
         let t = v.trim();
-        let number = !t.is_empty()
-            && t.trim_start_matches('-')
-                .chars()
-                .all(|c| c.is_ascii_digit() || c == '.')
+        // One sign at most: `--5` would start a comment in the SQL.
+        let digits = t.strip_prefix('-').unwrap_or(t);
+        let number = !digits.is_empty()
+            && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
             && t.chars().filter(|c| *c == '.').count() <= 1
             && t.chars().any(|c| c.is_ascii_digit());
         if t.eq_ignore_ascii_case("null") {
             out.push_str("NULL");
+        } else if number && t.starts_with('-') {
+            // `x-:v` would read `x--5`, a comment.
+            out.push_str(&format!("({t})"));
         } else if number {
             out.push_str(t);
         } else {
@@ -1958,7 +1970,13 @@ mod tests {
         );
         assert!(bound.starts_with("SELECT x::text, ':no'"));
         assert_eq!(bind_params(Kind::MySql, "a = :v", |_| "null".into()), "a = NULL");
-        assert_eq!(bind_params(Kind::MySql, "a = :v", |_| "-1.5".into()), "a = -1.5");
+        assert_eq!(
+            bind_params(Kind::MySql, "a = :v", |_| "-1.5".into()),
+            "a = (-1.5)"
+        );
+        // Never a comment: `--` isn't a number, and a negative one keeps away from a minus.
+        assert_eq!(bind_params(Kind::MySql, "a = :v", |_| "--5".into()), "a = '--5'");
+        assert_eq!(bind_params(Kind::Postgres, "x-:v", |_| "-5".into()), "x-(-5)");
         assert_eq!(
             bind_params(Kind::MySql, "a = :v", |_| "1.2.3".into()),
             "a = '1.2.3'"
@@ -2229,7 +2247,7 @@ mod tests {
         );
         assert_eq!(
             search_condition(Kind::MySql, &["x".into()], "an"),
-            "(CAST(`x` AS CHAR) LIKE '%an%')"
+            "(CAST(`x` AS CHAR) LIKE '%an%' ESCAPE '!')"
         );
         // Generated conditions always pass the WHERE-box check, whatever the value holds.
         for v in ["a;b", "x -- y", "it's", "a\\'; DROP TABLE t; --"] {
@@ -2244,7 +2262,7 @@ mod tests {
         let s = search_condition(k, &["id".into(), "name".into()], " anna ");
         assert_eq!(
             s,
-            "(CAST(\"id\" AS TEXT) ILIKE '%anna%' OR CAST(\"name\" AS TEXT) ILIKE '%anna%')"
+            "(CAST(\"id\" AS TEXT) ILIKE '%anna%' ESCAPE '!' OR CAST(\"name\" AS TEXT) ILIKE '%anna%' ESCAPE '!')"
         );
         assert_eq!(search_condition(k, &["id".into()], "  "), "");
     }
@@ -2254,7 +2272,9 @@ mod tests {
         assert_eq!(Kind::Postgres.quote_str("o'x"), "'o''x'");
         // Backslashes switch to E'' so the literal means the same under any server setting.
         assert_eq!(Kind::Postgres.quote_str("o'x\\"), "E'o''x\\\\'");
-        assert_eq!(Kind::MySql.quote_str("o'x\\"), "'o''x\\\\'");
+        assert_eq!(Kind::MySql.quote_str("o'x"), "'o''x'");
+        // `o'x\`: the same bytes under any sql_mode.
+        assert_eq!(Kind::MySql.quote_str("o'x\\"), "_utf8mb4 X'6F27785C'");
         assert_eq!(Kind::MySql.quote_ident("a`b"), "`a``b`");
     }
 
@@ -2306,7 +2326,7 @@ mod tests {
         let sql = distinct_values(k, "public", "customers", "\"state\"", "active", "s");
         assert_eq!(
             sql,
-            "SELECT \"state\", count(*) FROM \"public\".\"customers\" WHERE (active) AND CAST(\"state\" AS TEXT) ILIKE '%s%' \
+            "SELECT \"state\", count(*) FROM \"public\".\"customers\" WHERE (active) AND CAST(\"state\" AS TEXT) ILIKE '%s%' ESCAPE '!' \
              GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 1001"
         );
         let c = "\"state\"";
@@ -2367,7 +2387,7 @@ mod tests {
         assert_eq!(
             fk_options(k, &fk, Some("name"), true, false, "42"),
             "SELECT \"id\", \"name\" FROM \"public\".\"customers\" \
-             WHERE CAST(\"name\" AS TEXT) ILIKE '%42%' OR \"id\" = 42 LIMIT 50"
+             WHERE CAST(\"name\" AS TEXT) ILIKE '%42%' ESCAPE '!' OR \"id\" = 42 LIMIT 50"
         );
         // Text that isn't a number never meets a numeric key (it would be an error).
         assert!(!fk_options(k, &fk, Some("name"), true, false, "mary").contains("\"id\" ="));
