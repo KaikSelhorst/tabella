@@ -168,7 +168,37 @@ impl App {
         self.table_action_ui(&ctx);
         self.track_zoom(&ctx);
         self.follow_system_theme(&ctx);
+        focus_ring(&ctx);
     }
+}
+
+/// A ring around the widget with keyboard focus. egui only tints a focused widget's frame, and
+/// frameless buttons (most icon buttons) have none, so Tab would move an invisible cursor
+/// (WCAG 2.4.7). Shown once Tab is used and hidden again by a click, like `:focus-visible`.
+fn focus_ring(ctx: &egui::Context) {
+    let id = egui::Id::new("focus_visible");
+    let (tab, click) = ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.pointer.any_pressed()));
+    let mut visible = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    if tab {
+        visible = true;
+    } else if click {
+        visible = false;
+    }
+    ctx.data_mut(|d| d.insert_temp(id, visible));
+    let Some(focused) = ctx.memory(|m| m.focused()).filter(|_| visible) else {
+        return;
+    };
+    let Some(r) = ctx.read_response(focused) else {
+        return;
+    };
+    // Above everything, modals included: the focus can be in one.
+    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("focus_ring"));
+    ctx.layer_painter(layer).rect_stroke(
+        r.interact_rect.expand(1.0),
+        theme::RADIUS,
+        egui::Stroke::new(2.0, theme::tokens().accent_text),
+        egui::StrokeKind::Outside,
+    );
 }
 
 impl App {
@@ -298,7 +328,7 @@ impl App {
         };
         let sql = crate::sql::table_action(s.cfg.kind, &p.schema, &p.table, p.action, &p.input);
         let (mut go, mut cancel) = (false, false);
-        let modal = egui::Modal::new(egui::Id::new("table_action"))
+        let modal = theme::modal(egui::Id::new("table_action"))
             .frame(theme::modal_frame(16))
             .show(ctx, |ui| {
                 ui.set_width(460.0);
@@ -322,16 +352,17 @@ impl App {
                     ),
                 };
                 let hint_color = if destructive { t.destructive } else { t.muted_foreground };
-                ui.add(egui::Label::new(egui::RichText::new(hint).color(hint_color)).wrap());
-                if destructive {
+                let hint = ui.add(egui::Label::new(egui::RichText::new(hint).color(hint_color)).wrap());
+                let prompt = destructive.then(|| {
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new(format!("Type {} to confirm:", p.table)).size(12.0).color(t.subtle));
-                }
+                    ui.label(egui::RichText::new(format!("Type {} to confirm:", p.table)).size(12.0).color(t.subtle))
+                });
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut p.input)
                         .font(egui::FontId::monospace(12.5))
                         .desired_width(f32::INFINITY),
                 );
+                let r = r.labelled_by(prompt.unwrap_or(hint).id);
                 r.request_focus();
                 if let TableAction::Duplicate(with_data) = &mut p.action {
                     ui.checkbox(with_data, format!("copy the rows too ({rows})"));
@@ -348,7 +379,7 @@ impl App {
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let button = if destructive {
-                        egui::Button::new(egui::RichText::new(verb).color(t.foreground)).fill(t.destructive)
+                        egui::Button::new(egui::RichText::new(verb).color(t.on_destructive)).fill(t.destructive)
                     } else {
                         theme::primary_button(None, verb)
                     };
@@ -390,7 +421,7 @@ impl App {
             ),
             _ => None,
         };
-        let modal = egui::Modal::new(egui::Id::new("path_prompt"))
+        let modal = theme::modal(egui::Id::new("path_prompt"))
             .frame(theme::modal_frame(16))
             .show(ctx, |ui| {
                 ui.set_width(480.0);
@@ -407,7 +438,7 @@ impl App {
                     .color(t.foreground),
                 );
                 if let Some(note) = note {
-                    ui.label(egui::RichText::new(note).size(11.0).color(t.subtle));
+                    ui.label(egui::RichText::new(note).size(12.0).color(t.subtle));
                 }
                 ui.add_space(8.0);
                 let r = ui.add(
@@ -489,7 +520,7 @@ impl App {
         }
         let t = theme::tokens();
         let mut choice = None;
-        let modal = egui::Modal::new(egui::Id::new("quit_tx"))
+        let modal = theme::modal(egui::Id::new("quit_tx"))
             .frame(theme::modal_frame(16))
             .show(ctx, |ui| {
                 ui.set_width(420.0);
@@ -519,7 +550,9 @@ impl App {
                     if ui.add(theme::outline_button("Roll back and quit")).clicked() {
                         choice = Some(Some(false));
                     }
-                    if ui.add(theme::outline_button("Back")).clicked() {
+                    let back = ui.add(theme::outline_button("Back"));
+                    theme::focus_on_open(ui, &back);
+                    if back.clicked() {
                         choice = Some(None);
                     }
                 });
@@ -542,7 +575,7 @@ impl App {
     fn unsaved_edits_prompt(&mut self, ctx: &egui::Context, tabs: &str) {
         let t = theme::tokens();
         let mut choice = None;
-        let modal = egui::Modal::new(egui::Id::new("quit_edits"))
+        let modal = theme::modal(egui::Id::new("quit_edits"))
             .frame(theme::modal_frame(16))
             .show(ctx, |ui| {
                 ui.set_width(420.0);
@@ -562,7 +595,9 @@ impl App {
                     if ui.add(tabs::danger_button("Discard and quit")).clicked() {
                         choice = Some(true);
                     }
-                    if ui.add(theme::outline_button("Back")).clicked() {
+                    let back = ui.add(theme::outline_button("Back"));
+                    theme::focus_on_open(ui, &back);
+                    if back.clicked() {
                         choice = Some(false);
                     }
                 });
@@ -907,5 +942,81 @@ mod icon_asset {
             .collect();
         let file = std::fs::File::create("assets/icon.ico").unwrap();
         IcoEncoder::new(file).encode_images(&frames).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod a11y {
+    use eframe::egui;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    use super::screenshots::fake_app;
+
+    fn harness() -> Harness<'static, crate::app::App> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 760.0))
+            .build_eframe(|cc| {
+                super::theme::apply(&cc.egui_ctx);
+                fake_app(&cc.egui_ctx)
+            });
+        harness.run();
+        harness
+    }
+
+    /// Icon-only buttons have a name a screen reader can say: their own label is a glyph from
+    /// the icon font.
+    #[test]
+    fn icon_buttons_are_named() {
+        let harness = harness();
+        for name in [
+            "Reload (F5)",
+            "Previous page",
+            "Next page",
+            "Saved filters",
+            "Connection actions",
+            "Server activity",
+            "Hide row details",
+            "Close: customers",
+        ] {
+            harness.get_by_label(name);
+        }
+    }
+
+    /// The connection form's fields are tied to the labels beside them.
+    #[test]
+    fn form_fields_have_labels() {
+        let mut harness = harness();
+        harness.state_mut().connections.form = Some(crate::app::ConnForm {
+            editing: None,
+            cfg: crate::db::ConnConfig::new(crate::db::Kind::Postgres),
+        });
+        harness.run();
+        // A field tied to its label is found by the label's text, like the label itself.
+        for label in ["Name", "Host", "User", "Password", "Database"] {
+            let field = harness.query_all_by_label(label).any(|n| {
+                matches!(
+                    n.accesskit_node().role(),
+                    egui::accesskit::Role::TextInput | egui::accesskit::Role::PasswordInput
+                )
+            });
+            assert!(field, "no field labelled {label}");
+        }
+    }
+
+    /// Tab shows where the focus is; a click hides the ring again.
+    #[test]
+    fn tab_shows_the_focus() {
+        let mut harness = harness();
+        let visible = |h: &Harness<'_, crate::app::App>| {
+            h.ctx
+                .data(|d| d.get_temp::<bool>(egui::Id::new("focus_visible")))
+                .unwrap_or(false)
+        };
+        assert!(!visible(&harness));
+        harness.key_press(egui::Key::Tab);
+        harness.run();
+        assert!(visible(&harness));
+        assert!(harness.ctx.memory(|m| m.focused()).is_some());
     }
 }

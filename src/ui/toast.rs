@@ -1,6 +1,7 @@
 //! The app's notices as a toast in the bottom-right corner: information fades out by itself,
 //! errors stay until closed (they explain something that didn't happen).
 
+use crate::ui::theme::A11y;
 use std::time::Duration;
 
 use eframe::egui;
@@ -47,13 +48,13 @@ impl App {
                                 let copy =
                                     egui::Button::new(theme::icon(icon::COPY).color(t.muted_foreground))
                                         .frame(false);
-                                if ui.add(copy).on_hover_text("Copy the message").clicked() {
+                                if ui.add(copy).tip("Copy the message").clicked() {
                                     ui.ctx().copy_text(n.text.clone());
                                 }
                             }
                             let x = egui::Button::new(theme::icon(icon::X).color(t.muted_foreground))
                                 .frame(false);
-                            close = ui.add(x).on_hover_text("Close").clicked();
+                            close = ui.add(x).tip("Close").clicked();
                         });
                     });
             });

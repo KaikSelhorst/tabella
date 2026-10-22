@@ -136,7 +136,7 @@ impl App {
         }
         let t = theme::tokens();
         let mut close = false;
-        let modal = egui::Modal::new(egui::Id::new("help"))
+        let modal = theme::modal(egui::Id::new("help"))
             .frame(theme::modal_frame(16))
             .show(ctx, |ui| {
                 ui.set_width(640.0);
@@ -189,7 +189,7 @@ impl App {
 fn section(ui: &mut egui::Ui, title: &str) {
     let t = theme::tokens();
     ui.add_space(10.0);
-    ui.label(RichText::new(title.to_uppercase()).size(11.0).color(t.subtle));
+    ui.label(RichText::new(title.to_uppercase()).size(12.0).color(t.subtle));
     ui.add_space(4.0);
 }
 

@@ -2,6 +2,7 @@
 //! `results` for the grid both share, `activity`, `search`, `script`…). Drawing only: edits,
 //! queries and deletions are carried out by `crate::app`.
 
+use crate::ui::theme::A11y;
 use std::collections::HashSet;
 
 use eframe::egui::{self, Align, Key, Layout, TextEdit};
@@ -148,8 +149,10 @@ fn tab_menu(ui: &mut egui::Ui, tab: &Tab, m: &TabMenu) -> Option<TabAction> {
     let mut name = ui
         .data(|d| d.get_temp::<String>(name_id))
         .unwrap_or_else(|| tab.title.clone());
-    ui.label(egui::RichText::new("Tab name").size(11.0).color(t.subtle));
-    let r = ui.add(TextEdit::singleline(&mut name).desired_width(200.0));
+    let label = ui.label(egui::RichText::new("Tab name").size(12.0).color(t.subtle));
+    let r = ui
+        .add(TextEdit::singleline(&mut name).desired_width(200.0))
+        .labelled_by(label.id);
     if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !name.trim().is_empty() {
         return_action = Some(TabAction::Rename(i, name.trim().to_string()));
         ui.data_mut(|d| d.remove::<String>(name_id));
@@ -445,7 +448,14 @@ impl App {
                                     } else {
                                         t.subtle
                                     });
-                                    let x = ui.add(egui::Button::new(x).frame(false)).on_hover_text(tip);
+                                    let x = ui
+                                        .add(
+                                            egui::Button::new(x)
+                                                .frame(false)
+                                                .min_size(egui::vec2(20.0, 24.0)),
+                                        )
+                                        .named(&format!("{tip}: {}", tab.title))
+                                        .on_hover_text(tip);
                                     if Some(i) == sel {
                                         theme::tab_underline(ui, label_rect.union(x.rect), focused);
                                     }
@@ -460,6 +470,14 @@ impl App {
                                 }
                             });
                         });
+                    theme::scroll_fades(
+                        ui,
+                        scroll.inner_rect,
+                        scroll.state.offset.x,
+                        scroll.content_size.x,
+                        t.sidebar,
+                        true,
+                    );
                     let hidden = scroll.content_size.x > scroll.inner_rect.width() + 1.0;
                     ui.data_mut(|d| d.insert_temp(overflow_id, hidden));
                     // The list button takes room: follow the active tab again next frame.
@@ -792,7 +810,7 @@ pub(super) fn export_menu(
         ui.menu_button(label, |ui| {
             ui.set_width(220.0);
             let heading = |ui: &mut egui::Ui, text: &str| {
-                ui.label(egui::RichText::new(text).size(11.0).color(t.subtle));
+                ui.label(egui::RichText::new(text).size(12.0).color(t.subtle));
             };
             heading(ui, if is_table { "CURRENT PAGE" } else { "RESULT" });
             for f in Format::ALL {
@@ -826,11 +844,12 @@ pub(super) fn export_menu(
             ui.separator();
             ui.label(
                 egui::RichText::new("Saved to the Downloads folder")
-                    .size(11.0)
+                    .size(12.0)
                     .color(t.subtle),
             );
         })
         .response
+        .named("Export")
         .on_hover_text("Export");
     });
     chosen
@@ -860,8 +879,10 @@ pub(super) fn export_banner(ui: &mut egui::Ui, tab: &mut Tab) {
                         dismiss = ui
                             .add(
                                 egui::Button::new(theme::icon(icon::X).size(11.0).color(t.subtle))
-                                    .frame(false),
+                                    .frame(false)
+                                    .min_size(egui::vec2(24.0, 20.0)),
                             )
+                            .tip("Dismiss")
                             .clicked();
                     });
                 });
@@ -898,7 +919,12 @@ pub(super) fn export_banner(ui: &mut egui::Ui, tab: &mut Tab) {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     dismiss = ui
-                        .add(egui::Button::new(theme::icon(icon::X).size(11.0).color(t.subtle)).frame(false))
+                        .add(
+                            egui::Button::new(theme::icon(icon::X).size(11.0).color(t.subtle))
+                                .frame(false)
+                                .min_size(egui::vec2(24.0, 20.0)),
+                        )
+                        .tip("Dismiss")
                         .clicked();
                 });
             });
@@ -931,7 +957,7 @@ pub(super) fn busy_indicator(ui: &mut egui::Ui, s: &Session, tab_id: u64) {
 /// nothing in those dialogs, only a click confirms.
 pub(super) fn danger_button(label: &str) -> egui::Button<'static> {
     let t = theme::tokens();
-    egui::Button::new(egui::RichText::new(label.to_string()).color(t.foreground)).fill(t.destructive)
+    egui::Button::new(egui::RichText::new(label.to_string()).color(t.on_destructive)).fill(t.destructive)
 }
 
 /// Icon toggle for the row detail panel.
@@ -945,7 +971,7 @@ pub(super) fn detail_toggle(ui: &mut egui::Ui, show: &mut bool) {
     };
     if ui
         .button(theme::icon(icon::SIDEBAR_SIMPLE).color(color))
-        .on_hover_text(tip)
+        .tip(tip)
         .clicked()
     {
         *show = !*show;

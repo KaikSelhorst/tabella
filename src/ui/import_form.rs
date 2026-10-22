@@ -24,7 +24,7 @@ pub fn import_form(
 ) -> Option<ImportAction> {
     let t = theme::tokens();
     let mut action = None;
-    let modal = egui::Modal::new(egui::Id::new(("import_form", tab_id)))
+    let modal = theme::modal(egui::Id::new(("import_form", tab_id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(720.0);
@@ -34,7 +34,7 @@ pub fn import_form(
             });
             ui.label(
                 RichText::new("All in one transaction: if a row fails, nothing is imported. Numbers like 1,520.30 or 1.520,30 and booleans like yes/no are converted.")
-                    .size(11.0)
+                    .size(12.0)
                     .color(t.subtle),
             );
             ui.add_space(8.0);
@@ -71,7 +71,7 @@ pub fn import_form(
                             pv.headers.len(),
                             crate::values::noun(pv.headers.len() as u64, "column")
                         ))
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.subtle),
                     );
                     ui.add_space(4.0);

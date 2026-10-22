@@ -1,6 +1,7 @@
 //! The result grid shared by editor and table tabs, and the dialogs it opens.
 
 use super::*;
+use crate::ui::theme::A11y;
 use std::fmt::Write as _;
 
 /// Summary line for the pager: row count, timing and what the user can do with the grid.
@@ -36,7 +37,7 @@ pub(super) fn result_sets_strip(ui: &mut egui::Ui, tab: &Tab) -> Option<usize> {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.label(egui::RichText::new("RESULTS").size(11.0).color(t.subtle));
+                        ui.label(egui::RichText::new("RESULTS").size(12.0).color(t.subtle));
                         for (i, set) in tab.sets.iter().enumerate() {
                             let shown = i == tab.set_shown;
                             let set = if shown {
@@ -297,6 +298,15 @@ pub(super) fn result_area(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx, editabl
     }
     let mut frozen = Vec::new();
     let out = area.show(ui, |ui| grid(ui, tab.id, shown, cols, edit, &opts, &mut frozen));
+    // Only the right edge: the left one holds the row numbers and pinned columns.
+    theme::scroll_fades(
+        ui,
+        out.inner_rect,
+        out.state.offset.x,
+        out.content_size.x,
+        t.background,
+        false,
+    );
     let mut event = out.inner.or(key_event);
     if let Some(e) = paint_frozen(ui, tab.id, &frozen, out.state.offset.x, out.inner_rect) {
         if matches!(e, GridEvent::StartEdit(..)) {
@@ -806,7 +816,7 @@ pub(super) fn bulk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Op
     let mut prompt = tab.bulk_prompt.take()?;
     let built = bulk_sql(tab, s, &prompt);
     let (mut preview, mut cancel) = (false, false);
-    let modal = egui::Modal::new(egui::Id::new(("bulk", tab.id)))
+    let modal = theme::modal(egui::Id::new(("bulk", tab.id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(480.0);
@@ -887,7 +897,7 @@ pub(super) fn bulk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Op
                             "Preview opens this UPDATE in an editor and shows how many rows and which ones it would \
                              change. Nothing is written until you run it there.",
                         )
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.subtle),
                     );
                 }
@@ -923,11 +933,11 @@ pub(super) fn fill_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEven
     let t = theme::tokens();
     let mut out = None;
     let mut cancel = false;
-    let modal = egui::Modal::new(egui::Id::new(("fill", tab.id)))
+    let modal = theme::modal(egui::Id::new(("fill", tab.id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(380.0);
-            ui.label(
+            let title = ui.label(
                 egui::RichText::new(format!(
                     "Value for {cells} {}",
                     crate::values::noun(cells as u64, "cell")
@@ -937,15 +947,17 @@ pub(super) fn fill_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEven
             );
             ui.label(
                 egui::RichText::new("Stays pending until saved (Ctrl+S), like the other edits.")
-                    .size(11.0)
+                    .size(12.0)
                     .color(t.subtle),
             );
             ui.add_space(8.0);
-            let r = ui.add(
-                TextEdit::singleline(value)
-                    .font(egui::FontId::monospace(12.5))
-                    .desired_width(f32::INFINITY),
-            );
+            let r = ui
+                .add(
+                    TextEdit::singleline(value)
+                        .font(egui::FontId::monospace(12.5))
+                        .desired_width(f32::INFINITY),
+                )
+                .labelled_by(title.id);
             r.request_focus();
             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                 out = Some(GridEvent::FillSelection(Some(value.clone())));
@@ -977,14 +989,14 @@ pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     let can_filter = matches!(tab.kind, TabKind::Table(_));
     let mut close = false;
     let mut filter: Option<Option<String>> = None;
-    let modal = egui::Modal::new(egui::Id::new(("col_stats", tab.id)))
+    let modal = theme::modal(egui::Id::new(("col_stats", tab.id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(460.0);
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::CHART_BAR).size(16.0).color(t.accent_text));
                 ui.label(egui::RichText::new(&view.column).size(15.0).color(t.foreground));
-                ui.label(egui::RichText::new(&view.scope).size(11.0).color(t.subtle));
+                ui.label(egui::RichText::new(&view.scope).size(12.0).color(t.subtle));
             });
             ui.add_space(8.0);
             match &view.data {
@@ -1031,7 +1043,7 @@ pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                     ui.add_space(12.0);
                     ui.label(
                         egui::RichText::new("MOST COMMON VALUES")
-                            .size(11.0)
+                            .size(12.0)
                             .color(t.subtle),
                     );
                     ui.add_space(4.0);
@@ -1077,7 +1089,7 @@ pub(super) fn stats_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                                             )
                                             .frame(false),
                                         )
-                                        .on_hover_text("Filter the table by this value")
+                                        .tip("Filter the table by this value")
                                         .clicked()
                                 {
                                     filter = Some(v.clone());
@@ -1207,7 +1219,7 @@ pub(super) fn selection_stats(
                         .add(
                             egui::Button::new(theme::icon(icon::COPY).color(t.muted_foreground)).frame(false),
                         )
-                        .on_hover_text("Copy summary")
+                        .tip("Copy summary")
                         .clicked()
                     {
                         ui.ctx().copy_text(text.clone());
@@ -1228,7 +1240,7 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
     let Some(vf) = &mut ts.value_filter else { return };
     let t = theme::tokens();
     let (mut apply, mut cancel, mut clear, mut search_db) = (false, false, false, false);
-    let modal = egui::Modal::new(egui::Id::new(("value_filter", id)))
+    let modal = theme::modal(egui::Id::new(("value_filter", id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(420.0);
@@ -1237,7 +1249,7 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
                 ui.label(egui::RichText::new(&vf.column).size(15.0).color(t.foreground));
                 ui.label(
                     egui::RichText::new(format!("in {table}"))
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.subtle),
                 );
             });
@@ -1321,7 +1333,7 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     ui.label(
                                         egui::RichText::new(palette::format_count(*n))
-                                            .size(11.0)
+                                            .size(12.0)
                                             .color(t.subtle),
                                     );
                                 });
@@ -1342,7 +1354,7 @@ pub(super) fn value_filter_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Sessio
                         sql::DISTINCT_LIMIT
                     );
                 }
-                ui.label(egui::RichText::new(note).size(11.0).color(t.subtle));
+                ui.label(egui::RichText::new(note).size(12.0).color(t.subtle));
             }
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1380,7 +1392,7 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
     let changed = ve.value() != ve.original;
     let can_save = ve.editable && changed && !(ve.json_column && check.as_ref().is_some_and(Result::is_err));
     let (mut save, mut close) = (false, false);
-    let modal = egui::Modal::new(egui::Id::new(("value_editor", id)))
+    let modal = theme::modal(egui::Id::new(("value_editor", id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width((screen.width() * 0.7).clamp(480.0, 1100.0));
@@ -1391,14 +1403,14 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
                         .color(t.accent_text),
                 );
                 ui.label(egui::RichText::new(&ve.column).size(15.0).color(t.foreground));
-                ui.label(egui::RichText::new(&ve.data_type).size(11.0).color(t.subtle));
+                ui.label(egui::RichText::new(&ve.data_type).size(12.0).color(t.subtle));
                 ui.label(
                     egui::RichText::new(format!("row {}", ve.row + 1))
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.subtle),
                 );
                 if !ve.editable {
-                    ui.label(egui::RichText::new("· read-only").size(11.0).color(t.subtle));
+                    ui.label(egui::RichText::new("· read-only").size(12.0).color(t.subtle));
                 }
             });
             ui.add_space(8.0);
@@ -1442,7 +1454,8 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
                 ui.data_mut(|d| d.insert_temp(cache, (key, g.clone())));
                 g
             };
-            egui::ScrollArea::vertical()
+            let column = ve.column.clone();
+            let editor = egui::ScrollArea::vertical()
                 .max_height(screen.height() * 0.6)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
@@ -1466,6 +1479,7 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
                             .layouter(&mut layouter),
                     )
                 });
+            editor.inner.named(&column);
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let lines = ve.text.lines().count().max(1);
@@ -1474,25 +1488,25 @@ pub(super) fn value_dialog(ctx: &egui::Context, tab: &mut Tab) -> Option<GridEve
                     ve.text.chars().count(),
                     crate::values::noun(lines as u64, "line")
                 );
-                ui.label(egui::RichText::new(size).size(11.0).color(t.subtle));
+                ui.label(egui::RichText::new(size).size(12.0).color(t.subtle));
                 match &check {
                     Some(Ok(())) => {
                         ui.label(
                             egui::RichText::new("· valid JSON")
-                                .size(11.0)
+                                .size(12.0)
                                 .color(t.accent_text),
                         );
                     }
                     Some(Err((line, col, _))) => {
                         let msg = format!("· invalid JSON: line {line}, column {col}");
-                        ui.label(egui::RichText::new(msg).size(11.0).color(t.destructive));
+                        ui.label(egui::RichText::new(msg).size(12.0).color(t.destructive));
                     }
                     None => {}
                 }
                 if ve.compact && ve.editable {
                     ui.label(
                         egui::RichText::new("· saved compact again, as it was")
-                            .size(11.0)
+                            .size(12.0)
                             .color(t.subtle),
                     );
                 }
@@ -1550,7 +1564,7 @@ fn pin_buttons(ui: &mut egui::Ui, pinned_at: Option<u64>, comparing: bool) -> Op
         Some(at) => {
             let unpin =
                 egui::Button::new(theme::icon(icon::PUSH_PIN_SLASH).color(t.muted_foreground)).frame(false);
-            if ui.add(unpin).on_hover_text("Unpin").clicked() {
+            if ui.add(unpin).tip("Unpin").clicked() {
                 action = Some(PinAction::Unpin);
             }
             if !comparing
@@ -1585,7 +1599,7 @@ pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Opti
     let p = tab.fk_picker.as_mut()?;
     let t = theme::tokens();
     let mut chosen: Option<String> = None;
-    let modal = egui::Modal::new(egui::Id::new(("fk_picker", id)))
+    let modal = theme::modal(egui::Id::new(("fk_picker", id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(520.0);
@@ -1598,7 +1612,7 @@ pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Opti
                 ui.label(egui::RichText::new(&p.column).size(15.0).color(t.foreground));
                 ui.label(
                     egui::RichText::new(format!("→ {}.{}", p.fk.table, p.fk.column))
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.subtle),
                 );
             });
@@ -1698,7 +1712,7 @@ pub(super) fn fk_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) -> Opti
                 ),
                 _ => String::new(),
             };
-            ui.label(egui::RichText::new(note).size(11.0).color(t.subtle));
+            ui.label(egui::RichText::new(note).size(12.0).color(t.subtle));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.add(theme::outline_button("Cancel")).clicked() {
                     p.focused = false;

@@ -45,7 +45,7 @@ pub(super) fn diff_view(
                     .chars()
                     .take(80)
                     .collect::<String>();
-                ui.label(egui::RichText::new(first).monospace().size(11.0).color(t.subtle))
+                ui.label(egui::RichText::new(first).monospace().size(12.0).color(t.subtle))
                     .on_hover_text(egui::RichText::new(&pinned.sql).monospace());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     back = ui.add(theme::outline_button("Back to result")).clicked();

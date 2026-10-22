@@ -1,6 +1,7 @@
 //! Quick chart of an editor result: one numeric column against another, as bars or a line.
 //! One series, one axis starting at zero, recessive grid, values on hover.
 
+use crate::ui::theme::A11y;
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, RichText, Stroke, vec2};
 
 use super::{grid::display_value, palette, theme};
@@ -106,7 +107,7 @@ pub fn chart(
     // Controls: X, Y, form, close — one row above the plot.
     ui.horizontal(|ui| {
         let pick = |ui: &mut egui::Ui, id: &str, label: &str, value: &mut usize, numeric_only: bool| {
-            ui.label(RichText::new(label).size(11.0).color(t.subtle));
+            ui.label(RichText::new(label).size(12.0).color(t.subtle));
             egui::ComboBox::from_id_salt((id, tab_id))
                 .selected_text(RichText::new(&res.columns[*value]).monospace())
                 .show_ui(ui, |ui| {
@@ -133,7 +134,7 @@ pub fn chart(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add(egui::Button::new(theme::icon(super::icon::X).color(t.muted_foreground)).frame(false))
-                .on_hover_text("Close chart")
+                .tip("Close chart")
                 .clicked()
             {
                 open = false;
@@ -194,7 +195,7 @@ pub fn chart(
         let share = (v * 0.5 - t0 * 0.5) / (t1 * 0.5 - t0 * 0.5).max(f64::EPSILON);
         plot.bottom() - share as f32 * plot.height()
     };
-    let label_font = FontId::proportional(11.0);
+    let label_font = FontId::proportional(12.0);
 
     // Grid: faint lines at the ticks, the zero line a step stronger.
     for v in &ticks {

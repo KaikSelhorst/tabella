@@ -211,7 +211,7 @@ fn option_picker(
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("↑↓ Enter picks · Esc cancels")
-                            .size(10.0)
+                            .size(11.0)
                             .color(t.subtle),
                     );
                 });
@@ -506,7 +506,8 @@ fn header_cell<'a>(
     }
     let c = g.info[ci];
     // Key, name, sort arrow and values filter, in that order from the left; numbers are aligned
-    // right, and their header with them: the same pieces from the right, the type on the left.
+    // right, and their header with them: the same pieces from the right, the type just before
+    // the name (at the far left it read as the name of an empty column).
     let key = |ui: &mut egui::Ui| {
         if c.is_some_and(|c| c.pk) {
             ui.label(theme::icon(icon::KEY).color(t.warning).size(12.0));
@@ -536,7 +537,7 @@ fn header_cell<'a>(
                 ui.label(
                     RichText::new((pos + 1).to_string())
                         .color(t.accent_text)
-                        .size(10.0),
+                        .size(11.0),
                 );
             }
         };
@@ -561,7 +562,7 @@ fn header_cell<'a>(
     // The type is dimmed: the first thing to go when the column is narrow.
     let data_type = |ui: &mut egui::Ui| {
         if let Some(c) = c {
-            ui.add(egui::Label::new(RichText::new(&c.data_type).size(11.0).color(t.subtle)).truncate());
+            ui.add(egui::Label::new(RichText::new(&c.data_type).size(12.0).color(t.subtle)).truncate());
         }
     };
     let (r, filter_clicked) = if numeric {
@@ -572,7 +573,7 @@ fn header_cell<'a>(
             sort(ui);
             let r = label(ui);
             key(ui);
-            ui.with_layout(Layout::left_to_right(Align::Center), data_type);
+            data_type(ui);
             (r, clicked)
         })
         .inner
@@ -619,10 +620,21 @@ fn gutter_cell(ui: &mut egui::Ui, g: &Paint, ri: usize, frozen: &mut Vec<Frozen>
     let number = (g.opts.row_offset + ri + 1).to_string();
     row_background(ui, g.table_rect, t);
     cell_chrome(ui, g.table_rect, t);
+    // The selected cell's row is marked here too, with a bar and not only a tint, so the row the
+    // detail panel shows can be found without telling colors apart.
+    let current = g.opts.selected.is_some_and(|(r, _)| r == ri);
+    if current {
+        let rect = full_cell(ui);
+        let painter = gap_painter(ui, g.table_rect);
+        painter.rect_filled(rect, 0.0, t.selection);
+        let bar = egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height()));
+        painter.rect_filled(bar, 0.0, t.accent_text);
+    }
+    let color = if current { t.foreground } else { t.subtle };
     ui.with_layout(
         Layout::centered_and_justified(egui::Direction::LeftToRight),
         |ui| {
-            ui.label(RichText::new(&number).font(g.cell_font.clone()).color(t.subtle));
+            ui.label(RichText::new(&number).font(g.cell_font.clone()).color(color));
         },
     );
     if g.opts.pinned > 0 {
@@ -631,8 +643,8 @@ fn gutter_cell(ui: &mut egui::Ui, g: &Paint, ri: usize, frozen: &mut Vec<Frozen>
             clip: ui.clip_rect(),
             text: number,
             font: g.cell_font.clone(),
-            color: t.subtle,
-            bg: t.background,
+            color,
+            bg: if current { t.selection } else { t.background },
             right_align: false,
             row: Some(ri),
             col: None,
@@ -708,6 +720,21 @@ fn data_cell(
             );
         }
     }
+    // An edit not saved yet also gets a corner mark, like a spreadsheet's note: the tint alone
+    // is easy to miss, and lost on a color-blind eye.
+    if opts.changed.is_some_and(|c| c.contains(&(ri, ci))) && !row_deleted {
+        let rect = full_cell(ui);
+        let corner = rect.left_top();
+        gap_painter(ui, g.table_rect).add(egui::Shape::convex_polygon(
+            vec![
+                corner,
+                corner + egui::vec2(7.0, 0.0),
+                corner + egui::vec2(0.0, 7.0),
+            ],
+            t.warning,
+            egui::Stroke::NONE,
+        ));
+    }
     let val = res.rows.cell(ri, ci);
     // Foreign keys read as links: Ctrl+click opens the referenced row.
     let fk = g.info[ci]
@@ -719,7 +746,7 @@ fn data_cell(
     let text = cell_text(g, kind, val, fk.is_some());
     // Rows going away read as struck through.
     let text = if row_deleted {
-        text.strikethrough().color(t.subtle)
+        text.strikethrough().color(t.muted_foreground)
     } else {
         text
     };

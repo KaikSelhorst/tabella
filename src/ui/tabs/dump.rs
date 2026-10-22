@@ -72,7 +72,7 @@ pub(super) fn dump_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             "Saved to Downloads: runs on an SQLite file with \"Run .sql file\" or sqlite3."
                         }
                     };
-                    ui.label(egui::RichText::new(hint).size(11.0).color(t.subtle));
+                    ui.label(egui::RichText::new(hint).size(12.0).color(t.subtle));
                     if !st.running && st.outcome.is_none() {
                         return;
                     }

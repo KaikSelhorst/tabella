@@ -515,7 +515,7 @@ impl App {
         let id = egui::Id::new("palette");
         // Near the top, like editor command palettes, so results grow downward.
         let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, [0.0, 72.0]);
-        let modal = egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
+        let modal = theme::modal(id).area(area).frame(frame).show(ctx, |ui| {
             ui.set_width(560.0);
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::MAGNIFYING_GLASS).color(t.muted_foreground));
@@ -567,7 +567,7 @@ impl App {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new("↑↓ navigate · Enter open · Esc close")
-                    .size(11.0)
+                    .size(12.0)
                     .color(t.subtle),
             );
         });
@@ -621,7 +621,7 @@ fn result_row(painter: &egui::Painter, rect: egui::Rect, it: &Item, selected: bo
         egui::pos2(rect.right() - 12.0, mid),
         egui::Align2::RIGHT_CENTER,
         &it.detail,
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(12.0),
         t.subtle,
     );
 }

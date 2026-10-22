@@ -4,6 +4,7 @@ use super::{icon, palette, theme};
 use crate::app::{App, ConnForm, Dialog, DumpScope, Session, TabKind, TableActionPrompt};
 use crate::db::{ConnConfig, DbObject, Kind, ObjKind, TableRef};
 use crate::sql::{TableAction, Template};
+use crate::ui::theme::A11y;
 
 /// Schemas with fewer tables than this start expanded.
 const AUTO_EXPAND_BELOW: usize = 200;
@@ -164,7 +165,9 @@ impl App {
                                 ui.close();
                             }
                         }
-                    });
+                    })
+                    .response
+                    .tip("Connection actions");
                 });
                 egui::ComboBox::from_id_salt("connection")
                     .selected_text(selected)
@@ -245,7 +248,7 @@ impl App {
         let Some(s) = &self.session else {
             ui.label(
                 egui::RichText::new("No active connection")
-                    .size(11.0)
+                    .size(12.0)
                     .color(theme::tokens().subtle),
             );
             return;
@@ -362,13 +365,17 @@ fn tree_toolbar(ui: &mut egui::Ui, s: &Session, by_size: bool) -> Option<TreeAct
     let mut action = None;
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("TABLES").size(11.0).color(tk.subtle));
+        // Room for the buttons first: in a narrow sidebar the heading gives way.
+        if ui.available_width() > 200.0 {
+            ui.label(egui::RichText::new("TABLES").size(12.0).color(tk.subtle));
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let button = |ui: &mut egui::Ui, glyph: &str, tip: &str| {
-                ui.add(egui::Button::new(theme::icon(glyph).color(tk.muted_foreground)).frame(false))
-                    .on_hover_text(tip)
-                    .clicked()
+                let b = egui::Button::new(theme::icon(glyph).color(tk.muted_foreground))
+                    .frame(false)
+                    .min_size(egui::vec2(22.0, 24.0));
+                ui.add(b).tip(tip).clicked()
             };
             if button(ui, icon::PLUGS, "Disconnect") {
                 action = Some(TreeAction::Disconnect);
@@ -439,7 +446,7 @@ impl Tree<'_> {
             return None;
         }
         let header = egui::RichText::new(format!("★ Starred  {}", tables.len()))
-            .size(11.0)
+            .size(12.0)
             .color(tk.warning);
         let mut action = None;
         egui::CollapsingHeader::new(header)
@@ -479,11 +486,11 @@ impl Tree<'_> {
         let is_default = schema == self.default_schema();
         let header = if is_default {
             egui::RichText::new(format!("{schema}  {}  · default", visible.len()))
-                .size(11.0)
+                .size(12.0)
                 .color(tk.foreground)
         } else {
             egui::RichText::new(format!("{schema}  {}", visible.len()))
-                .size(11.0)
+                .size(12.0)
                 .color(tk.subtle)
         };
         let mut action = None;
@@ -564,7 +571,7 @@ impl Tree<'_> {
                     r.rect.right_center() - egui::vec2(6.0, 0.0),
                     egui::Align2::RIGHT_CENTER,
                     count,
-                    egui::FontId::proportional(11.0),
+                    egui::FontId::proportional(12.0),
                     tk.subtle,
                 );
             }
@@ -681,7 +688,7 @@ impl Tree<'_> {
                 continue;
             }
             let header = egui::RichText::new(format!("{}  {}", kind.plural(), objs.len()))
-                .size(11.0)
+                .size(12.0)
                 .color(tk.subtle);
             egui::CollapsingHeader::new(header)
                 .id_salt(("objs", schema, kind))
@@ -754,7 +761,7 @@ fn conn_label(c: &ConnConfig) -> egui::text::LayoutJob {
     };
     let mut job = LayoutJob::default();
     if let Some(tag) = c.color {
-        let dot = TextFormat::simple(egui::FontId::proportional(11.0), theme::tag_color(tag));
+        let dot = TextFormat::simple(egui::FontId::proportional(12.0), theme::tag_color(tag));
         job.append("● ", 0.0, dot);
     }
     job.append(
@@ -765,14 +772,14 @@ fn conn_label(c: &ConnConfig) -> egui::text::LayoutJob {
     job.append(
         tag,
         8.0,
-        TextFormat::simple(egui::FontId::proportional(10.0), color),
+        TextFormat::simple(egui::FontId::proportional(11.0), color),
     );
     if c.read_only {
-        let fmt = TextFormat::simple(egui::FontId::proportional(10.0), t.destructive);
+        let fmt = TextFormat::simple(egui::FontId::proportional(11.0), t.destructive);
         job.append("read-only", 6.0, fmt);
     } else if c.manual_commit {
-        let fmt = TextFormat::simple(egui::FontId::proportional(10.0), t.warning);
-        job.append("commit manual", 6.0, fmt);
+        let fmt = TextFormat::simple(egui::FontId::proportional(11.0), t.warning);
+        job.append("manual commit", 6.0, fmt);
     }
     job
 }

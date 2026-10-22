@@ -1,5 +1,6 @@
 //! The "Structure" tab and the "new row" form.
 
+use crate::ui::theme::A11y;
 use eframe::egui::{self, Align, Layout, RichText, TextEdit};
 
 use super::{icon, syntax, theme};
@@ -118,7 +119,7 @@ pub fn structure_tab(
                         .striped(false)
                         .show(ui, |ui| {
                             for h in ["", "Name", "Type", "Null", "Default"] {
-                                ui.label(RichText::new(h).size(11.0).color(t.subtle));
+                                ui.label(RichText::new(h).size(12.0).color(t.subtle));
                             }
                             ui.end_row();
                             for c in &d.columns {
@@ -204,7 +205,7 @@ pub fn structure_tab(
 fn section(ui: &mut egui::Ui, title: &str) {
     let t = theme::tokens();
     ui.add_space(14.0);
-    ui.label(RichText::new(title.to_uppercase()).size(11.0).color(t.subtle));
+    ui.label(RichText::new(title.to_uppercase()).size(12.0).color(t.subtle));
     ui.add_space(4.0);
 }
 
@@ -242,7 +243,7 @@ pub fn insert_form(
 ) -> Option<InsertAction> {
     let t = theme::tokens();
     let mut action = None;
-    let modal = egui::Modal::new(egui::Id::new(("insert_form", tab_id)))
+    let modal = theme::modal(egui::Id::new(("insert_form", tab_id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(520.0);
@@ -258,7 +259,7 @@ pub fn insert_form(
                 RichText::new(
                     "\"Default\" lets the database fill it in (DEFAULT, sequence, auto_increment).",
                 )
-                .size(11.0)
+                .size(12.0)
                 .color(t.subtle),
             );
             ui.add_space(8.0);
@@ -318,7 +319,7 @@ fn insert_rows(ui: &mut egui::Ui, tab_id: u64, fields: &mut [InsertField]) -> Op
                     ui.spacing_mut().item_spacing.y = 0.0;
                     ui.add(egui::Label::new(RichText::new(&f.name).color(t.foreground)).truncate());
                     ui.add(
-                        egui::Label::new(RichText::new(&f.data_type).size(10.0).color(t.subtle)).truncate(),
+                        egui::Label::new(RichText::new(&f.data_type).size(11.0).color(t.subtle)).truncate(),
                     );
                 });
                 ui.horizontal(|ui| {
@@ -329,7 +330,7 @@ fn insert_rows(ui: &mut egui::Ui, tab_id: u64, fields: &mut [InsertField]) -> Op
                         (FieldMode::Value, "Value"),
                     ] {
                         let enabled = mode != FieldMode::Null || f.nullable;
-                        let b = egui::Button::new(RichText::new(label).size(11.0)).selected(f.mode == mode);
+                        let b = egui::Button::new(RichText::new(label).size(12.0)).selected(f.mode == mode);
                         if ui.add_enabled(enabled, b).clicked() {
                             f.mode = mode;
                         }
@@ -342,11 +343,7 @@ fn insert_rows(ui: &mut egui::Ui, tab_id: u64, fields: &mut [InsertField]) -> Op
                             let b = egui::Button::new(
                                 theme::icon(icon::MAGNIFYING_GLASS).color(t.muted_foreground),
                             );
-                            if ui
-                                .add(b)
-                                .on_hover_text(format!("Pick from {}", fk.table))
-                                .clicked()
-                            {
+                            if ui.add(b).tip(format!("Pick from {}", fk.table)).clicked() {
                                 pick = Some(i);
                             }
                         }
@@ -395,7 +392,8 @@ fn value_editor(ui: &mut egui::Ui, f: &mut InsertField) {
             TextEdit::singleline(&mut f.text)
                 .font(egui::FontId::monospace(12.5))
                 .desired_width(220.0),
-        );
+        )
+        .named(&f.name);
     }
 }
 

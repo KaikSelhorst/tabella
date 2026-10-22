@@ -71,6 +71,11 @@ pub struct Tokens {
     pub hover: Color32,
     /// Hairlines between cells and panels; kept low-contrast so the grid doesn't look like a cage.
     pub border: Color32,
+    /// Outline of controls (inputs, checkboxes, radio buttons, buttons): 3:1 against every
+    /// surface, so a field can be told from the panel it sits on (WCAG 1.4.11).
+    pub control: Color32,
+    /// The same outline under the pointer.
+    pub control_hover: Color32,
     pub foreground: Color32,
     pub muted_foreground: Color32,
     /// Row numbers, placeholders, NULL.
@@ -91,6 +96,8 @@ pub struct Tokens {
     pub date: Color32,
     /// Text on the accent (primary buttons).
     pub on_accent: Color32,
+    /// Text on a destructive fill (Delete, Run anyway).
+    pub on_destructive: Color32,
 }
 
 thread_local! {
@@ -132,6 +139,8 @@ fn build_light_tokens() -> Tokens {
         card: brand(0.975),
         hover: brand(0.945),
         border: brand(0.885),
+        control: brand(0.60),
+        control_hover: brand(0.48),
         foreground: brand(0.22),
         muted_foreground: brand(0.45),
         subtle: brand(0.53),
@@ -139,13 +148,14 @@ fn build_light_tokens() -> Tokens {
         accent_text: oklch(0.50, 0.15, 128.0),
         ring: mix(oklch(0.58, 0.16, 125.0), 0.8, background),
         selection: mix(lime, 0.22, background),
-        destructive: oklch(0.55, 0.2, 25.0),
+        destructive: oklch(0.53, 0.2, 25.0),
         warning: oklch(0.55, 0.14, 65.0),
         info: oklch(0.50, 0.16, 264.0),
         number: oklch(0.48, 0.13, 240.0),
         boolean: oklch(0.50, 0.17, 300.0),
         date: oklch(0.50, 0.08, 65.0),
         on_accent: brand(0.18),
+        on_destructive: brand(1.0),
     }
 }
 
@@ -159,6 +169,8 @@ fn build_tokens() -> Tokens {
         card: brand(0.19),
         hover: brand(0.205),
         border: brand(0.235),
+        control: brand(0.50),
+        control_hover: brand(0.62),
         foreground: brand(0.92),
         muted_foreground: brand(0.64),
         subtle: brand(0.60),
@@ -166,13 +178,15 @@ fn build_tokens() -> Tokens {
         accent_text: lime,
         ring: mix(lime, 0.65, background),
         selection: mix(lime, 0.12, background),
-        destructive: oklch(0.62, 0.19, 25.0),
+        // Light enough for red text on its own tinted bands, and for dark text on a red button.
+        destructive: oklch(0.68, 0.19, 25.0),
         warning: oklch(0.80, 0.13, 75.0),
         info: oklch(0.72, 0.13, 264.0),
         number: oklch(0.80, 0.09, 235.0),
         boolean: oklch(0.74, 0.14, 300.0),
         date: oklch(0.76, 0.045, 75.0),
         on_accent: background,
+        on_destructive: background,
     }
 }
 
@@ -224,11 +238,11 @@ pub fn apply(ctx: &egui::Context) {
     w.noninteractive.fg_stroke = Stroke::new(1.0, t.foreground);
     w.inactive.bg_fill = t.card;
     w.inactive.weak_bg_fill = t.card;
-    w.inactive.bg_stroke = Stroke::new(1.0, t.border);
+    w.inactive.bg_stroke = Stroke::new(1.0, t.control);
     w.inactive.fg_stroke = Stroke::new(1.0, t.foreground);
     w.hovered.bg_fill = brand(0.24);
     w.hovered.weak_bg_fill = brand(0.24);
-    w.hovered.bg_stroke = Stroke::new(1.0, brand(0.32));
+    w.hovered.bg_stroke = Stroke::new(1.0, t.control_hover);
     w.hovered.fg_stroke = Stroke::new(1.0, t.foreground);
     w.active.bg_fill = brand(0.28);
     w.active.weak_bg_fill = brand(0.28);
@@ -236,7 +250,7 @@ pub fn apply(ctx: &egui::Context) {
     w.active.fg_stroke = Stroke::new(1.0, t.foreground);
     w.open.bg_fill = brand(0.24);
     w.open.weak_bg_fill = brand(0.24);
-    w.open.bg_stroke = Stroke::new(1.0, brand(0.32));
+    w.open.bg_stroke = Stroke::new(1.0, t.control_hover);
     w.open.fg_stroke = Stroke::new(1.0, t.foreground);
     for s in [
         &mut w.noninteractive,
@@ -273,11 +287,44 @@ pub fn apply(ctx: &egui::Context) {
             (TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional)),
             (TextStyle::Body, FontId::new(13.0, FontFamily::Proportional)),
             (TextStyle::Button, FontId::new(13.0, FontFamily::Proportional)),
-            (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
+            (TextStyle::Small, FontId::new(12.0, FontFamily::Proportional)),
             (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
         ]
         .into();
     });
+}
+
+/// Names for screen readers. An icon-only button's own label is a glyph from the icon font,
+/// which a screen reader can't read, so it is named after its tooltip instead.
+pub trait A11y {
+    /// The widget's name for screen readers, replacing the text of its label.
+    fn named(self, name: &str) -> Self;
+    /// A tooltip that also names the widget.
+    fn tip(self, text: impl Into<String>) -> Self;
+}
+
+impl A11y for egui::Response {
+    fn named(self, name: &str) -> Self {
+        self.ctx.accesskit_node_builder(self.id, |b| b.set_label(name));
+        self
+    }
+
+    fn tip(self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        self.named(&text).on_hover_text(text)
+    }
+}
+
+/// Gives a dialog's safe button (Cancel, Back) the focus when the dialog opens, so an Enter or
+/// Space meant for something else can't confirm a destructive action.
+pub fn focus_on_open(ui: &egui::Ui, button: &egui::Response) {
+    let id = button.id.with("focus_on_open");
+    let pass = ui.ctx().cumulative_pass_nr();
+    let shown_before = ui.data(|d| d.get_temp::<u64>(id)).is_some_and(|p| p + 1 >= pass);
+    if !shown_before {
+        button.request_focus();
+    }
+    ui.data_mut(|d| d.insert_temp(id, pass));
 }
 
 pub fn icon_family() -> FontFamily {
@@ -345,7 +392,49 @@ pub fn tag_color(tag: crate::db::Tag) -> Color32 {
         Tag::Blue => 255.0,
         Tag::Violet => 300.0,
     };
-    oklch(0.70, 0.16, hue)
+    // Darker on the light theme: the band and the dots must stand out from a white page.
+    oklch(if is_light() { 0.55 } else { 0.70 }, 0.16, hue)
+}
+
+/// Fades the edges of a sideways scroll area where more content lies beyond, since its scroll
+/// bar only shows on hover: tabs cut at the left, columns hidden past the right edge.
+pub fn scroll_fades(ui: &egui::Ui, viewport: egui::Rect, offset: f32, content: f32, bg: Color32, left: bool) {
+    const WIDTH: f32 = 28.0;
+    let fade = |rect: egui::Rect, opaque_left: bool| {
+        let (a, b) = if opaque_left {
+            (bg, Color32::TRANSPARENT)
+        } else {
+            (Color32::TRANSPARENT, bg)
+        };
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(rect.left_top(), a);
+        mesh.colored_vertex(rect.right_top(), b);
+        mesh.colored_vertex(rect.right_bottom(), b);
+        mesh.colored_vertex(rect.left_bottom(), a);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        ui.painter().with_clip_rect(viewport).add(mesh);
+    };
+    if left && offset > 1.0 {
+        fade(
+            egui::Rect::from_min_size(viewport.min, egui::vec2(WIDTH, viewport.height())),
+            true,
+        );
+    }
+    if content - offset - viewport.width() > 1.0 {
+        let min = egui::pos2(viewport.right() - WIDTH, viewport.top());
+        fade(
+            egui::Rect::from_min_size(min, egui::vec2(WIDTH, viewport.height())),
+            false,
+        );
+    }
+}
+
+/// A dialog over a dimmed window. egui's default backdrop barely shows on the dark theme, and
+/// the dialog then reads as part of the page behind it.
+pub fn modal(id: egui::Id) -> egui::Modal {
+    let alpha = if is_light() { 80 } else { 160 };
+    egui::Modal::new(id).backdrop_color(Color32::from_black_alpha(alpha))
 }
 
 /// Frame shared by every dialog (connection form, confirmations, palette, master password).
@@ -380,7 +469,11 @@ pub fn primary_button(glyph: Option<&str>, text: &str) -> egui::Button<'static> 
         Some(g) => icon_text(g, text, t.on_accent, t.on_accent).into(),
         None => egui::RichText::new(text).color(t.on_accent).into(),
     };
-    egui::Button::new(label).fill(t.lime)
+    // On the light theme lime is too pale to outline itself against the page.
+    let edge = if is_light() { t.accent_text } else { t.lime };
+    egui::Button::new(label)
+        .fill(t.lime)
+        .stroke(Stroke::new(1.0, edge))
 }
 
 /// Outline button: faint white tint over the surface, border-colored stroke.
@@ -388,7 +481,7 @@ pub fn outline_button(text: impl Into<String>) -> egui::Button<'static> {
     let t = tokens();
     egui::Button::new(text.into())
         .fill(mix(t.foreground, 0.05, t.background))
-        .stroke(Stroke::new(1.0, t.border))
+        .stroke(Stroke::new(1.0, t.control))
 }
 
 /// Underline tab with a leading icon: active = foreground with a 2px lime bar, inactive = muted.
@@ -524,8 +617,69 @@ mod tests {
             }
             // The hierarchy stays: subtle is still the faintest.
             assert!(contrast(t.subtle, t.background) < contrast(t.muted_foreground, t.background));
-            // Text on the accent (primary buttons).
+            // Text on the accent (primary buttons) and on the red of destructive ones.
             assert!(contrast(t.on_accent, t.lime) >= 4.5);
+            let r = contrast(t.on_destructive, t.destructive);
+            assert!(r >= 4.5, "on_destructive: {r:.2}");
         }
+    }
+
+    /// Control outlines (and their hover state) stand out from every surface: WCAG 1.4.11
+    /// asks 3:1 for what identifies a control. The light theme's primary button gets an edge
+    /// in the accent text color, since its lime fill is paler than that.
+    #[test]
+    fn controls_are_visible() {
+        for t in [build_tokens(), build_light_tokens()] {
+            for (surface, bg) in [
+                ("background", t.background),
+                ("sidebar", t.sidebar),
+                ("card", t.card),
+            ] {
+                for (name, c) in [("control", t.control), ("control_hover", t.control_hover)] {
+                    let r = contrast(c, bg);
+                    assert!(r >= 3.0, "{name} on {surface}: {r:.2}");
+                }
+            }
+        }
+        assert!(contrast(build_light_tokens().accent_text, build_light_tokens().background) >= 3.0);
+    }
+
+    /// Text on the tinted bands and cells: an error in red on its pink band, pending edits,
+    /// selected cells, the "exported" band.
+    #[test]
+    fn text_on_tints_is_readable() {
+        for t in [build_tokens(), build_light_tokens()] {
+            let tint = |c, pct| mix(c, pct, t.background);
+            for (name, fg, bg) in [
+                ("error band", t.destructive, tint(t.destructive, 0.12)),
+                ("plan hot spot", t.foreground, tint(t.destructive, 0.22)),
+                ("deleted row", t.muted_foreground, tint(t.destructive, 0.14)),
+                ("edited cell", t.foreground, tint(t.warning, 0.18)),
+                ("selected cell", t.foreground, t.selection),
+                ("current match", t.foreground, tint(t.warning, 0.45)),
+                ("exported band", t.foreground, tint(t.lime, 0.10)),
+            ] {
+                let r = contrast(fg, bg);
+                assert!(r >= 4.5, "{name} (light: {}): {r:.2}", t.background.r() > 128);
+            }
+        }
+    }
+
+    /// Connection colors (window band, the dot by the name) read on the sidebar in both themes.
+    #[test]
+    fn tag_colors_are_visible() {
+        for light in [false, true] {
+            set_light(light);
+            let t = if light {
+                build_light_tokens()
+            } else {
+                build_tokens()
+            };
+            for tag in crate::db::Tag::ALL {
+                let r = contrast(tag_color(tag), t.sidebar);
+                assert!(r >= 3.0, "{tag:?} (light: {light}): {r:.2}");
+            }
+        }
+        set_light(false);
     }
 }

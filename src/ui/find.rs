@@ -1,5 +1,6 @@
 //! Find and replace in the SQL editor: matching, highlighting in the layout, and the bar.
 
+use crate::ui::theme::A11y;
 use std::ops::Range;
 
 use eframe::egui::{self, Key, RichText, TextEdit, epaint::text::ByteIndex, text::LayoutJob};
@@ -140,13 +141,13 @@ pub fn find_bar(ui: &mut egui::Ui, st: &mut FindState, matches: usize) -> Option
                 } else {
                     t.subtle
                 };
-                ui.label(RichText::new(count).size(11.0).color(color));
+                ui.label(RichText::new(count).size(12.0).color(color));
                 let arrow = |ui: &mut egui::Ui, glyph: &str, tip: &str| {
                     ui.add_enabled(
                         matches > 0,
                         egui::Button::new(theme::icon(glyph).color(t.muted_foreground)).frame(false),
                     )
-                    .on_hover_text(tip)
+                    .tip(tip)
                     .clicked()
                 };
                 if arrow(ui, icon::ARROW_UP, "Previous (Shift+Enter)") {
@@ -191,7 +192,7 @@ pub fn find_bar(ui: &mut egui::Ui, st: &mut FindState, matches: usize) -> Option
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add(egui::Button::new(theme::icon(icon::X).color(t.muted_foreground)).frame(false))
-                        .on_hover_text("Close (Esc)")
+                        .tip("Close (Esc)")
                         .clicked()
                     {
                         action = Some(FindAction::Close);

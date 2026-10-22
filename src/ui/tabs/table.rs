@@ -1,6 +1,7 @@
 //! The table browser tab: filter bar, pending changes, insert form and CSV import.
 
 use super::*;
+use crate::ui::theme::A11y;
 
 /// Narrowest the WHERE filter gets before the toolbar turns compact.
 const FILTER_MIN: f32 = 260.0;
@@ -296,7 +297,7 @@ pub(super) fn confirm_save(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     let (edits, deletes) = ts.change_counts();
     let stmts = ts.change_statements(k);
     let (mut go, mut cancel) = (false, false);
-    let modal = egui::Modal::new(egui::Id::new(("confirm_save", tab.id)))
+    let modal = theme::modal(egui::Id::new(("confirm_save", tab.id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(520.0);
@@ -389,7 +390,7 @@ pub(super) fn filters_menu(
     let name_id = egui::Id::new(("filter_name", tab_id));
     ui.menu_button(theme::icon(icon::FUNNEL).size(15.0).color(color), |ui| {
         ui.set_width(340.0);
-        ui.label(egui::RichText::new("SAVED FILTERS").size(11.0).color(t.subtle));
+        ui.label(egui::RichText::new("SAVED FILTERS").size(12.0).color(t.subtle));
         if mine.is_empty() {
             ui.label(egui::RichText::new("No saved filters for this table").color(t.subtle));
         }
@@ -410,7 +411,7 @@ pub(super) fn filters_menu(
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
                         .add(egui::Button::new(theme::icon(icon::X).size(11.0).color(t.subtle)).frame(false))
-                        .on_hover_text("Delete filter")
+                        .tip("Delete filter")
                         .clicked()
                     {
                         action = Some(FilterAction::Delete(f.id.clone()));
@@ -444,7 +445,7 @@ pub(super) fn filters_menu(
         ui.data_mut(|d| d.insert_temp(name_id, name));
     })
     .response
-    .on_hover_text("Saved filters");
+    .tip("Saved filters");
     action
 }
 
@@ -473,7 +474,7 @@ fn pager(
                 ui.label(egui::RichText::new(status).small().color(t.muted_foreground));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let next = egui::Button::new(theme::icon(icon::CARET_RIGHT)).frame(false);
-                    if ui.add_enabled(full, next).clicked() {
+                    if ui.add_enabled(full, next).tip("Next page").clicked() {
                         ts.page += 1;
                         reload_now = true;
                     }
@@ -497,7 +498,7 @@ fn pager(
                             .color(t.muted_foreground),
                     );
                     let prev = egui::Button::new(theme::icon(icon::CARET_LEFT)).frame(false);
-                    if ui.add_enabled(ts.page > 0, prev).clicked() {
+                    if ui.add_enabled(ts.page > 0, prev).tip("Previous page").clicked() {
                         ts.page -= 1;
                         reload_now = true;
                     }
@@ -542,6 +543,7 @@ fn toolbar_buttons(
             let code = theme::tool(icon::CODE, "View code", compact, t.muted_foreground, t.foreground);
             b.view_source = ui
                 .button(code)
+                .named("View code")
                 .on_hover_text("The view's definition, in the editor")
                 .clicked();
         } else {
@@ -550,13 +552,13 @@ fn toolbar_buttons(
                     !read_only,
                     theme::primary_button(Some(icon::PLUS), if compact { "" } else { "Record" }),
                 )
-                .on_hover_text("New record")
+                .tip("New record")
                 .on_disabled_hover_text("Read-only connection")
                 .clicked();
         }
         if ui
             .button(theme::icon(icon::ARROWS_CLOCKWISE))
-            .on_hover_text("Reload (F5)")
+            .tip("Reload (F5)")
             .clicked()
         {
             b.reload = true;
@@ -569,7 +571,7 @@ fn toolbar_buttons(
                     !read_only,
                     egui::Button::new(theme::icon(icon::UPLOAD_SIMPLE).color(t.muted_foreground)),
                 )
-                .on_hover_text("Import CSV or Excel (or drag the file onto the window)")
+                .tip("Import CSV or Excel (or drag the file onto the window)")
                 .on_disabled_hover_text("Read-only connection")
                 .clicked();
         let structure = theme::tool(
@@ -581,6 +583,7 @@ fn toolbar_buttons(
         );
         b.structure = ui
             .button(structure)
+            .named("Structure")
             .on_hover_text("Structure · columns, indexes and DDL")
             .clicked();
         let used = start - ui.cursor().right();

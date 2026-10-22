@@ -122,7 +122,7 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         ui.add_space(12.0);
         ui.label(
             egui::RichText::new(format!("{} quer(ies)", list.len()))
-                .size(11.0)
+                .size(12.0)
                 .color(t.subtle),
         );
     });
@@ -150,7 +150,7 @@ pub(super) fn history_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     )
                     .truncate()
                     .min_size(egui::vec2(ui.available_width(), row_h - 2.0))
-                    .right_text(egui::RichText::new(right).size(11.0).color(t.subtle)),
+                    .right_text(egui::RichText::new(right).size(12.0).color(t.subtle)),
                 );
                 if r.clicked() {
                     select = Some((e.conn.clone(), e.sql.clone()));

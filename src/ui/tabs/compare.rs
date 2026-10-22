@@ -37,7 +37,7 @@ pub(super) fn compare_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     });
                     ui.label(
                         egui::RichText::new("The generated SQL gives the target the source's structure. Data isn't touched.")
-                            .size(11.0)
+                            .size(12.0)
                             .color(t.subtle),
                     );
                     ui.add_space(8.0);
@@ -87,8 +87,9 @@ pub(super) fn compare_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                                     });
                                 let same_conn = st.target_conn == s.cfg.id;
                                 if pg {
-                                    ui.label(egui::RichText::new("database").color(t.subtle));
-                                    ui.add(TextEdit::singleline(&mut st.target_db).desired_width(110.0));
+                                    let label = ui.label(egui::RichText::new("database").color(t.subtle));
+                                    ui.add(TextEdit::singleline(&mut st.target_db).desired_width(110.0))
+                                        .labelled_by(label.id);
                                 }
                                 ui.label(egui::RichText::new(side).color(t.subtle));
                                 // Here the names are known; elsewhere they are typed.
@@ -178,7 +179,7 @@ pub(super) fn compare_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                                 "The target is another connection: the SQL doesn't open here so it doesn't run on the wrong database. \
                                  Connect to the target and use \"Run .sql file\" (or paste it into an editor there).",
                             )
-                            .size(11.0)
+                            .size(12.0)
                             .color(t.warning),
                         );
                     }

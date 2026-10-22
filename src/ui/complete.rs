@@ -485,14 +485,14 @@ pub fn popup(
                             rect.right_center() - egui::vec2(8.0, 0.0),
                             egui::Align2::RIGHT_CENTER,
                             &it.detail,
-                            egui::FontId::proportional(11.0),
+                            egui::FontId::proportional(12.0),
                             t.subtle,
                         );
                     }
                     ui.add_space(2.0);
                     ui.label(
                         egui::RichText::new("Tab/Enter accepts · Esc closes")
-                            .size(10.0)
+                            .size(11.0)
                             .color(t.subtle),
                     );
                 });

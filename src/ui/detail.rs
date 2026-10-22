@@ -1,6 +1,7 @@
 //! Right-hand panel showing the selected row as a vertical form: easier to read and edit
 //! than a wide grid.
 
+use crate::ui::theme::A11y;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -128,7 +129,7 @@ fn json_tree(ui: &mut egui::Ui, id: egui::Id, key: Option<&str>, path: &str, v: 
                 if shown == JSON_CHILDREN {
                     ui.label(
                         RichText::new(format!("… {} more", n - shown))
-                            .size(11.0)
+                            .size(12.0)
                             .color(t.subtle),
                     );
                     break;
@@ -258,7 +259,7 @@ pub fn detail_panel(ui: &mut egui::Ui, d: &DetailRow) -> Option<DetailAction> {
             if can_edit {
                 ui.label(
                     RichText::new("Edit and leave the field to save")
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.subtle),
                 );
             }
@@ -284,7 +285,7 @@ fn detail_header(ui: &mut egui::Ui, row_number: usize) -> Option<DetailAction> {
             ui.spacing_mut().item_spacing.x = 8.0;
             let button = |ui: &mut egui::Ui, glyph: &str, tip: &str| {
                 ui.add(egui::Button::new(theme::icon(glyph).color(t.muted_foreground)).frame(false))
-                    .on_hover_text(tip)
+                    .tip(tip)
                     .clicked()
             };
             if button(ui, icon::X, "Close panel") {
@@ -314,26 +315,22 @@ fn field_header(ui: &mut egui::Ui, d: &DetailRow, f: &Field, json: Option<bool>)
         if c.is_some_and(|c| c.pk) {
             ui.label(theme::icon(icon::KEY).size(11.0).color(t.warning));
         }
-        ui.label(RichText::new(name).size(11.0).color(t.muted_foreground));
+        ui.label(RichText::new(name).size(12.0).color(t.muted_foreground));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if can_edit && let Some(fk) = c.and_then(|c| c.references.as_ref()) {
                 let pick = egui::Button::new(
                     theme::icon(icon::MAGNIFYING_GLASS)
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.muted_foreground),
                 )
                 .frame(false);
-                if ui
-                    .add(pick)
-                    .on_hover_text(format!("Pick from {}", fk.table))
-                    .clicked()
-                {
+                if ui.add(pick).tip(format!("Pick from {}", fk.table)).clicked() {
                     action = Some(DetailAction::PickFk(ci));
                 }
             }
             let open = egui::Button::new(
                 theme::icon(icon::ARROWS_OUT_SIMPLE)
-                    .size(11.0)
+                    .size(12.0)
                     .color(t.muted_foreground),
             )
             .frame(false);
@@ -342,7 +339,7 @@ fn field_header(ui: &mut egui::Ui, d: &DetailRow, f: &Field, json: Option<bool>)
             if kinds[ci] == ValueKind::Text
                 && ui
                     .add(open)
-                    .on_hover_text("Open in the large editor (Shift+Enter in the grid)")
+                    .tip("Open in the large editor (Shift+Enter in the grid)")
                     .clicked()
             {
                 action = Some(DetailAction::Open(ci));
@@ -355,7 +352,7 @@ fn field_header(ui: &mut egui::Ui, d: &DetailRow, f: &Field, json: Option<bool>)
                 && kinds[ci] != ValueKind::Bool
                 && c.is_none_or(|c| c.enum_values.is_empty())
             {
-                let null = egui::Button::new(RichText::new("NULL").size(10.0).color(t.subtle)).frame(false);
+                let null = egui::Button::new(RichText::new("NULL").size(11.0).color(t.subtle)).frame(false);
                 if ui.add(null).on_hover_text("Set NULL").clicked() {
                     action = Some(DetailAction::Commit(ci, None));
                 }
@@ -368,12 +365,12 @@ fn field_header(ui: &mut egui::Ui, d: &DetailRow, f: &Field, json: Option<bool>)
                 };
                 let b =
                     egui::Button::new(theme::icon(glyph).size(11.0).color(t.muted_foreground)).frame(false);
-                if ui.add(b).on_hover_text(tip).clicked() {
+                if ui.add(b).tip(tip).clicked() {
                     ui.data_mut(|d| d.insert_temp(tree_id, !as_text));
                 }
             }
             if let Some(c) = c {
-                ui.label(RichText::new(&c.data_type).size(10.0).color(t.subtle));
+                ui.label(RichText::new(&c.data_type).size(11.0).color(t.subtle));
             }
         });
     });
@@ -463,11 +460,13 @@ fn text_field(ui: &mut egui::Ui, d: &DetailRow, f: &Field) -> Option<DetailActio
     } else {
         TextEdit::singleline(&mut text)
     };
-    let r = ui.add(
-        edit.font(FontId::monospace(12.0))
-            .hint_text(if value.is_none() { "NULL" } else { "" })
-            .desired_width(f32::INFINITY),
-    );
+    let r = ui
+        .add(
+            edit.font(FontId::monospace(12.0))
+                .hint_text(if value.is_none() { "NULL" } else { "" })
+                .desired_width(f32::INFINITY),
+        )
+        .named(f.name);
     if r.lost_focus() && text != original {
         action = Some(DetailAction::Commit(ci, Some(text.clone())));
     }

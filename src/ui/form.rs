@@ -31,7 +31,7 @@ impl App {
         let test = self.connections.conn_test.as_ref().filter(|t| t.key == key);
         let mut start_test = false;
         // Modal dims everything behind it and closes on Esc / click outside.
-        let modal = egui::Modal::new(egui::Id::new("connection_form"))
+        let modal = theme::modal(egui::Id::new("connection_form"))
             .frame(theme::modal_frame(16))
             .show(ctx, |ui| {
                 ui.set_width(380.0);
@@ -69,12 +69,13 @@ impl App {
                                 ui.label("Color");
                                 color_picker(ui, &mut c.color);
                                 ui.end_row();
-                                ui.label("Group");
+                                let label = ui.label("Group");
                                 ui.add(
                                     TextEdit::singleline(&mut c.group)
                                         .hint_text("e.g. Production")
                                         .desired_width(180.0),
                                 )
+                                .labelled_by(label.id)
                                 .on_hover_text("Connections with the same group are listed together");
                                 ui.end_row();
                                 if c.kind != Kind::Sqlite {
@@ -125,7 +126,7 @@ impl App {
         let create = p.mode == MasterMode::Create;
         let working = p.working.is_some();
         let (mut submit, mut skip) = (false, false);
-        let modal = egui::Modal::new(egui::Id::new("master_password")).frame(theme::modal_frame(16)).show(ctx, |ui| {
+        let modal = theme::modal(egui::Id::new("master_password")).frame(theme::modal_frame(16)).show(ctx, |ui| {
             ui.set_width(400.0);
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::LOCK_KEY).size(16.0).color(t.accent_text));
@@ -175,7 +176,7 @@ impl App {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("There's no way to recover the master password if you forget it.")
-                    .size(11.0)
+                    .size(12.0)
                     .color(t.subtle),
             );
             ui.add_space(16.0);
@@ -211,13 +212,15 @@ fn url_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
     let (mut url, url_error) = ui
         .data(|d| d.get_temp::<(String, Option<String>)>(url_id))
         .unwrap_or_default();
-    ui.label("URL");
+    let label = ui.label("URL");
     ui.horizontal(|ui| {
-        let r = ui.add(
-            TextEdit::singleline(&mut url)
-                .hint_text("postgres://user:password@host:5432/database")
-                .desired_width(FIELD_WIDTH - 80.0),
-        );
+        let r = ui
+            .add(
+                TextEdit::singleline(&mut url)
+                    .hint_text("postgres://user:password@host:5432/database")
+                    .desired_width(FIELD_WIDTH - 80.0),
+            )
+            .labelled_by(label.id);
         let fill = ui
             .add_enabled(!url.trim().is_empty(), egui::Button::new("Fill in"))
             .clicked()
@@ -241,25 +244,26 @@ fn url_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
         .and_then(|(_, e)| e)
     {
         ui.label("");
-        ui.label(egui::RichText::new(e).size(11.0).color(t.destructive));
+        ui.label(egui::RichText::new(e).size(12.0).color(t.destructive));
         ui.end_row();
     }
 }
 
 fn name_rows(ui: &mut egui::Ui, c: &mut ConnConfig, duplicate: bool) {
     let t = theme::tokens();
-    ui.label("Name");
+    let label = ui.label("Name");
     ui.add(
         TextEdit::singleline(&mut c.name)
-            .hint_text("e.g. production")
+            .hint_text("required, e.g. production")
             .desired_width(FIELD_WIDTH),
-    );
+    )
+    .labelled_by(label.id);
     ui.end_row();
     if duplicate {
         ui.label("");
         ui.label(
             egui::RichText::new("A connection with this name already exists")
-                .size(11.0)
+                .size(12.0)
                 .color(t.destructive),
         );
         ui.end_row();
@@ -293,9 +297,11 @@ fn kind_row(ui: &mut egui::Ui, c: &mut ConnConfig) {
 
 /// Host, port, user, password, database and encryption.
 fn server_rows(ui: &mut egui::Ui, c: &mut ConnConfig, is_new: bool) {
-    ui.label("Host");
+    let label = ui.label("Host");
     let was_local = c.is_local();
-    let host = ui.add(TextEdit::singleline(&mut c.host).desired_width(FIELD_WIDTH));
+    let host = ui
+        .add(TextEdit::singleline(&mut c.host).desired_width(FIELD_WIDTH))
+        .labelled_by(label.id);
     // A new connection to another machine starts encrypted (and verified),
     // unless the user already chose otherwise for the previous host. Through
     // SSH the tunnel already encrypts.
@@ -303,25 +309,29 @@ fn server_rows(ui: &mut egui::Ui, c: &mut ConnConfig, is_new: bool) {
         c.ssl = !c.is_local();
     }
     ui.end_row();
-    ui.label("Port");
-    ui.add(egui::DragValue::new(&mut c.port).range(1..=65535));
+    let label = ui.label("Port");
+    ui.add(egui::DragValue::new(&mut c.port).range(1..=65535))
+        .labelled_by(label.id);
     ui.end_row();
-    ui.label("User");
-    ui.add(TextEdit::singleline(&mut c.user).desired_width(FIELD_WIDTH));
+    let label = ui.label("User");
+    ui.add(TextEdit::singleline(&mut c.user).desired_width(FIELD_WIDTH))
+        .labelled_by(label.id);
     ui.end_row();
-    ui.label("Password");
+    let label = ui.label("Password");
     ui.add(
         TextEdit::singleline(&mut c.password)
             .password(true)
             .desired_width(FIELD_WIDTH),
-    );
+    )
+    .labelled_by(label.id);
     ui.end_row();
-    ui.label("Database");
+    let label = ui.label("Database");
     ui.add(
         TextEdit::singleline(&mut c.database)
             .hint_text("optional")
             .desired_width(FIELD_WIDTH),
-    );
+    )
+    .labelled_by(label.id);
     ui.end_row();
     ui.label("SSL/TLS");
     ui.checkbox(&mut c.ssl, "Encrypted connection");
@@ -339,7 +349,7 @@ fn server_rows(ui: &mut egui::Ui, c: &mut ConnConfig, is_new: bool) {
             Kind::MySql => "No encryption: password and data travel in plain text",
             Kind::Sqlite => "",
         };
-        ui.label(egui::RichText::new(msg).size(11.0).color(theme::tokens().warning));
+        ui.label(egui::RichText::new(msg).size(12.0).color(theme::tokens().warning));
         ui.end_row();
     }
 }
@@ -382,19 +392,20 @@ fn protection_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
 /// The statement timeout and the SSH tunnel.
 fn timeout_and_ssh_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
     let t = theme::tokens();
-    ui.label("Timeout");
+    let label = ui.label("Timeout");
     ui.horizontal(|ui| {
         ui.add(
             egui::DragValue::new(&mut c.timeout_secs)
                 .range(0..=86_400)
                 .suffix(" s"),
-        );
+        )
+        .labelled_by(label.id);
         let hint = if c.timeout_secs == 0 {
             "no limit"
         } else {
             "per query, on the server"
         };
-        ui.label(egui::RichText::new(hint).size(11.0).color(t.subtle));
+        ui.label(egui::RichText::new(hint).size(12.0).color(t.subtle));
     });
     ui.end_row();
     ui.label("SSH");
@@ -413,14 +424,17 @@ fn timeout_and_ssh_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
                 TextEdit::singleline(&mut ssh.user)
                     .hint_text("user")
                     .desired_width(80.0),
-            );
+            )
+            .on_hover_text("SSH user");
             ui.label("@");
             ui.add(
                 TextEdit::singleline(&mut ssh.host)
                     .hint_text("ssh server")
                     .desired_width(124.0),
-            );
-            ui.add(egui::DragValue::new(&mut ssh.port).range(1..=65535));
+            )
+            .on_hover_text("SSH server");
+            ui.add(egui::DragValue::new(&mut ssh.port).range(1..=65535))
+                .on_hover_text("SSH port");
         });
         ui.end_row();
         ui.label("");
@@ -433,7 +447,7 @@ fn timeout_and_ssh_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
         ui.label("");
         ui.label(
             egui::RichText::new("Host and port above are seen from the SSH server")
-                .size(11.0)
+                .size(12.0)
                 .color(t.subtle),
         );
         ui.end_row();
@@ -514,7 +528,7 @@ fn form_buttons(ui: &mut egui::Ui, cfg: &ConnConfig, duplicate: bool, testing: b
                 clicks.test = true;
             }
             if let Some(m) = missing.filter(|m| !m.is_empty()) {
-                ui.label(egui::RichText::new(m).size(11.0).color(t.warning));
+                ui.label(egui::RichText::new(m).size(12.0).color(t.warning));
             }
         },
     );
@@ -526,7 +540,7 @@ fn color_picker(ui: &mut egui::Ui, color: &mut Option<Tag>) {
     let t = theme::tokens();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let none = egui::RichText::new("none").size(11.0).color(if color.is_none() {
+        let none = egui::RichText::new("none").size(12.0).color(if color.is_none() {
             t.foreground
         } else {
             t.subtle
@@ -549,6 +563,10 @@ fn color_picker(ui: &mut egui::Ui, color: &mut Option<Tag>) {
                     egui::StrokeKind::Inside,
                 );
             }
+            let selected = *color == Some(tag);
+            r.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, selected, tag.label())
+            });
             if r.on_hover_text(tag.label()).clicked() {
                 *color = Some(tag);
             }
@@ -564,7 +582,7 @@ impl App {
         };
         let t = theme::tokens();
         let (mut save, mut cancel) = (false, false);
-        let modal = egui::Modal::new(egui::Id::new("favorite_prompt"))
+        let modal = theme::modal(egui::Id::new("favorite_prompt"))
             .frame(theme::modal_frame(16))
             .show(ctx, |ui| {
                 ui.set_width(420.0);
@@ -625,18 +643,19 @@ impl App {
 fn sqlite_file_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
     let t = theme::tokens();
     let msg_id = egui::Id::new("sqlite_file_msg");
-    ui.label("File");
+    let label = ui.label("File");
     ui.add(
         TextEdit::singleline(&mut c.database)
             .hint_text(r"C:\data\shop.db")
             .desired_width(FIELD_WIDTH),
-    );
+    )
+    .labelled_by(label.id);
     ui.end_row();
     ui.label("");
     let mut msg: Option<(bool, String)> = None;
     ui.horizontal(|ui| {
         let mut chosen: Option<std::path::PathBuf> = None;
-        if crate::files::NATIVE_DIALOGS && ui.button("Escolher…").clicked() {
+        if crate::files::NATIVE_DIALOGS && ui.button("Choose…").clicked() {
             chosen = crate::files::pick_database();
         }
         let create = ui
@@ -676,7 +695,7 @@ fn sqlite_file_rows(ui: &mut egui::Ui, c: &mut ConnConfig) {
     if let Some((error, text)) = ui.data(|d| d.get_temp::<(bool, String)>(msg_id)) {
         ui.label("");
         let color = if error { t.destructive } else { t.accent_text };
-        ui.label(egui::RichText::new(text).size(11.0).color(color));
+        ui.label(egui::RichText::new(text).size(12.0).color(color));
         ui.end_row();
     }
 }

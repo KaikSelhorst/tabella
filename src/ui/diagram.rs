@@ -155,7 +155,7 @@ fn diagram_header(
                     d.tables.len(),
                     d.zoom * 100.0
                 ))
-                .size(11.0)
+                .size(12.0)
                 .color(t.subtle),
             );
         });

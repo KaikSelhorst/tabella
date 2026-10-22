@@ -19,7 +19,7 @@ fn keycap(ui: &mut egui::Ui, keys: &str) {
             ui.label(
                 RichText::new(keys)
                     .monospace()
-                    .size(11.0)
+                    .size(12.0)
                     .color(t.muted_foreground),
             )
         });
@@ -158,7 +158,7 @@ fn connection_card(ui: &mut egui::Ui, c: &ConnConfig) -> egui::Response {
         badge.center(),
         Align2::CENTER_CENTER,
         label,
-        FontId::proportional(11.0),
+        FontId::proportional(12.0),
         color,
     );
     p.text(
@@ -181,7 +181,7 @@ fn connection_card(ui: &mut egui::Ui, c: &ConnConfig) -> egui::Response {
         } else {
             format!("{}@{}:{}{db}", c.user, c.host, c.port)
         },
-        FontId::proportional(11.0),
+        FontId::proportional(12.0),
         t.subtle,
     );
     p.text(

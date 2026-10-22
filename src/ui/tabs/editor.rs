@@ -1,6 +1,7 @@
 //! The SQL editor tab: toolbar, editor, parameters, previews and confirmations before running.
 
 use super::*;
+use crate::ui::theme::A11y;
 
 /// Room the editor toolbar keeps on its right for the panel toggle and "on database · schema".
 const RIGHT_ROOM: f32 = 200.0;
@@ -229,6 +230,7 @@ fn toolbar(
                     !busy,
                     egui::Button::new(theme::tool(icon::EYE, "Preview", compact, t.muted_foreground, t.foreground)),
                 )
+                .named("Preview")
                 .on_hover_text("Ctrl+Shift+Enter · how many and which rows this UPDATE/DELETE would change, without changing them")
                 .clicked()
         {
@@ -263,6 +265,7 @@ fn toolbar(
         let format = theme::tool(icon::TEXT_ALIGN_LEFT, "Format", compact, t.muted_foreground, t.foreground);
         if ui
             .button(format)
+            .named("Format")
             .on_hover_text("Format · Shift+Alt+F · formats the selection, if any")
             .clicked()
             || format_key
@@ -538,7 +541,7 @@ fn definition_hover(
                     ui.label(egui::RichText::new(&what).color(t.foreground));
                     ui.label(
                         egui::RichText::new("Ctrl+click opens the definition")
-                            .size(11.0)
+                            .size(12.0)
                             .color(t.subtle),
                     );
                 });
@@ -551,7 +554,7 @@ fn definition_hover(
                     }
                     ui.label(
                         egui::RichText::new(format!("{n} matches: Ctrl+click to choose"))
-                            .size(11.0)
+                            .size(12.0)
                             .color(t.subtle),
                     );
                 });
@@ -686,7 +689,9 @@ fn explain_menu(ui: &mut egui::Ui, busy: bool, compact: bool) -> Option<bool> {
             pick = Some(true);
             ui.close();
         }
-    });
+    })
+    .response
+    .named("Explain");
     pick
 }
 
@@ -711,7 +716,7 @@ fn repeat_menu(ui: &mut egui::Ui, repeat: &mut Option<u64>, enabled: bool, compa
         ui.menu_button(label, |ui| {
             ui.label(
                 egui::RichText::new("Runs the last query again on its own")
-                    .size(11.0)
+                    .size(12.0)
                     .color(t.subtle),
             );
             for (n, label) in [
@@ -729,6 +734,7 @@ fn repeat_menu(ui: &mut egui::Ui, repeat: &mut Option<u64>, enabled: bool, compa
             }
         })
         .response
+        .named("Repeat")
         .on_disabled_hover_text("Run a read query first (SELECT…)");
     });
 }
@@ -771,7 +777,7 @@ fn file_menu(ui: &mut egui::Ui, read_only: bool, has_file: bool) -> Option<Reque
         }
     })
     .response
-    .on_hover_text(if has_file {
+    .tip(if has_file {
         "This tab's .sql file"
     } else {
         "Open or save as a .sql file"
@@ -794,7 +800,7 @@ fn location_and_keys(ui: &mut egui::Ui, s: &Session, several: bool) {
     ui.add(
         egui::Label::new(
             egui::RichText::new(&here)
-                .size(11.0)
+                .size(12.0)
                 .monospace()
                 .color(t.muted_foreground),
         )
@@ -809,7 +815,7 @@ fn location_and_keys(ui: &mut egui::Ui, s: &Session, several: bool) {
         "Ctrl+Enter / F5"
     };
     if ui.available_width() > 160.0 {
-        ui.add(egui::Label::new(egui::RichText::new(keys).size(11.0).color(t.subtle)).truncate());
+        ui.add(egui::Label::new(egui::RichText::new(keys).size(12.0).color(t.subtle)).truncate());
     }
 }
 
@@ -884,7 +890,7 @@ fn definition_picker(ctx: &egui::Context, id: egui::Id) -> Option<definition::Ta
         .fixed_pos(at + egui::vec2(4.0, 12.0))
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.label(egui::RichText::new("Open which one?").size(11.0).color(t.subtle));
+                ui.label(egui::RichText::new("Open which one?").size(12.0).color(t.subtle));
                 for target in &found {
                     let b = egui::Button::new(egui::RichText::new(target.describe()).color(t.foreground))
                         .frame(false);
@@ -912,7 +918,7 @@ pub(super) fn table_tooltip(ui: &mut egui::Ui, s: &Session, t: &crate::db::Table
         if let Some(n) = t.estimate {
             ui.label(
                 egui::RichText::new(format!("~{} rows", palette::format_count(n)))
-                    .size(11.0)
+                    .size(12.0)
                     .color(tk.subtle),
             );
         }
@@ -932,20 +938,20 @@ pub(super) fn table_tooltip(ui: &mut egui::Ui, s: &Session, t: &crate::db::Table
                         .size(12.0)
                         .color(tk.foreground),
                 );
-                ui.label(egui::RichText::new(&c.data_type).size(11.0).color(tk.number));
+                ui.label(egui::RichText::new(&c.data_type).size(12.0).color(tk.number));
                 ui.end_row();
             }
         });
     if cols.len() > TOOLTIP_COLUMNS {
         ui.label(
             egui::RichText::new(format!("… {} more", cols.len() - TOOLTIP_COLUMNS))
-                .size(11.0)
+                .size(12.0)
                 .color(tk.subtle),
         );
     }
     ui.label(
         egui::RichText::new("Ctrl+click opens the table")
-            .size(11.0)
+            .size(12.0)
             .color(tk.subtle),
     );
 }
@@ -1033,7 +1039,7 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     let Some(p) = &mut ed.params else { return };
     let t = theme::tokens();
     let (mut go, mut cancel) = (false, false);
-    let modal = egui::Modal::new(egui::Id::new(("params", id)))
+    let modal = theme::modal(egui::Id::new(("params", id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(420.0);
@@ -1043,7 +1049,7 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
             });
             ui.label(
                 egui::RichText::new("Numbers and NULL go in as they are; anything else becomes quoted text.")
-                    .size(11.0)
+                    .size(12.0)
                     .color(t.subtle),
             );
             ui.add_space(8.0);
@@ -1052,17 +1058,19 @@ pub(super) fn params_prompt(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 .spacing([12.0, 8.0])
                 .show(ui, |ui| {
                     for (i, name) in p.names.iter().enumerate() {
-                        ui.label(
+                        let label = ui.label(
                             egui::RichText::new(format!(":{name}"))
                                 .monospace()
                                 .color(t.number),
                         );
                         let v = ed.param_values.entry(name.clone()).or_default();
-                        let r = ui.add(
-                            TextEdit::singleline(v)
-                                .font(egui::FontId::monospace(12.5))
-                                .desired_width(260.0),
-                        );
+                        let r = ui
+                            .add(
+                                TextEdit::singleline(v)
+                                    .font(egui::FontId::monospace(12.5))
+                                    .desired_width(260.0),
+                            )
+                            .labelled_by(label.id);
                         if i == 0 && !p.focused {
                             r.request_focus();
                             p.focused = true;
@@ -1107,7 +1115,7 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     let t = theme::tokens();
     let delete = sql::statement_words_first(&p.sql).is_some_and(|w| w == "DELETE");
     let (mut run, mut cancel) = (false, false);
-    let modal = egui::Modal::new(egui::Id::new(("preview", tab.id)))
+    let modal = theme::modal(egui::Id::new(("preview", tab.id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(720.0);
@@ -1116,7 +1124,7 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 ui.label(egui::RichText::new("Preview").size(15.0).color(t.foreground));
                 ui.label(
                     egui::RichText::new("nothing was changed")
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.subtle),
                 );
             });
@@ -1167,7 +1175,7 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                         let shown = d.sample.rows.len();
                         ui.label(
                             egui::RichText::new(format!("first {shown}, {what}"))
-                                .size(11.0)
+                                .size(12.0)
                                 .color(t.subtle),
                         );
                         ui.add_space(4.0);
@@ -1187,9 +1195,11 @@ pub(super) fn preview_dialog(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                 if ui.add_enabled(ready && !s.cfg.read_only, button).clicked() {
                     run = true;
                 }
-                if ui.add(theme::outline_button("Cancel")).clicked() {
-                    cancel = true;
+                let c = ui.add(theme::outline_button("Cancel"));
+                if delete {
+                    theme::focus_on_open(ui, &c);
                 }
+                cancel = c.clicked();
             });
         });
     let close = run || cancel || modal.should_close();
@@ -1216,7 +1226,7 @@ pub(super) fn preview_rows(ui: &mut egui::Ui, tab_id: u64, res: &QueryResult) {
                 .spacing([12.0, 4.0])
                 .show(ui, |ui| {
                     for c in &res.columns {
-                        ui.label(egui::RichText::new(c).size(11.0).color(t.subtle));
+                        ui.label(egui::RichText::new(c).size(12.0).color(t.subtle));
                     }
                     ui.end_row();
                     for row in &res.rows {
@@ -1261,7 +1271,7 @@ pub(super) fn confirm_run(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
     let t = theme::tokens();
     let risk = sql::script_risk(&sql);
     let (mut go, mut cancel) = (false, false);
-    let modal = egui::Modal::new(egui::Id::new(("confirm_run", tab.id)))
+    let modal = theme::modal(egui::Id::new(("confirm_run", tab.id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(440.0);
@@ -1303,7 +1313,9 @@ pub(super) fn confirm_run(ctx: &egui::Context, tab: &mut Tab, s: &Session) {
                     "Run anyway"
                 };
                 go = ui.add(danger_button(label)).clicked();
-                cancel = ui.add(theme::outline_button("Cancel")).clicked();
+                let c = ui.add(theme::outline_button("Cancel"));
+                theme::focus_on_open(ui, &c);
+                cancel = c.clicked();
             });
         });
     if go {
@@ -1354,7 +1366,7 @@ pub(super) fn favorites_menu(
                         .frame_when_inactive(false)
                         .truncate()
                         .min_size(egui::vec2(ui.available_width(), 22.0))
-                        .right_text(egui::RichText::new(scope).size(11.0).color(t.subtle)),
+                        .right_text(egui::RichText::new(scope).size(12.0).color(t.subtle)),
                 );
                 r.context_menu(|ui| {
                     if ui.button("Delete").clicked() {
@@ -1370,10 +1382,12 @@ pub(super) fn favorites_menu(
         });
         ui.label(
             egui::RichText::new("Right-click an item to delete it")
-                .size(10.0)
+                .size(11.0)
                 .color(t.subtle),
         );
-    });
+    })
+    .response
+    .named("Favorites");
     action
 }
 
@@ -1442,7 +1456,7 @@ pub(super) fn history_menu(
                         .min_size(egui::vec2(ui.available_width(), 22.0))
                         .right_text(
                             egui::RichText::new(history::ago(e.at, now))
-                                .size(11.0)
+                                .size(12.0)
                                 .color(t.subtle),
                         ),
                 );
@@ -1452,7 +1466,9 @@ pub(super) fn history_menu(
                 }
             }
         });
-    });
+    })
+    .response
+    .named("History");
     picked
 }
 

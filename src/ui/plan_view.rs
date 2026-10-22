@@ -1,6 +1,7 @@
 //! EXPLAIN as a tree: one row per step, with what it costs on its own and a bar showing its share,
 //! so the expensive step stands out without reading numbers.
 
+use crate::ui::theme::A11y;
 use eframe::egui::{self, Align, Layout, RichText};
 use std::fmt::Write as _;
 
@@ -78,7 +79,7 @@ pub fn plan_view(
                         .add(
                             egui::Button::new(theme::icon(icon::COPY).color(t.muted_foreground)).frame(false),
                         )
-                        .on_hover_text("Copy plan as text")
+                        .tip("Copy plan as text")
                         .clicked()
                     {
                         ui.ctx().copy_text(plan_text(plan));
@@ -151,11 +152,11 @@ pub fn plan_view(
                     row_layout(
                         ui,
                         |ui| {
-                            ui.label(RichText::new("STEP").size(11.0).color(t.subtle));
+                            ui.label(RichText::new("STEP").size(12.0).color(t.subtle));
                         },
                         |ui| {
                             for h in numbers.iter().rev() {
-                                number_cell(ui, RichText::new(*h).size(11.0).color(t.subtle));
+                                number_cell(ui, RichText::new(*h).size(12.0).color(t.subtle));
                             }
                         },
                     );
@@ -166,14 +167,14 @@ pub fn plan_view(
                         ui.add_space(16.0);
                         ui.horizontal(|ui| {
                             ui.label(theme::icon(icon::LIGHTBULB).color(t.warning));
-                            ui.label(RichText::new("INDEX SUGGESTION").size(11.0).color(t.subtle));
+                            ui.label(RichText::new("INDEX SUGGESTION").size(12.0).color(t.subtle));
                         });
                         ui.label(
                             RichText::new(
                                 "Large tables read in full to apply a filter. An index on the compared columns \
                                  usually avoids that; double-check before creating it in production.",
                             )
-                            .size(11.0)
+                            .size(12.0)
                             .color(t.subtle),
                         );
                         ui.add_space(4.0);
@@ -231,7 +232,7 @@ fn comparison_panel(ui: &mut egui::Ui, c: &crate::plan::Comparison) {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(theme::icon(icon::GIT_DIFF).color(t.accent_text));
-                ui.label(RichText::new("VS PINNED PLAN").size(11.0).color(t.subtle));
+                ui.label(RichText::new("VS PINNED PLAN").size(12.0).color(t.subtle));
                 // The headline: time when both ran, else planner cost.
                 let headline = c
                     .metrics
@@ -264,7 +265,7 @@ fn comparison_panel(ui: &mut egui::Ui, c: &crate::plan::Comparison) {
                 .spacing([24.0, 3.0])
                 .show(ui, |ui| {
                     for h in ["", "pinned", "now", "change"] {
-                        ui.label(RichText::new(h).size(11.0).color(t.subtle));
+                        ui.label(RichText::new(h).size(12.0).color(t.subtle));
                     }
                     ui.end_row();
                     for m in &c.metrics {
@@ -421,7 +422,7 @@ fn node_row(ui: &mut egui::Ui, plan: &Plan, n: &Node, depth: usize, weight: Opti
             ui.label(
                 RichText::new(n.details.join(" · "))
                     .monospace()
-                    .size(11.0)
+                    .size(12.0)
                     .color(t.subtle),
             );
         });

@@ -60,7 +60,7 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     "Reads the tables one by one (only columns where the value would fit). Meanwhile, the other tabs \
                      of this connection wait.",
                 )
-                .size(11.0)
+                .size(12.0)
                 .color(t.subtle),
             );
             if st.running || st.total > 0 {
@@ -106,7 +106,7 @@ pub(super) fn search_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                         .spacing([16.0, 6.0])
                         .show(ui, |ui| {
                             for h in ["table", "columns", "rows", ""] {
-                                ui.label(egui::RichText::new(h).size(11.0).color(t.subtle));
+                                ui.label(egui::RichText::new(h).size(12.0).color(t.subtle));
                             }
                             ui.end_row();
                             for h in &st.hits {

@@ -328,7 +328,7 @@ fn index_advice(
 ) -> Option<AdviceAction> {
     let t = theme::tokens();
     let mut action = None;
-    let modal = egui::Modal::new(egui::Id::new(("index_advice", tab_id)))
+    let modal = theme::modal(egui::Id::new(("index_advice", tab_id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(520.0);
@@ -368,7 +368,7 @@ fn index_advice(
                              ANALYZE. On a busy PostgreSQL table CREATE INDEX CONCURRENTLY avoids blocking \
                              writes (it can't run inside a transaction). An index slows down writes.",
                         )
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.subtle),
                     );
                 }
@@ -438,7 +438,7 @@ pub(super) fn server_panel(
                                 .show(ui, |ui| {
                                     ui.set_min_width(140.0);
                                     ui.vertical(|ui| {
-                                        ui.label(egui::RichText::new(label).size(11.0).color(t.subtle));
+                                        ui.label(egui::RichText::new(label).size(12.0).color(t.subtle));
                                         // The version string can be long (MySQL adds the build).
                                         let v: String = value.chars().take(28).collect();
                                         ui.label(egui::RichText::new(v).size(18.0).color(t.foreground))
@@ -448,13 +448,13 @@ pub(super) fn server_panel(
                         }
                     });
                     ui.add_space(16.0);
-                    ui.label(egui::RichText::new("BIGGEST TABLES").size(11.0).color(t.subtle));
+                    ui.label(egui::RichText::new("BIGGEST TABLES").size(12.0).color(t.subtle));
                     ui.add_space(4.0);
                     preview_rows(ui, tab_id ^ 1, &info.largest);
                     ui.add_space(16.0);
                     ui.label(
                         egui::RichText::new("LEAST USED INDEXES")
-                            .size(11.0)
+                            .size(12.0)
                             .color(t.subtle),
                     );
                     ui.label(
@@ -463,7 +463,7 @@ pub(super) fn server_panel(
                              opened; empty = no data). A rarely used index takes space and slows down writes, \
                              but the ones backing a foreign key are usually needed.",
                         )
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.subtle),
                     );
                     ui.add_space(4.0);
@@ -496,7 +496,7 @@ pub(super) fn confirm_kill(ctx: &egui::Context, tab_id: u64, id: i64, terminate:
             "Cancel query",
         )
     };
-    let modal = egui::Modal::new(egui::Id::new(("confirm_kill", tab_id)))
+    let modal = theme::modal(egui::Id::new(("confirm_kill", tab_id)))
         .frame(theme::modal_frame(16))
         .show(ctx, |ui| {
             ui.set_width(400.0);

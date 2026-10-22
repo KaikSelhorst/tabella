@@ -1,6 +1,7 @@
 //! "New table" / "Edit structure": columns and indexes as a form, with the DDL it produces
 //! shown live underneath.
 
+use crate::ui::theme::A11y;
 use eframe::egui::{self, RichText, TextEdit};
 
 use super::{icon, syntax, theme};
@@ -114,7 +115,7 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
                             RichText::new(
                                 "In MySQL each ALTER applies immediately: if one fails, the earlier ones stay.",
                             )
-                            .size(11.0)
+                            .size(12.0)
                             .color(t.warning),
                         );
                     }
@@ -157,7 +158,7 @@ pub fn design_tab(ui: &mut egui::Ui, tab_id: u64, d: &mut Design, busy: bool) ->
 fn section(ui: &mut egui::Ui, title: &str) {
     let t = theme::tokens();
     ui.add_space(12.0);
-    ui.label(RichText::new(title.to_uppercase()).size(11.0).color(t.subtle));
+    ui.label(RichText::new(title.to_uppercase()).size(12.0).color(t.subtle));
     ui.add_space(4.0);
 }
 
@@ -171,7 +172,7 @@ fn columns(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
         .spacing([8.0, 4.0])
         .show(ui, |ui| {
             for h in ["PK", "Name", "Type", "Null", "Default", ""] {
-                ui.label(RichText::new(h).size(11.0).color(t.subtle));
+                ui.label(RichText::new(h).size(12.0).color(t.subtle));
             }
             ui.end_row();
             for (i, c) in d.columns.iter_mut().enumerate() {
@@ -209,7 +210,9 @@ fn columns(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
                                     ui.close();
                                 }
                             }
-                        });
+                        })
+                        .response
+                        .tip("Common types");
                     });
                 });
                 ui.add_enabled(live && !c.pk, egui::Checkbox::without_text(&mut c.nullable));
@@ -233,7 +236,7 @@ fn columns(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
                 };
                 if ui
                     .add(egui::Button::new(theme::icon(glyph).color(color)).frame(false))
-                    .on_hover_text(tip)
+                    .tip(tip)
                     .clicked()
                 {
                     if c.original.is_some() {
@@ -277,7 +280,7 @@ fn indexes(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
                         egui::Label::new(
                             RichText::new(&ix.columns)
                                 .monospace()
-                                .size(11.0)
+                                .size(12.0)
                                 .color(t.muted_foreground),
                         )
                         .truncate(),
@@ -306,7 +309,7 @@ fn indexes(ui: &mut egui::Ui, tab_id: u64, d: &mut Design) {
                 };
                 if ui
                     .add(egui::Button::new(theme::icon(glyph).color(t.muted_foreground)).frame(false))
-                    .on_hover_text(tip)
+                    .tip(tip)
                     .clicked()
                 {
                     if ix.existing {

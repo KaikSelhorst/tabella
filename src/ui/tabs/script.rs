@@ -73,7 +73,7 @@ pub(super) fn script_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                             "Reads the file bit by bit and stops at the first error. Understands DELIMITER (MySQL), \
                              $$ blocks and pg_dump's COPY … FROM stdin; psql commands (\\connect…) are skipped.",
                         )
-                        .size(11.0)
+                        .size(12.0)
                         .color(t.subtle),
                     );
                     if !st.running && st.outcome.is_none() {
@@ -181,7 +181,7 @@ fn slowest_statements(ui: &mut egui::Ui, slowest: &[crate::db::StatementTime]) {
     ui.add_space(14.0);
     ui.label(
         egui::RichText::new("SLOWEST STATEMENTS")
-            .size(11.0)
+            .size(12.0)
             .color(t.subtle),
     );
     ui.add_space(4.0);
