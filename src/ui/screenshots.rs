@@ -447,7 +447,8 @@ fn index_advice_shot() {
     let st = crate::app::ActivityState {
         view: crate::db::ActivityView::Slow,
         server: None,
-        auto_refresh: false,
+        every: None,
+        server_every: None,
         last_refresh: None,
         confirm_kill: None,
         kill_error: None,
@@ -789,7 +790,8 @@ fn screenshots() {
         let st = crate::app::ActivityState {
             view: crate::db::ActivityView::Sessions,
             server: None,
-            auto_refresh: false,
+            every: None,
+            server_every: None,
             last_refresh: None,
             confirm_kill: None,
             kill_error: None,
@@ -1308,7 +1310,8 @@ fn screenshots() {
         let st = crate::app::ActivityState {
             view: crate::db::ActivityView::Server,
             server: Some(Ok(info)),
-            auto_refresh: false,
+            every: None,
+            server_every: None,
             last_refresh: None,
             confirm_kill: None,
             kill_error: None,

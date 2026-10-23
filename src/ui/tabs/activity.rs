@@ -2,8 +2,10 @@
 
 use super::*;
 
-/// How often the activity tab refreshes itself while "Auto refresh" is on.
-pub(super) const ACTIVITY_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+use std::time::Duration;
+
+/// The intervals "Auto refresh" offers.
+const EVERY: [u64; 6] = [1, 2, 5, 10, 30, 60];
 
 /// Sessions on the server, with buttons to cancel the selected one's query or close it.
 pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
@@ -11,6 +13,7 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
     let t = theme::tokens();
     let busy = tab.busy();
     let picked = Picked::of(tab, s);
+    let tab_id = tab.id;
     let TabKind::Activity(st) = &mut tab.kind else {
         return;
     };
@@ -40,10 +43,10 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
                     if ui.add_enabled(!busy, egui::Button::new(refresh_btn)).clicked() {
                         refresh = true;
                     }
+                    every_picker(ui, tab_id, st.every_mut());
                     if view == ActivityView::Server {
                         return;
                     }
-                    ui.checkbox(&mut st.auto_refresh, "every 2 s");
                     ui.separator();
                     if view == ActivityView::Slow {
                         slow = slow_query_buttons(ui, picked.query.is_some(), busy);
@@ -67,10 +70,13 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         tab.error = None;
         app::refresh_activity(tab, s);
     }
-    // The server overview is a panel, refreshed by hand.
+    // The server overview is a panel, not a result.
     if let TabKind::Activity(st) = &tab.kind
         && st.view == ActivityView::Server
     {
+        if !busy && auto_due(ui.ctx(), st.server_every, st.last_refresh) {
+            refresh = true;
+        }
         if refresh && !switched {
             app::refresh_activity(tab, s);
         }
@@ -96,14 +102,13 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         return;
     };
     // While the confirmation is open the list stays still, so the selection can't move under it.
-    if st.auto_refresh && st.confirm_kill.is_none() && st.advice.is_none() && !busy && !reset_stats {
-        let due = st.last_refresh.is_none_or(|at| at.elapsed() >= ACTIVITY_EVERY);
-        if due {
-            refresh = true;
-        } else if let Some(at) = st.last_refresh {
-            ui.ctx()
-                .request_repaint_after(ACTIVITY_EVERY.saturating_sub(at.elapsed()));
-        }
+    if st.confirm_kill.is_none()
+        && st.advice.is_none()
+        && !busy
+        && !reset_stats
+        && auto_due(ui.ctx(), st.every, st.last_refresh)
+    {
+        refresh = true;
     }
     if let Some((id, terminate)) = st.confirm_kill {
         match confirm_kill(ui.ctx(), tab.id, id, terminate) {
@@ -136,6 +141,41 @@ pub(super) fn activity_tab(ui: &mut egui::Ui, tab: &mut Tab, cx: &mut Cx) {
         }
     }
     result_area(ui, tab, cx, false);
+}
+
+/// Whether an auto refresh every `every` is due; if not yet, asks for a repaint when it will be.
+fn auto_due(ctx: &egui::Context, every: Option<Duration>, last: Option<std::time::Instant>) -> bool {
+    let Some(every) = every else {
+        return false;
+    };
+    match last {
+        Some(at) if at.elapsed() < every => {
+            ctx.request_repaint_after(every.saturating_sub(at.elapsed()));
+            false
+        }
+        _ => true,
+    }
+}
+
+/// "Auto refresh": off, or one of [`EVERY`].
+fn every_picker(ui: &mut egui::Ui, tab_id: u64, every: &mut Option<Duration>) {
+    let label = |d: Option<Duration>| match d.map(|d| d.as_secs()) {
+        None => "Off".to_string(),
+        Some(n) if n >= 60 && n % 60 == 0 => format!("{} min", n / 60),
+        Some(n) => format!("{n} s"),
+    };
+    egui::ComboBox::from_id_salt(("activity_every", tab_id))
+        .selected_text(format!("Auto: {}", label(*every)))
+        .width(96.0)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(every, None, label(None));
+            for n in EVERY {
+                let d = Some(Duration::from_secs(n));
+                ui.selectable_value(every, d, label(d));
+            }
+        })
+        .response
+        .on_hover_text("Auto refresh: how often this view reloads itself");
 }
 
 /// What the selected row is about.

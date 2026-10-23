@@ -505,7 +505,10 @@ pub struct ActivityState {
     pub view: ActivityView,
     /// The "Server" view's data (`None` until it first arrives).
     pub server: Option<Result<ServerInfo, String>>,
-    pub auto_refresh: bool,
+    /// How often Sessions, Locks and Slow queries refresh themselves (`None` = by hand).
+    pub every: Option<std::time::Duration>,
+    /// How often the Server view refreshes itself: its own, it costs more (table sizes).
+    pub server_every: Option<std::time::Duration>,
     pub last_refresh: Option<Instant>,
     /// Session waiting for the user to confirm `(id, terminate)`.
     pub confirm_kill: Option<(i64, bool)>,
@@ -513,6 +516,17 @@ pub struct ActivityState {
     pub kill_error: Option<String>,
     /// The answer to "Suggest index", shown in a dialog until closed.
     pub advice: Option<Result<crate::advisor::Advice, String>>,
+}
+
+impl ActivityState {
+    /// The auto refresh interval of the view on screen.
+    pub fn every_mut(&mut self) -> &mut Option<std::time::Duration> {
+        if self.view == ActivityView::Server {
+            &mut self.server_every
+        } else {
+            &mut self.every
+        }
+    }
 }
 
 /// "Structure" tab: columns, indexes, foreign keys and DDL of one table.

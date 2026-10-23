@@ -558,7 +558,8 @@ impl App {
         let state = ActivityState {
             view: ActivityView::Sessions,
             server: None,
-            auto_refresh: true,
+            every: Some(std::time::Duration::from_secs(2)),
+            server_every: None,
             last_refresh: None,
             confirm_kill: None,
             kill_error: None,
