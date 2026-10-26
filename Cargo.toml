@@ -1,6 +1,6 @@
 [package]
 name = "tabella"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 # What the dependencies ask for (egui 0.36 needs 1.95); checked by CI.
 rust-version = "1.95"
