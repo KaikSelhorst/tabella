@@ -163,6 +163,38 @@ fn dragging_a_tab_to_the_other_strip_moves_it() {
 }
 
 #[test]
+fn the_pencil_on_a_welcome_card_edits_the_connection() {
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 760.0))
+        .build_eframe(|cc| {
+            super::theme::apply(&cc.egui_ctx);
+            let mut app = fake_app(&cc.egui_ctx);
+            // Not connected: a saved connection that fails to connect lands here.
+            app.session = None;
+            app.tabs.clear();
+            app
+        });
+    harness.run();
+    let pencil = egui::pos2(934.0, 266.0);
+    harness.hover_at(pencil);
+    harness.step();
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: pencil,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.run();
+    let form = harness.state().connections.form.as_ref().expect("the form opens");
+    assert_eq!(form.editing.as_deref(), Some("dev"));
+    assert_eq!(form.cfg.name, "dev");
+    assert!(harness.state().session.is_none(), "editing doesn't connect");
+}
+
+#[test]
 fn dragging_a_tab_along_its_strip_reorders_it() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 760.0))
@@ -2315,6 +2347,13 @@ fn screenshots() {
     my.host = "db.example.com".into();
     my.database = "shop".into();
     harness.state_mut().connections.saved.push(my);
+    // A provider's host is long: the card cuts it instead of spilling over its edge.
+    let mut neon = ConnConfig::new(Kind::Postgres);
+    neon.name = "analytics-warehouse-replica-sa-east-1-read-only-reporting".into();
+    neon.user = "reporting_readonly".into();
+    neon.host = "ep-misty-dawn-a1b2c3d4-pooler.sa-east-1.aws.neon.tech".into();
+    neon.database = "warehouse_production".into();
+    harness.state_mut().connections.saved.push(neon);
     harness.run();
     harness
         .render()
